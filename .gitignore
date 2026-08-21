@@ -16,6 +16,12 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 
+# Per-node configuration is non-secret by design: instance sizes, volume sizes,
+# hostnames, the region label. Every secret a node holds lives in the OpenBao on
+# that node and none of it passes through OpenTofu, so these files are safe to
+# commit — and a node root is unusable without one.
+!terraform.tfvars
+
 # Ignore override files as they are usually used to override resources locally and so
 # are not checked in
 override.tf
