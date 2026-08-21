@@ -50,11 +50,15 @@ export POSTGRES_ADMIN_PASSWORD PIRI_POSTGRES_PASSWORD INGOT_POSTGRES_PASSWORD
 export GRAFANA_PUSH_TOKEN
 
 echo "[2/5] Rendering secrets"
-changed=0
-render_template \
+# render_template reports "changed" by exit status, which `set -e` would
+# otherwise read as a failure on an unchanged file.
+if render_template \
   "$FILONE_NODE_DIR/platform/templates/platform.env.tpl" \
-  "$FILONE_SECRETS_DIR/platform.env" && changed=1
-[ "$changed" -eq 1 ] && echo "  platform.env changed" || echo "  platform.env unchanged"
+  "$FILONE_SECRETS_DIR/platform.env"; then
+  echo "  platform.env changed"
+else
+  echo "  platform.env unchanged"
+fi
 
 echo "[3/5] Pulling images"
 compose_platform pull --quiet

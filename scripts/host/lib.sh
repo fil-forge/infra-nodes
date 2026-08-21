@@ -291,6 +291,22 @@ write_secret_file() {
   return 0
 }
 
+# Piri's --wallet-file is not a private key. It is a hex-encoded Filecoin
+# keystore record, {"Type":"delegated","PrivateKey":"<base64 raw key>"}, hex
+# again on the outside — piri reads the file, hex-decodes it and unmarshals the
+# JSON. OpenBao holds the bare key, so the wrapping happens here.
+piri_wallet_hex() {
+  local raw_key="$1"
+  python3 -c '
+import base64, binascii, json, sys
+
+raw = binascii.unhexlify(sys.argv[1])
+record = json.dumps({"Type": "delegated", "PrivateKey": base64.b64encode(raw).decode()},
+                    separators=(",", ":"))
+sys.stdout.write(binascii.hexlify(record.encode()).decode())
+' "$raw_key"
+}
+
 # --- Compose ---------------------------------------------------------------
 
 # The seal token is in an env file of its own because of the order things come
