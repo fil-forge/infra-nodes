@@ -1,0 +1,114 @@
+// Telemetry out of the node: journald, container logs, host metrics and the
+// deploy stamp, all pushed to Grafana Cloud.
+//
+// Push-only credentials, so this is a one-way pipe: nothing in Grafana Cloud
+// can reach back into the node. Piri's own OTEL export to the Forge collector is
+// separate and untouched — that carries application traces, this carries whether
+// the box is alive.
+
+logging {
+	level  = "info"
+	format = "logfmt"
+}
+
+// Every series and every log line carries the node and its region label, which
+// is what lets one Grafana stack hold every appliance without them running
+// together.
+loki.write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_LOGS_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_LOGS_USER")
+			password = sys.env("GRAFANA_PUSH_TOKEN")
+		}
+	}
+
+	external_labels = {
+		node   = sys.env("FILONE_NODE"),
+		region = sys.env("REGION_LABEL"),
+	}
+}
+
+prometheus.remote_write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_METRICS_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_METRICS_USER")
+			password = sys.env("GRAFANA_PUSH_TOKEN")
+		}
+	}
+
+	external_labels = {
+		node   = sys.env("FILONE_NODE"),
+		region = sys.env("REGION_LABEL"),
+	}
+}
+
+// The host's journal: cloud-init, the reconcile timer, docker itself, and any
+// unit that fails. This is where a failed deploy is legible after the fact.
+loki.source.journal "host" {
+	forward_to    = [loki.write.grafana_cloud.receiver]
+	labels        = {job = "journal"}
+	relabel_rules = loki.relabel.journal.rules
+}
+
+loki.relabel "journal" {
+	forward_to = []
+
+	rule {
+		source_labels = ["__journal__systemd_unit"]
+		target_label  = "unit"
+	}
+}
+
+// Container logs, discovered rather than listed, so a service added to either
+// compose project starts shipping without a change here.
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+		target_label  = "compose_project"
+	}
+}
+
+loki.source.docker "containers" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.containers.output
+	labels     = {job = "docker"}
+	forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+// Host metrics, plus the textfile collector, which is how a shell script gets a
+// metric into Prometheus: the deploy scripts write deploy.prom into this
+// directory and Alloy picks it up on the next scrape.
+//
+// The collector list is deliberately short. Anything that needs a host mount
+// this container does not have — cgroups for cAdvisor, the dbus socket for the
+// systemd collector — is left out rather than shipped broken; container health
+// is already visible through the deploy gate and the journal.
+prometheus.exporter.unix "host" {
+	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "netdev", "textfile"]
+
+	textfile {
+		directory = "/metrics"
+	}
+}
+
+prometheus.scrape "host" {
+	targets         = prometheus.exporter.unix.host.targets
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+	scrape_interval = "60s"
+}
