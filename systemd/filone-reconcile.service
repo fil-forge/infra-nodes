@@ -1,0 +1,19 @@
+[Unit]
+# Make the node match origin/main. Started by filone-reconcile.timer every five
+# minutes; a change reaches this node by being merged.
+Description=FilOne node reconcile
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/filone/infra-nodes/scripts/host/reconcile.sh
+
+# Long enough for an image pull, a proving-window wait and both health gates.
+# Shorter than this and a deploy that is working normally gets killed halfway.
+TimeoutStartSec=4200
+
+# No Restart=. A failed pass is not retried: the timer fires again in five
+# minutes anyway, and a tight retry loop against a broken commit would hammer
+# the registry and fill the journal.
