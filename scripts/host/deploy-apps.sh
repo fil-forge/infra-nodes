@@ -10,6 +10,10 @@
 # running images already correct, restarts nothing and never touches the gate.
 set -euo pipefail
 
+# SC2154: PAYER_ADDRESS comes from the node's node.env, which filone_init
+# sources at run time.
+# shellcheck disable=SC2154
+
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 

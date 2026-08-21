@@ -6,6 +6,10 @@
 # root's.
 
 # shellcheck shell=bash
+# SC2154: filone_init reads /etc/filone/node.conf and the node's node.env, so
+# the variables from both are assigned at run time, in files no static check
+# can see.
+# shellcheck disable=SC2154
 
 FILONE_CONTROL_DIR=/mnt/filone/control
 FILONE_SECRETS_DIR=/run/filone/secrets
@@ -562,6 +566,9 @@ wait_healthy() {
       -f '{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}|{{.State.ExitCode}}|{{.State.StartedAt}}' \
       $ids)" || die "could not inspect the project's containers"
 
+    # The unquoted command substitution feeding `docker inspect` below is
+    # deliberate: the id list has to split into one argument per container.
+    # shellcheck disable=SC2046
     while IFS='|' read -r name status health restarts exitcode started_at; do
       name="${name#/}"
       started_epoch="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"

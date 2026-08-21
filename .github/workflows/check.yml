@@ -1,0 +1,87 @@
+# What CI can check without an AWS account.
+#
+# There is no deploy job. A node deploys itself: it pulls origin/main every five
+# minutes and runs the deploy scripts, so the thing CI protects is the branch
+# those nodes are about to run, not a pipeline that pushes to them.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tofu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.12.0"
+
+      - name: fmt
+        run: tofu fmt -check -recursive terraform/
+
+      # -backend=false because validating a root does not need its state, and
+      # reaching the state bucket would need credentials this job does not have.
+      - name: validate
+        run: |
+          for root in terraform/envs/*/ terraform/envs/*/*/; do
+            [ -f "$root/versions.tofu" ] || continue
+            echo "==> $root"
+            tofu -chdir="$root" init -backend=false -input=false
+            tofu -chdir="$root" validate
+          done
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The host scripts run as root on a box nobody watches, so a quoting
+      # mistake in one of them is an outage rather than a typo.
+      - name: shellcheck
+        run: |
+          # -x follows the `. lib.sh` in each script, so the helpers it defines
+          # are checked in the context that uses them. -P SCRIPTDIR is what lets
+          # it find that file: the scripts source it through a `$(dirname ...)`
+          # that no static check can resolve.
+          shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
+          shellcheck nodes/*/apps/config/piri/entrypoint.sh
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `compose config` resolves every interpolation, so it catches a variable
+      # a compose file expects and no env file supplies — which on a node shows
+      # up as a service starting with an empty password.
+      - name: config
+        run: |
+          set -euo pipefail
+
+          # Placeholders for the secrets the deploy scripts render from OpenBao
+          # at run time. Their values do not matter; their presence does.
+          secrets="$(mktemp)"
+          printf '%s\n' \
+            SEAL_TOKEN=x \
+            POSTGRES_ADMIN_PASSWORD=x \
+            PIRI_POSTGRES_PASSWORD=x \
+            INGOT_POSTGRES_PASSWORD=x \
+            CHAIN_RPC_TOKEN=x \
+            GRAFANA_PUSH_TOKEN=x >"$secrets"
+
+          for node in nodes/*/; do
+            for project in platform apps; do
+              echo "==> ${node}${project}"
+              docker compose \
+                --project-directory "${node}${project}" \
+                --env-file "${node}node.env" \
+                --env-file "${node}${project}/versions.env" \
+                --env-file "$secrets" \
+                config >/dev/null
+            done
+          done
