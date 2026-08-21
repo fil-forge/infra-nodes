@@ -6,6 +6,10 @@
 # root's.
 
 # shellcheck shell=bash
+# SC2154: filone_init reads /etc/filone/node.conf and the node's node.env, so
+# the variables from both are assigned at run time, in files no static check
+# can see.
+# shellcheck disable=SC2154
 
 FILONE_CONTROL_DIR=/mnt/filone/control
 FILONE_SECRETS_DIR=/run/filone/secrets
@@ -260,6 +264,9 @@ wait_healthy() {
   while :; do
     local bad=0 pending=0 name status health restarts exitcode started_at started_epoch
 
+    # The unquoted command substitution feeding `docker inspect` below is
+    # deliberate: the id list has to split into one argument per container.
+    # shellcheck disable=SC2046
     while IFS='|' read -r name status health restarts exitcode started_at; do
       name="${name#/}"
       started_epoch="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"

@@ -10,6 +10,10 @@
 # running images already correct, restarts nothing and never touches the gate.
 set -euo pipefail
 
+# SC2154: PAYER_ADDRESS comes from the node's node.env, which filone_init
+# sources at run time.
+# shellcheck disable=SC2154
+
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
@@ -30,6 +34,10 @@ ingot_changed=0
 
 # render_template and write_secret_file report "changed" by exit status, which
 # `set -e` would otherwise read as a failure on every unchanged file.
+# A nameref: the caller passes the name of the flag to set, so the assignment
+# below lands in the caller's variable rather than in this one, which is why
+# both "unused" and "misused as an array" have to be silenced here.
+# shellcheck disable=SC2178,SC2034
 mark() {
   local -n flag="$1"
   shift

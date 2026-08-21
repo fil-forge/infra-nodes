@@ -20,6 +20,10 @@
 #   FILONE_ONBOARD_FUNCTION=<lambda name or arn> scripts/operator/onboard.sh dev
 set -euo pipefail
 
+# SC2154: REGION_LABEL and the two public URLs come from the node's node.env,
+# sourced below.
+# shellcheck disable=SC2154
+
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
