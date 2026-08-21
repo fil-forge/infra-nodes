@@ -1,0 +1,192 @@
+#!/bin/bash
+# First-boot bootstrap for a FilOne Appliance node.
+#
+# Rendered by OpenTofu and handed to cloud-init, so it runs exactly once, as
+# root, before any operator touches the box. It brings the machine to the point
+# where scripts/host/provision-platform.sh can run and does nothing beyond that:
+# no secret is created here, no service is started, and nothing here talks to
+# central.
+#
+# Output lands in /var/log/filone-bootstrap.log and in cloud-init's own
+# /var/log/cloud-init-output.log. /etc/filone/bootstrap-complete is written last,
+# so its absence means this script died partway.
+set -euo pipefail
+exec > >(tee -a /var/log/filone-bootstrap.log) 2>&1
+
+NODE_NAME="${node_name}"
+CONTROL_VOLUME_ID="${control_volume_id}"
+DATA_VOLUME_ID="${data_volume_id}"
+REPOSITORY_URL="${repository_url}"
+REPOSITORY_REF="${repository_ref}"
+UCANTOOL_VERSION="${ucantool_version}"
+UCANTOOL_SHA256="${ucantool_sha256}"
+FOUNDRY_VERSION="${foundry_version}"
+FOUNDRY_SHA256="${foundry_sha256}"
+
+CHECKOUT_DIR=/opt/filone/infra-nodes
+CONTROL_MOUNT=/mnt/filone/control
+DATA_MOUNT=/mnt/filone/data
+
+echo "=== FilOne node bootstrap: $NODE_NAME ==="
+
+echo "[1/8] Installing packages"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q
+# Docker and Compose come from Ubuntu's own archive rather than Docker's apt
+# repository: noble ships Compose 2.24, which is new enough for the
+# start_interval healthchecks the compose files use, and adding a third-party
+# repository would put a signing key on the box for no capability it needs.
+apt-get install -y -q \
+  ca-certificates \
+  curl \
+  docker.io \
+  docker-compose-v2 \
+  git \
+  jq
+
+echo "[2/8] Waiting for the EBS volumes to attach"
+# On Nitro instances the kernel names NVMe devices in attach order, which is not
+# the order the device_name in the volume attachment suggests. The by-id link
+# carries the volume id as the device serial, which is unambiguous.
+control_dev="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${CONTROL_VOLUME_ID//-/}"
+data_dev="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${DATA_VOLUME_ID//-/}"
+
+# The attachment is a separate API call that OpenTofu makes after the instance
+# is running, so on a fast boot this script reaches here before the disks exist.
+deadline=$(( $(date +%s) + 300 ))
+while [ ! -e "$control_dev" ] || [ ! -e "$data_dev" ]; do
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "ERROR: volumes did not attach within 300s" >&2
+    ls -l /dev/disk/by-id/ >&2
+    exit 1
+  fi
+  sleep 5
+done
+
+echo "[3/8] Preparing filesystems"
+# Format once, ever. A volume that already carries a filesystem holds the node's
+# identity or its stored data, and reformatting it is the one irreversible
+# mistake this script could make.
+prepare_volume() {
+  local dev="$1" label="$2" mountpoint="$3"
+
+  if [ -z "$(blkid -o value -s TYPE "$dev" || true)" ]; then
+    echo "  $dev is blank, creating ext4 labelled $label"
+    mkfs.ext4 -L "$label" "$dev"
+  else
+    echo "  $dev already holds $(blkid -o value -s TYPE "$dev"), leaving it alone"
+  fi
+
+  mkdir -p "$mountpoint"
+  local uuid
+  uuid="$(blkid -o value -s UUID "$dev")"
+  # By UUID, not by device path: the NVMe name changes with attach order.
+  # nofail keeps a missing volume from dropping the box into emergency mode,
+  # where SSM cannot reach it.
+  if ! grep -q "$uuid" /etc/fstab; then
+    echo "UUID=$uuid $mountpoint ext4 defaults,nofail 0 2" >> /etc/fstab
+  fi
+  mount "$mountpoint"
+}
+
+prepare_volume "$control_dev" filone-control "$CONTROL_MOUNT"
+prepare_volume "$data_dev" filone-data "$DATA_MOUNT"
+
+mkdir -p \
+  "$CONTROL_MOUNT/openbao" \
+  "$CONTROL_MOUNT/postgres" \
+  "$CONTROL_MOUNT/caddy" \
+  "$CONTROL_MOUNT/state" \
+  "$DATA_MOUNT/piri" \
+  "$DATA_MOUNT/ingot"
+
+echo "[4/8] Creating the secrets tmpfs"
+# Rendered secrets live in RAM and never touch a disk that survives a reboot.
+# /run is already a tmpfs, so this is a directory in it that systemd recreates
+# with the same mode after every boot.
+mkdir -p /etc/filone
+install -d -m 0700 -o root -g root /run/filone /run/filone/secrets
+cat > /etc/tmpfiles.d/filone.conf <<'TMPFILES'
+d /run/filone 0700 root root -
+d /run/filone/secrets 0700 root root -
+TMPFILES
+
+echo "[5/8] Creating the shared docker network"
+# One owner of this network: both compose projects declare it external, so
+# neither races the other to create it and neither deletes it on `down`.
+docker network inspect filone >/dev/null 2>&1 || docker network create filone
+
+echo "[6/8] Installing pinned binaries"
+install_cast() {
+  local tmp
+  tmp="$(mktemp -d)"
+  echo "  fetching foundry $FOUNDRY_VERSION"
+  curl -fsSL -o "$tmp/foundry.tar.gz" \
+    "https://github.com/foundry-rs/foundry/releases/download/$FOUNDRY_VERSION/foundry_$${FOUNDRY_VERSION}_linux_arm64.tar.gz"
+  echo "$FOUNDRY_SHA256  $tmp/foundry.tar.gz" | sha256sum -c -
+  # Only cast. forge, anvil and chisel are a compiler and two test tools that
+  # this node has no use for.
+  tar -xzf "$tmp/foundry.tar.gz" -C "$tmp" cast
+  install -m 0755 "$tmp/cast" /usr/local/bin/cast
+  rm -rf "$tmp"
+  cast --version
+}
+
+install_ucantool() {
+  local tmp
+  tmp="$(mktemp -d)"
+  echo "  fetching ucantool $UCANTOOL_VERSION"
+  curl -fsSL -o "$tmp/ucantool" \
+    "https://github.com/fil-forge/ucantool/releases/download/$UCANTOOL_VERSION/ucantool_linux_arm64"
+  echo "$UCANTOOL_SHA256  $tmp/ucantool" | sha256sum -c -
+  install -m 0755 "$tmp/ucantool" /usr/local/bin/ucantool
+  rm -rf "$tmp"
+  ucantool --help >/dev/null
+}
+
+install_cast
+
+if [ -n "$UCANTOOL_VERSION" ] && [ -n "$UCANTOOL_SHA256" ]; then
+  install_ucantool
+else
+  # fil-forge/ucantool publishes no release binaries yet. Boot the box anyway —
+  # everything except key generation works without it — and leave a marker that
+  # keygen.sh checks, so the failure names its cause instead of appearing as
+  # "ucantool: command not found".
+  echo "  WARNING: no pinned ucantool version; skipping install"
+  echo "ucantool is not installed: set ucantool_version and ucantool_sha256 on the node module." \
+    > /etc/filone/ucantool-missing
+fi
+
+echo "[7/8] Cloning $REPOSITORY_URL at $REPOSITORY_REF"
+# Public repository, so no credential is delivered to the node.
+mkdir -p "$(dirname "$CHECKOUT_DIR")"
+if [ ! -d "$CHECKOUT_DIR/.git" ]; then
+  git clone --branch "$REPOSITORY_REF" "$REPOSITORY_URL" "$CHECKOUT_DIR"
+fi
+
+# The one piece of node identity that cannot come from the checkout: which
+# directory under nodes/ this box is. Every host script reads it.
+cat > /etc/filone/node.conf <<CONF
+FILONE_NODE=$NODE_NAME
+FILONE_CHECKOUT=$CHECKOUT_DIR
+CONF
+
+echo "[8/8] Installing systemd units"
+# The units are version-controlled next to the scripts they run. The reconcile
+# timer stays disabled: it would otherwise start deploying against an OpenBao
+# that has not been initialised yet. Provisioning enables it as its last step.
+# nullglob so an empty systemd/ leaves `units` empty rather than passing the
+# literal pattern to install, which would fail the whole bootstrap.
+shopt -s nullglob
+units=("$CHECKOUT_DIR"/systemd/*.service "$CHECKOUT_DIR"/systemd/*.timer)
+shopt -u nullglob
+if [ "$${#units[@]}" -gt 0 ]; then
+  install -m 0644 "$${units[@]}" /etc/systemd/system/
+  systemctl daemon-reload
+else
+  echo "  no units in the checkout yet, skipping"
+fi
+
+date -Is > /etc/filone/bootstrap-complete
+echo "=== bootstrap complete ==="
