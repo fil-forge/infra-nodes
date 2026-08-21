@@ -13,6 +13,10 @@
 # the way out.
 set -euo pipefail
 
+# SC2154: SPRUE_DID comes from the node's node.env, which filone_init sources
+# at run time.
+# shellcheck disable=SC2154
+
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 

@@ -8,6 +8,10 @@
 # names nothing useful.
 set -euo pipefail
 
+# SC2154: PIRI_HOSTNAME and INGOT_HOSTNAME come from the node's node.env,
+# which filone_init sources at run time.
+# shellcheck disable=SC2154
+
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
