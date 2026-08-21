@@ -1,0 +1,11 @@
+[Unit]
+# Keep the OpenBao seal token alive at central. OpenBao renews it itself while
+# it runs; this covers the gap when it has not been running.
+Description=FilOne node OpenBao seal token renewal
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/filone/infra-nodes/scripts/host/renew-seal-token.sh
+TimeoutStartSec=300

@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew the FilOne node OpenBao seal token daily
+
+[Timer]
+# Daily, and on boot. The boot run is the one that matters: a box that has been
+# off is the case OpenBao's own renewal cannot cover.
+OnBootSec=2min
+OnUnitActiveSec=24h
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=Reconcile the FilOne node every five minutes
+
+[Timer]
+# Five minutes after boot, then every five minutes. Not tied to wall-clock
+# times: nothing here needs to happen at a particular minute, and a fixed
+# schedule would make every node in a fleet pull at the same instant.
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+# Spread the load when there is more than one node, and stop the pass from
+# landing on the same second of every interval.
+RandomizedDelaySec=30
+
+# A pass that was missed because the box was off runs once on the next boot
+# rather than being skipped.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
