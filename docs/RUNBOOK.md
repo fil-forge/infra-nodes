@@ -6,6 +6,7 @@ Bringing up a FilOne Appliance node, and what to do when one misbehaves.
 - [Bringing up a node](#bringing-up-a-node)
 - [Onboarding by hand](#onboarding-by-hand)
 - [Day-to-day operations](#day-to-day-operations)
+- [Re-onboarding after identity loss](#re-onboarding-after-identity-loss)
 - [When something is wrong](#when-something-is-wrong)
 
 ## Prerequisites in other repositories
@@ -214,6 +215,28 @@ box:
 journalctl -u filone-reconcile.service -n 200
 docker logs --tail 200 filone-piri
 ```
+
+## Re-onboarding after identity loss
+
+Losing the control volume loses the node's keys, so the rebuilt node is a new node: new DIDs, and
+central still carries the old ones.
+
+**1. Rebuild.** Attach a fresh control volume (or replace the instance and let cloud-init mount
+one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
+identities. The transit key at central is per-node, not per-identity, so it stays. The seal token
+lives on the root volume and survives unless the instance was replaced too; mint a new one if it
+was.
+
+**2. Remove the old identity at central.** Delete the old Piri DID from the delegator's allow
+list — `aws dynamodb delete-item` mirrors the put in [Onboarding by hand](#onboarding-by-hand) —
+and remove or zero-weight the old provider registration in sprue and hilt the same way it was
+registered.
+
+**3. Onboard the new DIDs.** All four steps of [Onboarding by hand](#onboarding-by-hand), then
+`provision-apps.sh` and the timers.
+
+The data volume still holds the old identity's blobs and spool. Dev data is disposable; wipe it and
+start clean rather than carry data the new identity cannot serve.
 
 ## When something is wrong
 

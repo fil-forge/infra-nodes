@@ -90,9 +90,10 @@ reconciling.
 
 ## Secrets
 
-Every secret a node holds is in the OpenBao on that node, and that OpenBao unseals by asking the
-central one to decrypt its seal key. Revoking the node's token at central and restarting it leaves
-it sealed and serving nothing: that is the kill lever.
+Every secret a node holds is in the OpenBao on that node, except the seal token that unseals it and
+the certificates Caddy manages itself. That OpenBao unseals by asking the central one to decrypt its
+seal key. Revoking the node's token at central and restarting it leaves it sealed and serving
+nothing: that is the kill lever.
 
 Keys are generated on the node and never leave it. Provisioning creates the two Ed25519 identities,
 the EVM owner wallet and every password directly into the local OpenBao. The operator supplies three
