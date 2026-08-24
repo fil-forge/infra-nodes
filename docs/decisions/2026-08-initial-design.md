@@ -186,11 +186,13 @@ The access token is a secret, sent as an `Authorization: Bearer` header, and Pir
 `pdp.lotus_auth_token` takes the raw token and Piri prepends the scheme on both clients that dial
 the endpoint, the go-ethereum one and the Lotus full-node one.
 
-The node passes it as `PIRI_PDP_LOTUS_AUTH_TOKEN` in the container environment rather than writing
-it into Piri's config. That setting has no CLI flag, for the reason a token on a command line is a
-bad idea, and the environment keeps it off the data volume too: `piri init` writes the config it
-generates to disk and echoes it to stdout, where Alloy would ship it to Grafana Cloud, and the token
-is not among the fields it copies.
+The node passes it as `PIRI_PDP_LOTUS_AUTH_TOKEN` in the container environment. The setting has no
+CLI flag because a token on a command line lands in shell history and ps output. The environment
+does not keep the token out of Piri's config file: `piri setup init` reads the same variable, uses
+it for the on-chain calls it makes during provider registration, and writes it into the config it
+generates, which it also prints to stdout. When init runs with the variable set, the generated
+config and init's output both carry the token, so the config follows the same rules as the other
+rendered secret files and init's output must stay out of any log that Alloy ships to Grafana Cloud.
 
 ## Reaching the box
 
