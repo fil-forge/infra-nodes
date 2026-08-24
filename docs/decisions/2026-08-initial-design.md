@@ -277,3 +277,5 @@ The `fil-forge/infra-nodes` repository and the `ghcr.io/fil-forge/piri` and `ghc
 images are all readable anonymously, verified without credentials. So the node clones and pulls with
 no git or registry secret at all, which is one less credential to deliver, rotate and revoke. If
 either becomes private, a read-only credential lands in the local OpenBao like every other secret.
+
+[RFC 21]: https://github.com/fil-one/RFC/pull/21
