@@ -204,13 +204,13 @@ OpenBao, so a compromised instance profile yields no access to anything beyond S
 
 ## TLS
 
-Caddy obtains and renews certificates automatically over ACME, using HTTP-01 and TLS-ALPN-01 on the
-two public hostnames, which is why both 80 and 443 are open. Certificates live on the control-plane
-volume, so a rebuilt VM does not re-issue and does not spend rate limit.
+Caddy obtains and renews certificates automatically over ACME for the two public hostnames. Port
+443 serves the API and carries the TLS-ALPN-01 challenge; port 80 stays open to redirect HTTP to
+HTTPS and doubles as the HTTP-01 fallback challenge. Certificates live on the control-plane volume,
+so a rebuilt VM does not re-issue and does not spend rate limit.
 
-DNS-01 would remove the need for port 80 but requires a Route53 credential on the node and a Caddy
-built with the plugin (`xcaddy`). Neither is worth it for two hostnames that are already publicly
-reachable.
+DNS-01 needs neither port but requires a Route53 credential on the node and a Caddy built with the
+plugin (`xcaddy`). We don't want to give nodes operated by 3rd-parties any Route53 credentials.
 
 ## Deploys reconcile from git
 
@@ -227,15 +227,14 @@ successful pass stamps `deploy_last_success_timestamp`, which Alloy ships to Gra
 deadman alert fires when the node stops reporting at all — the failure mode a per-deploy alert
 cannot see.
 
-### The proving gate is on in dev
+### The proving gate is enabled in dev
 
 An apps deploy waits for Piri's proving window before restarting Piri. `piri status upgrade-check`
 answers this directly: exit 0 is safe, exit 1 is proving or in an unproven challenge window, exit 2
 is unable to tell.
 
-Dev could skip the gate, and running it here is the point: the gate is the mechanism that keeps a
-production node from failing a proof for an image bump, and a mechanism that only runs in production
-is a mechanism nobody has tested.
+Dev could skip the gate, but we want test this mechanism outside of production, because the gate is
+the mechanism that keeps a production node from failing a proof for an image bump.
 
 ## Per-node directories, not shared templates
 
