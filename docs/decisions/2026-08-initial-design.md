@@ -99,7 +99,9 @@ signs with.
 ## Secrets
 
 Every secret the node holds lives in a **local OpenBao**, transit-sealed by the central OpenBao at
-`ssm.dev.forge-sandbox.fil.one`. This is [RFC 21]'s model, and the reason for it is the kill lever:
+`ssm.dev.forge-sandbox.fil.one`, with two exceptions that cannot move there: the seal token, which
+is what unseals OpenBao in the first place, and the certificate keys Caddy manages itself. This is
+[RFC 21]'s model, and the reason for it is the kill lever:
 central can revoke a node's ability to unseal, and the next restart of that node comes back sealed
 and useless.
 
@@ -198,9 +200,11 @@ rendered secret files and init's output must stay out of any log that Alloy ship
 
 **SSM Session Manager only.** There is no inbound port 22, no bastion and no SSH key to lose. The
 security group allows 80 and 443 inbound and nothing else. IMDSv2 is required, and the instance
-profile carries `AmazonSSMManagedInstanceCore` and nothing else. The role can be this small because
-the node gets nothing from AWS IAM: its secrets and its capabilities all flow through the local
-OpenBao, so a compromised instance profile yields no access to anything beyond SSM itself.
+profile carries `AmazonSSMManagedInstanceCore` plus an explicit deny on `ssm:GetParameter*`. The
+deny is there because the managed policy grants more than sessions: it includes `ssm:GetParameter`
+on every parameter in the account, and infra-central's dev stage keeps its secrets in Parameter
+Store under `/forge-central/dev/*`. The role can be this small because the node gets nothing from
+AWS IAM: its secrets and its capabilities all flow through the local OpenBao.
 
 ## TLS
 
