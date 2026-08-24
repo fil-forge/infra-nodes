@@ -159,8 +159,15 @@ node is a new node — new DIDs, full re-onboarding at central.
 Tooling is three single-purpose binaries and no build toolchain on the host. `ucantool` generates
 the Ed25519 identities and signs the Piri delegation to sprue. `cast wallet new` generates the EVM
 owner wallet — a single binary extracted from a pinned Foundry release, not the whole toolchain.
-`openssl rand` generates passwords. cloud-init installs `ucantool` and `cast`, pinned and
-checksum-verified; `openssl` ships with Ubuntu.
+`openssl rand` generates passwords. Provisioning installs `ucantool` and `cast`, pinned and
+checksum-verified, with the pins in `nodes/<node>/node.env`; `openssl` ships with Ubuntu. The
+install belongs to provisioning rather than the first-boot bootstrap because the bootstrap only
+ever runs once: a version pinned there can only change by replacing the instance, where a pin in
+the repository changes by a commit and a re-run of `install-tools.sh`.
+
+Each DID is written into OpenBao beside its key at generation time, so a re-run reads it rather
+than deriving it. ucantool v0.1.0's `identity inspect` prints the DID of an existing PEM; switching
+to it would remove the stored copy.
 
 The operator supplies exactly three secrets by hand: the OpenBao seal token, the chain.love access
 token, and the Grafana Cloud push token.
@@ -268,7 +275,7 @@ either becomes private, a read-only credential lands in the local OpenBao like e
 
 ## Work that lands in other repositories
 
-Three things this node needs are built elsewhere, and the node cannot finish bring-up without them.
+Two things this node needs are built elsewhere, and the node cannot finish bring-up without them.
 
 **The central transit key** — `appliance-unseal-us-east-9`, its encrypt/decrypt policy, and the
 token-minting path — is created in **fil-forge/infra-central** on the existing `transit/` mount.
@@ -284,13 +291,5 @@ returns the proof. This repository ships the client that calls it. Until it exis
 manual fallback is the only path, and end-to-end bring-up is not possible without an operator doing
 the writes by hand.
 
-**Release binaries for ucantool**, in **fil-forge/ucantool**: static linux arm64 and amd64 builds
-published on GitHub releases, so cloud-init installs a pinned, checksum-verified binary instead of
-compiling Go on the node. That repository publishes no binaries today.
-
-`ucantool` also has no way to print the DID of an existing PEM — `identity generate` prints the DID
-of the key it just made, and nothing reads one back. Provisioning works around this by writing each
-DID into OpenBao beside its key at generation time, so a re-run reads the DID rather than deriving
-it. A `ucantool identity did <file>` subcommand would remove the workaround.
 
 [RFC 21]: https://github.com/fil-one/RFC/pull/21
