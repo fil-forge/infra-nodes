@@ -91,8 +91,8 @@ resource "aws_vpc_security_group_egress_rule" "all_ipv4" {
 
 # The instance profile grants Session Manager and nothing else. A node's
 # authority over Forge comes from the token in its OpenBao, not from its
-# position in an AWS account, so there is no S3 access, no SSM parameter access
-# and nothing to escalate into if the box is taken.
+# position in an AWS account, so there is nothing to escalate into if the box
+# is taken.
 resource "aws_iam_role" "node" {
   name = "filone-node-${var.node_name}"
 
@@ -109,6 +109,25 @@ resource "aws_iam_role" "node" {
 resource "aws_iam_role_policy_attachment" "ssm" {
   role       = aws_iam_role.node.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# AmazonSSMManagedInstanceCore grants more than sessions: it includes
+# ssm:GetParameter on every parameter in the account, and infra-central's dev
+# stage keeps its secrets in Parameter Store under /forge-central/dev/*.
+# Session Manager itself never reads parameters, so the deny costs nothing.
+resource "aws_iam_role_policy" "deny_parameter_reads" {
+  name = "deny-parameter-reads"
+  role = aws_iam_role.node.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "DenyParameterReads"
+      Effect   = "Deny"
+      Action   = "ssm:GetParameter*"
+      Resource = "*"
+    }]
+  })
 }
 
 resource "aws_iam_instance_profile" "node" {
