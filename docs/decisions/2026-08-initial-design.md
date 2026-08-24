@@ -277,23 +277,3 @@ The `fil-forge/infra-nodes` repository and the `ghcr.io/fil-forge/piri` and `ghc
 images are all readable anonymously, verified without credentials. So the node clones and pulls with
 no git or registry secret at all, which is one less credential to deliver, rotate and revoke. If
 either becomes private, a read-only credential lands in the local OpenBao like every other secret.
-
-## Work that lands in other repositories
-
-Two things this node needs are built elsewhere, and the node cannot finish bring-up without them.
-
-**The central transit key** — `appliance-unseal-us-east-9`, its encrypt/decrypt policy, and the
-token-minting path — is created in **fil-forge/infra-central** on the existing `transit/` mount.
-Without it OpenBao on the node cannot unseal, which blocks everything.
-
-**The onboarding Lambda**, also in **fil-forge/infra-central**. Onboarding an appliance takes three
-writes into central state — the node's DID onto the delegator's allow list, `provider register` plus
-a weight against sprue, and `provider add <did> us-east-9` against hilt — and returns one proof, the
-hilt→ingot S3 delegation, which can only be issued once ingot's `did:key` exists. None of it is
-configuration, so no apply creates it, and there is no shell on a Fargate task to run the admin CLIs
-in. The Lambda takes the node's two DIDs, its public URL and its Piri proof, performs the writes and
-returns the proof. This repository ships the client that calls it. Until it exists, the runbook's
-manual fallback is the only path, and end-to-end bring-up is not possible without an operator doing
-the writes by hand.
-
-[RFC 21]: https://github.com/fil-one/RFC/pull/21
