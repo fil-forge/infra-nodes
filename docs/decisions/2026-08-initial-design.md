@@ -156,14 +156,17 @@ is ever on an operator's laptop or in OpenTofu state.
 The accepted cost: the control-plane volume is the only copy of the node's identity. Lose it and the
 node is a new node — new DIDs, full re-onboarding at central.
 
-Tooling is three single-purpose binaries and no build toolchain on the host. `ucantool` generates
-the Ed25519 identities and signs the Piri delegation to sprue. `cast wallet new` generates the EVM
-owner wallet — a single binary extracted from a pinned Foundry release, not the whole toolchain.
-`openssl rand` generates passwords. Provisioning installs `ucantool` and `cast`, pinned and
-checksum-verified, with the pins in `nodes/<node>/node.env`; `openssl` ships with Ubuntu. The
-install belongs to provisioning rather than the first-boot bootstrap because the bootstrap only
-ever runs once: a version pinned there can only change by replacing the instance, where a pin in
-the repository changes by a commit and a re-run of `install-tools.sh`.
+Tooling is three single-purpose binaries and no build toolchain on the host.
+
+- `ucantool` generates the Ed25519 identities and signs the Piri delegation to sprue.
+- `cast wallet new` generates the EVM owner wallet — a single binary extracted from a pinned Foundry release, not the whole toolchain.
+- `openssl rand` generates passwords.
+
+Provisioning installs `ucantool` and `cast`, pinned and checksum-verified, with the pins in
+`nodes/<node>/node.env`; `openssl` ships with Ubuntu. The install belongs to provisioning rather
+than the first-boot bootstrap because the bootstrap only ever runs once: a version pinned there can
+only change by replacing the instance, where a pin in the repository changes by a commit and a
+re-run of `install-tools.sh`.
 
 Each DID is written into OpenBao beside its key at generation time, so a re-run reads it rather
 than deriving it. ucantool v0.1.0's `identity inspect` prints the DID of an existing PEM; switching
@@ -290,6 +293,5 @@ in. The Lambda takes the node's two DIDs, its public URL and its Piri proof, per
 returns the proof. This repository ships the client that calls it. Until it exists, the runbook's
 manual fallback is the only path, and end-to-end bring-up is not possible without an operator doing
 the writes by hand.
-
 
 [RFC 21]: https://github.com/fil-one/RFC/pull/21
