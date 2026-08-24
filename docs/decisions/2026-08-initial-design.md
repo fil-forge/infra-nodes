@@ -198,8 +198,9 @@ rendered secret files and init's output must stay out of any log that Alloy ship
 
 **SSM Session Manager only.** There is no inbound port 22, no bastion and no SSH key to lose. The
 security group allows 80 and 443 inbound and nothing else. IMDSv2 is required, and the instance
-profile carries `AmazonSSMManagedInstanceCore` and nothing else — the node's authority comes from
-its OpenBao token, not from its position in an AWS account.
+profile carries `AmazonSSMManagedInstanceCore` and nothing else. The role can be this small because
+the node gets nothing from AWS IAM: its secrets and its capabilities all flow through the local
+OpenBao, so a compromised instance profile yields no access to anything beyond SSM itself.
 
 ## TLS
 
