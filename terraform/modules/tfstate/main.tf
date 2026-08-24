@@ -47,6 +47,10 @@ resource "aws_s3_bucket_versioning" "this" {
 resource "aws_s3_bucket_lifecycle_configuration" "this" {
   bucket = aws_s3_bucket.this.id
 
+  # The noncurrent-version rule is only valid once versioning is enabled.
+  # Without this ordering the two requests race on the first apply.
+  depends_on = [aws_s3_bucket_versioning.this]
+
   rule {
     id     = "expire-noncurrent-state"
     status = "Enabled"
@@ -57,9 +61,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
       noncurrent_days = 90
     }
 
-    # A lock object outlives its run only when a run is killed mid-apply. It is
-    # a few bytes, but leaving them to accumulate makes a stale lock harder to
-    # spot among them.
+    # Abandoned parts from an upload that died partway through are invisible
+    # in listings but still billed; this cleans them up. It does not expire
+    # stale locks: a lock left by a killed run is a completed object that only
+    # `tofu force-unlock` (or deleting the object by hand) removes.
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
     }
