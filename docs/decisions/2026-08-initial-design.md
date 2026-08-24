@@ -1,12 +1,8 @@
 # Initial design of the FilOne Appliance dev node
 
 A FilOne Appliance is the regional half of the Forge network: one Piri storage node and one Ingot S3
-gateway, plus the dependencies they need to run unattended in a region far from the central
-services. This document records the choices behind the first one — a dev node in `us-east-2`, paired
-with infra-central's dev stage — and what each choice costs.
-
-The audience is an engineer who has to change one of these decisions later and wants to know what it
-was holding up.
+gateway, plus the dependencies they need to run unattended. This document records the choices behind
+the first one: a dev node in `us-east-2`, paired with infra-central's dev stage.
 
 ## Where the node sits
 
@@ -16,22 +12,8 @@ directly attached disks, it holds a Filecoin identity that must survive a redepl
 may eventually be a third party who is not going to run Fargate. A VM and Compose is the smallest
 thing that satisfies all three.
 
-RFC 19 proposed Podman with Quadlet for the same job. Compose won because the service definitions
-already exist and are exercised daily: the staging bundles in smelt are Compose files, and carrying
-them across is a diff rather than a rewrite. Quadlet's advantage — systemd owning each container —
-is worth less here than reusing working configuration.
-
 The AWS resources this needs are an EC2 instance, EBS volumes, an Elastic IP, a security group,
 Route53 records and an IAM role. No ECS, no load balancer, no VPC of its own.
-
-### Two Compose projects, not one
-
-`platform` holds OpenBao, Postgres, Caddy and Grafana Alloy. `apps` holds Piri and Ingot. They join
-a shared external Docker network, `filone`, created once by cloud-init so neither project owns it.
-
-The split follows the deploy rhythm. Platform changes are rare and can restart at any moment. Apps
-changes are frequent and must wait for Piri's proving window. One project would force every image
-bump through the slow path.
 
 ## Account, region and state
 
@@ -40,9 +22,8 @@ stage, in **us-east-2**.
 
 OpenTofu state goes in **`forge-nodes-tfstate-654654381893`**, one bucket for every node in the
 account, created by a bootstrap root applied by hand. This mirrors infra-central: state files are
-small and namespaced by key, so a bucket per node would be three more resources to create and grant
-for nothing. The account id in the name says which account's state the bucket holds, which is the
-thing an operator wants to know before running anything.
+small and namespaced by key. The account id in the name says which account's state the bucket holds,
+which is the thing an operator wants to know before running anything.
 
 The repository copies infra-central's OpenTofu conventions wholesale — `versions.tofu` with the S3
 backend and `use_lockfile = true`, a `versions.tf` pinned to `< 0.0.0` so the HashiCorp binary
@@ -57,21 +38,36 @@ thing to learn.
 that stalls mid-proof misses a proving window, so the instance runs in **unlimited credit mode** and
 pays for the overage instead.
 
-Docker and Compose come from Ubuntu's own archive (`docker.io`, `docker-compose-v2`). They are not
-on the AMI but they are one `apt-get` away, and noble ships Compose 2.24 or newer, which covers the
-`start_interval` healthchecks the Compose files use. No third-party apt repository is added to the
-host.
+The host sets itself up on first boot. cloud-init, Canonical's first-boot service preinstalled in
+every Ubuntu AMI, runs a bootstrap script rendered by OpenTofu exactly once: it installs Docker,
+mounts the durable volumes, clones this repository and installs the systemd units. It creates no
+secret and starts no service; that work belongs to the provision and deploy scripts, which can
+re-run.
 
-### Three volumes with three different lifetimes
+Docker and Compose come from Ubuntu's own archive (`docker.io`, `docker-compose-v2`). Ubuntu 24.04
+(codenamed noble) ships Compose 2.24 or newer, which covers the `start_interval` healthchecks the
+Compose files use. No third-party apt repository is added to the host.
 
-| Volume            | Size          | Holds                                                | On destroy      |
-| ----------------- | ------------- | ---------------------------------------------------- | --------------- |
-| Root              | AMI default   | OS, packages, the git checkout                       | Goes with the VM |
-| **Control plane** | 50 GB gp3     | Postgres data, OpenBao raft, Caddy certs, rendered state | `prevent_destroy` |
-| **Data plane**    | 500 GB gp3    | Piri blobs, Ingot spool and LSM segments             | `prevent_destroy` |
+### Two Compose projects
+
+Everything the node runs is two Compose projects. `platform` holds OpenBao, Postgres, Caddy and
+Grafana Alloy. `apps` holds Piri and Ingot. They join a shared external Docker network, `filone`,
+created once by the bootstrap script, so neither project owns it.
+
+This split makes it easy to reuse the same mechanism to deploy nodes to environments where
+the dependencies are provided and managed differently, e.g. by the node operator.
+
+### Three volumes with different lifetimes
+
+| Volume            | Size        | Holds                                                    | On destroy        |
+| ----------------- | ----------- | -------------------------------------------------------- | ----------------- |
+| Root              | AMI default | OS, packages, the git checkout                           | Goes with the VM  |
+| **Control plane** | 50 GB gp3   | Postgres data, OpenBao raft, Caddy certs, rendered state | `prevent_destroy` |
+| **Data plane**    | 500 GB gp3  | Piri blobs, Ingot spool and LSM segments                 | `prevent_destroy` |
 
 Both data volumes are encrypted, carry `prevent_destroy`, and are mounted by cloud-init behind a
-format-once guard so a reattach never reformats a volume that already has a filesystem.
+format-once guard so a reattach never reformats a volume that already has a
+filesystem.
 
 The control plane is a volume of its own rather than a directory on the root filesystem, and that is
 the whole point of the layout: it makes the VM disposable. Terminating and replacing the instance
@@ -87,7 +83,7 @@ resources in the node's own root module.
 
 There is one Piri per region. The service is called `piri`, its key is `piri.pem`, its delegation is
 the piri proof. smelt's `piri-0` suffix, which anticipated several nodes per box, is not carried
-over; a second node in a region would be a new region label, not a suffix.
+over into the dev instance. We can explore multi-piri setup in the future.
 
 ### The region label is `us-east-9`
 
@@ -103,7 +99,7 @@ signs with.
 ## Secrets
 
 Every secret the node holds lives in a **local OpenBao**, transit-sealed by the central OpenBao at
-`ssm.dev.forge-sandbox.fil.one`. This is RFC 21's model, and the reason for it is the kill lever:
+`ssm.dev.forge-sandbox.fil.one`. This is [RFC 21]'s model, and the reason for it is the kill lever:
 central can revoke a node's ability to unseal, and the next restart of that node comes back sealed
 and useless.
 
@@ -133,9 +129,8 @@ it from then on.
 
 Two alternatives were considered. Wrapped enrollment tokens add a single-use exchange that has to be
 delivered on exactly the same channel as the token itself, which buys nothing at one node. AWS IAM
-auth removes the shared secret entirely and is the right long-term answer, but it binds the node's
-identity to an AWS instance profile — a poor fit for appliances that will eventually run outside
-AWS, and a larger change to the central side than the first node justifies.
+auth removes the shared secret entirely, but it binds the node's identity to an AWS instance profile
+— a poor fit for appliances that will eventually run outside AWS.
 
 ### Secrets reach Piri and Ingot as rendered files
 
@@ -148,11 +143,9 @@ into **`/run/filone/secrets`**, a root-only tmpfs mounted read-only into the con
 happens on every deploy; services restart only when the rendered content actually changed, compared
 by hash. Nothing secret is written to a disk that survives a reboot.
 
-RFC 21 says nothing secret sits in a plain file, and a tmpfs file is still a file. This is a
+[RFC 21] says nothing secret sits in a plain file, and a tmpfs file is still a file. This is a
 concession to what Piri and Ingot can consume, not a preference, and it is listed in the README as
-work to do before production: teach both services to read their secrets from OpenBao directly. A
-bao-agent template sidecar would remove the rendering step from the deploy scripts and is the
-natural next move once the file dependency is gone.
+work to do before production: teach both services to read their secrets from OpenBao directly.
 
 ## Keys are generated on the node
 
@@ -163,11 +156,11 @@ is ever on an operator's laptop or in OpenTofu state.
 The accepted cost: the control-plane volume is the only copy of the node's identity. Lose it and the
 node is a new node — new DIDs, full re-onboarding at central.
 
-Tooling is three pinned binaries and no build toolchain on the host. `ucantool` generates the
-Ed25519 identities and signs the Piri delegation to sprue. `cast wallet new` generates the EVM owner
-wallet — a single binary extracted from a pinned Foundry release, not the whole toolchain.
-`openssl rand` generates passwords. cloud-init installs both binaries pinned and
-checksum-verified.
+Tooling is three single-purpose binaries and no build toolchain on the host. `ucantool` generates
+the Ed25519 identities and signs the Piri delegation to sprue. `cast wallet new` generates the EVM
+owner wallet — a single binary extracted from a pinned Foundry release, not the whole toolchain.
+`openssl rand` generates passwords. cloud-init installs `ucantool` and `cast`, pinned and
+checksum-verified; `openssl` ships with Ubuntu.
 
 The operator supplies exactly three secrets by hand: the OpenBao seal token, the chain.love access
 token, and the Grafana Cloud push token.
@@ -299,3 +292,5 @@ compiling Go on the node. That repository publishes no binaries today.
 of the key it just made, and nothing reads one back. Provisioning works around this by writing each
 DID into OpenBao beside its key at generation time, so a re-run reads the DID rather than deriving
 it. A `ucantool identity did <file>` subcommand would remove the workaround.
+
+[RFC 21]: https://github.com/fil-one/RFC/pull/21
