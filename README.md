@@ -97,8 +97,8 @@ nothing: that is the kill lever.
 
 Keys are generated on the node and never leave it. Provisioning creates the two Ed25519 identities,
 the EVM owner wallet and every password directly into the local OpenBao. The operator supplies three
-things by hand and nothing else: the seal token, the chain.love access token and the Grafana Cloud
-push token.
+things by hand and nothing else: the wrapping token the seal token is claimed with, the chain.love
+access token and the Grafana Cloud push token.
 
 Piri and Ingot read their configuration from files, secrets included, so the deploy scripts render
 what they need into `/run/filone/secrets` — a root-only tmpfs, mounted read-only into the
@@ -111,7 +111,8 @@ Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:
 
 1. Apply `terraform/envs/bootstrap/nonprod` by hand, once per account.
 2. Apply `terraform/envs/dev`. cloud-init prepares the box; SSM Session Manager reaches it.
-3. Mint the seal token, which is bound to the Elastic IP the apply just allocated.
+3. Have central mint the seal token, which is bound to the Elastic IP the apply just allocated,
+   and send back the wrapping token that claims it.
 4. Run `provision-platform.sh` on the node: initialise OpenBao, install the identity tooling,
    generate keys, start the platform.
 5. Onboard against central, then run `provision-apps.sh`.

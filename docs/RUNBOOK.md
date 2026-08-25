@@ -15,9 +15,11 @@ Two things a node needs are built elsewhere. The first blocks everything; the se
 onboarding.
 
 **The transit key at central**, in infra-central, on the existing `transit/` mount. Without it the
-node's OpenBao starts and stays sealed, and nothing else on the node can run.
-`scripts/operator/mint-seal-token.sh` creates the key if it is missing, so an operator with a
-central token that can write `transit/keys/*` gets it as a side effect of minting the token.
+node's OpenBao starts and stays sealed, and nothing else on the node can run. It is created by
+adding this node's region label to `appliance_regions` in the stage's `terraform.tfvars` and
+applying, which infra-central's
+[appliance onboarding guide](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md)
+covers.
 
 **The onboarding Lambda**, also in infra-central. Until it exists, do the four registration steps by
 hand — see [Onboarding by hand](#onboarding-by-hand) — and treat that section as temporary.
@@ -67,13 +69,17 @@ docker network ls | grep filone
 
 ### 3. The seal token
 
-Only possible now: the token is bound to the address the apply just allocated.
+Central mints it, and only now: the token is bound to the address the apply just allocated. Send
+whoever runs infra-central the Elastic IP, and they run
 
 ```sh
-BAO_TOKEN=<central token> scripts/operator/mint-seal-token.sh dev
+make mint-appliance-token STAGE=dev REGION=us-east-9 NODE_IP=<the elastic ip>
 ```
 
-It prints the token once. Nothing stores it on the operator's machine.
+What comes back to you is a **wrapping token**, not the seal token itself. The credential stays
+inside the central OpenBao until the node claims it in step 4. The wrapping token can be spent once
+and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
+better.
 
 ### 4. The platform
 
@@ -85,7 +91,8 @@ cd /opt/filone/infra-nodes
 scripts/host/provision-platform.sh
 ```
 
-It asks for the seal token, initialises OpenBao, and prints **one recovery key and one root token**.
+It asks for the wrapping token, exchanges it at central for the seal token, initialises OpenBao,
+and prints **one recovery key and one root token**.
 Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
 neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
 
@@ -235,8 +242,8 @@ central still carries the old ones.
 **1. Rebuild.** Attach a fresh control volume (or replace the instance and let cloud-init mount
 one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
 identities. The transit key at central is per-node, not per-identity, so it stays. The seal token
-lives on the root volume and survives unless the instance was replaced too; mint a new one if it
-was.
+lives on the root volume and survives unless the instance was replaced too; if it was, ask central
+for a new wrapping token.
 
 **2. Remove the old identity at central.** Delete the old Piri DID from the delegator's allow
 list — `aws dynamodb delete-item` mirrors the put in [Onboarding by hand](#onboarding-by-hand) —
@@ -250,6 +257,11 @@ The data volume still holds the old identity's blobs and spool. Dev data is disp
 start clean rather than carry data the new identity cannot serve.
 
 ## When something is wrong
+
+**`provision-platform.sh` cannot exchange the wrapping token.** A wrapping token can be spent once,
+so a token central refuses inside its 24-hour window is one somebody else has already spent. Treat
+it as a compromise: ask central to re-mint with `TOKEN_ARGS=--reissue`, which revokes the token that
+was taken, and work out who could read the channel it was delivered on.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key
