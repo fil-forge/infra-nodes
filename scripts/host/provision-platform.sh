@@ -20,17 +20,84 @@ echo "=== provision platform ($FILONE_NODE) ==="
 
 # --- 1. The seal token ------------------------------------------------------
 
-# Minted at central by scripts/operator/mint-seal-token.sh, which can only run
-# after the apply that allocated this node's Elastic IP, because the token is
-# bound to that address.
+# Central mints this token wrapped, so an operator carries a single-use wrapping
+# token here and the seal token itself stays inside the central OpenBao until
+# this node claims it below. Nothing but this exchange ever sees the credential,
+# and because the exchange can happen once, a token central refuses is one that
+# has already been spent, whether by somebody else or by a run of this script
+# that broke off before it stored anything.
+#
+# Minting waits on the apply that allocated this node's Elastic IP, because the
+# token central mints is bound to that address.
 if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
+  central="$(central_seal_addr)"
+  echo "[1/7] Claiming the seal token from $central"
   echo
-  echo "This node needs its OpenBao seal token. Run scripts/operator/mint-seal-token.sh"
-  echo "on a machine with credentials for the central OpenBao, then paste the token here."
-  echo "It is not echoed, and it is stored 0400 root."
-  read -rsp "seal token: " seal_token
+  echo "  Central runs 'make mint-appliance-token' in infra-central and hands back a"
+  echo "  wrapping token. Paste it here; it is not echoed. Exchanging it spends it, and"
+  echo "  what comes back is stored 0400 root."
+  read -rsp "wrapping token: " wrapping_token
   echo
-  [ -n "$seal_token" ] || die "no token given"
+  [ -n "$wrapping_token" ] || die "no wrapping token given"
+
+  # curl puts --header values in its own argv, where anything on the host that
+  # can read /proc can take the token while the request is in flight, so the
+  # header goes in on stdin. printf is a shell builtin and never gets an argv of
+  # its own. The exit code is kept because it is what says whether the request
+  # ever left, which an `if !` would collapse to 1.
+  curl_status=0
+  response="$(printf 'X-Vault-Token: %s\n' "$wrapping_token" |
+    curl -sS --max-time 30 -w '\n%{http_code}' --header @- \
+      --request POST "$central/v1/sys/wrapping/unwrap")" || curl_status=$?
+  unset wrapping_token
+
+  case "$curl_status" in
+    0) ;;
+    6 | 7)
+      die "could not reach the central OpenBao at $central (curl $curl_status).
+       Nothing left this node, so the wrapping token is unspent: fix the route to
+       central and re-run with the same token." ;;
+    *)
+      die "the exchange with $central broke off mid-flight (curl $curl_status), so
+       whether central spent the wrapping token is unknown, and so is whether the
+       seal token it unwrapped went anywhere. Do not paste this token again: if it
+       was spent, the next attempt is refused and that refusal says nothing about
+       who spent it. Re-mint at central with TOKEN_ARGS=--reissue, which revokes
+       this one, and claim the token that comes back." ;;
+  esac
+
+  status="$(printf '%s' "$response" | tail -1)"
+  # On a 200 this holds the seal token, so it is printed only on a failure.
+  body="$(printf '%s' "$response" | sed '$d')"
+  unset response
+
+  case "$status" in
+    200) ;;
+    400 | 403 | 404)
+      die "central refused the wrapping token (HTTP $status): $body
+       A wrapping token can be spent once and expires 24 hours after it is minted,
+       so this is a token that has already been exchanged or one that has run out.
+       An earlier run of this script that broke off mid-flight spends it the same
+       way; failing that, somebody who could read the channel it was delivered on
+       spent it. Either way this is not a retry: re-mint at central with
+       TOKEN_ARGS=--reissue, which revokes this one." ;;
+    *)
+      die "claiming the seal token failed with HTTP $status: $body" ;;
+  esac
+
+  # Assert the one path the credential comes back on rather than searching for
+  # it. A response shaped any other way is worth stopping on: the alternative is
+  # storing an empty file and finding out at the unseal three steps later.
+  seal_token="$(printf '%s' "$body" | python3 -c '
+import json, sys
+
+token = (json.load(sys.stdin).get("auth") or {}).get("client_token")
+if not token:
+    sys.exit("the unwrapped response carries no auth.client_token")
+print(token)
+')" || die "central returned something other than a wrapped token; nothing was stored"
+  unset body
+
   install -m 0400 /dev/null "$FILONE_SEAL_TOKEN_FILE"
   printf '%s\n' "$seal_token" >"$FILONE_SEAL_TOKEN_FILE"
   unset seal_token

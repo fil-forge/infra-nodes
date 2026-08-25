@@ -29,8 +29,8 @@ services:
     command: ["server", "-config=/etc/openbao/bao.hcl"]
     environment:
       # Address, mount path and key name are in bao.hcl, which is committed. The
-      # token is not, so it arrives here from the 0400 file the operator wrote
-      # at provision, by way of the rendered platform.env.
+      # token is not, so it arrives here from the 0400 file provision-platform.sh
+      # wrote at provision, by way of the rendered openbao.env.
       #
       # OpenBao renews this token itself while it runs, via a lifetime watcher
       # on the transit seal. The renewal timer on the host covers the case the

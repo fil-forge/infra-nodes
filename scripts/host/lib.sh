@@ -106,6 +106,27 @@ write_openbao_env() {
     install -m 0400 /dev/null "$FILONE_SECRETS_DIR/platform.env"
 }
 
+# Where the central OpenBao is, read from the seal stanza in the node's bao.hcl.
+# That stanza is the only statement of the address, so nothing here keeps a
+# second copy that can disagree with the one OpenBao actually seals against.
+#
+# Scoped to the stanza rather than to the whole file. `address` appears in the
+# listener block too, and that block comes first, so the first match in the file
+# is this node's own loopback.
+central_seal_addr() {
+  local config="$FILONE_NODE_DIR/platform/config/openbao/bao.hcl" value
+  value="$(awk '
+    /^seal[[:space:]]+"/ { inside = 1; next }
+    inside && /^}/       { inside = 0 }
+    inside && $1 == "address" && match($0, /"[^"]*"/) {
+      print substr($0, RSTART + 1, RLENGTH - 2)
+      exit
+    }
+  ' "$config")"
+  [ -n "$value" ] || die "no address in the seal stanza of $config"
+  printf '%s' "$value"
+}
+
 bao_is_unsealed() {
   # `bao status` exits 0 unsealed, 2 sealed, 1 unreachable, and needs no token.
   docker exec -i -e "BAO_ADDR=http://127.0.0.1:8200" "$FILONE_BAO_CONTAINER" \
