@@ -6,7 +6,8 @@
 #
 # Deliberately narrow. It updates the checkout, works out which of the two
 # compose projects the new commits touch, and calls the ordinary deploy scripts.
-# It creates nothing, prompts for nothing, and holds no secret.
+# It creates nothing and prompts for nothing. The one secret it touches is the
+# node's own deploy token, which it renews and never prints.
 #
 # The ref it tracks is FILONE_GIT_REF in /etc/filone/node.conf, which is the
 # only statement of it. Point a node at a feature branch by editing that file.
@@ -138,7 +139,14 @@ deploy_apps=0
 if project_is_stale platform "$shared_paths|^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
 if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
 
-# --- 4. Deploy --------------------------------------------------------------
+# --- 4. Renew the local OpenBao token ---------------------------------------
+
+# Every pass, including a pass that deploys nothing. deploy-platform.sh renews
+# it too, but a node can go days without a platform commit, and the token's
+# period is shorter than that.
+renew_bao_token
+
+# --- 5. Deploy --------------------------------------------------------------
 
 # From the checkout, not from the copy this script re-exec'd out of. A commit
 # that fixes a deploy script has to take effect on the pass that pulls it: the

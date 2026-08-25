@@ -162,6 +162,16 @@ bao_is_unsealed() {
     bao status >/dev/null 2>&1
 }
 
+# Renew the node's local deploy token. It is periodic, which means it renews
+# forever but only for as long as something keeps renewing it. Nothing else on
+# the node does, so this runs on every reconcile pass, including a pass with
+# nothing to deploy: let the period lapse and the next deploy stops at its first
+# secret read.
+renew_bao_token() {
+  bao token renew >/dev/null ||
+    die "could not renew the local OpenBao deploy token"
+}
+
 # Read one field. Missing paths and missing fields both fail loudly rather than
 # rendering an empty string into a config file.
 bao_get() {
