@@ -49,8 +49,16 @@ prometheus.remote_write "grafana_cloud" {
 // The host's journal: cloud-init, the reconcile timer, docker itself, and any
 // unit that fails. This is where a failed deploy is legible after the fact.
 loki.source.journal "host" {
-	forward_to    = [loki.write.grafana_cloud.receiver]
-	labels        = {job = "journal"}
+	forward_to = [loki.write.grafana_cloud.receiver]
+
+	// The journal is the host itself, not any one container, so it carries the
+	// -host service name rather than a per-unit one. The unit is on its own
+	// label below, which is what narrows a query to the failing timer.
+	labels = {
+		job          = "journal",
+		service_name = sys.env("SERVICE_NAME_PREFIX") + "-host",
+	}
+
 	relabel_rules = loki.relabel.journal.rules
 }
 
@@ -82,6 +90,19 @@ discovery.relabel "containers" {
 		source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
 		target_label  = "compose_project"
 	}
+
+	// The label Grafana groups a service by, built from the compose service
+	// name. Two nodes in the same stage and region deliberately share it: it
+	// names the service, and the node label is what tells the instances apart.
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		// (.+) rather than the default (.*): a container started by hand carries
+		// no compose label, and the rule skips it instead of shipping a name
+		// that ends in a dash.
+		regex         = "(.+)"
+		replacement   = sys.env("SERVICE_NAME_PREFIX") + "-$1"
+		target_label  = "service_name"
+	}
 }
 
 loki.source.docker "containers" {
@@ -109,6 +130,18 @@ prometheus.exporter.unix "host" {
 
 prometheus.scrape "host" {
 	targets         = prometheus.exporter.unix.host.targets
-	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+	forward_to      = [prometheus.relabel.host.receiver]
 	scrape_interval = "60s"
+}
+
+// service_name goes on the series rather than in external_labels, which would
+// stamp every series the writer carries. Once Piri and Ingot expose their own
+// /metrics through the same writer, their series need their own names.
+prometheus.relabel "host" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	rule {
+		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-host"
+		target_label = "service_name"
+	}
 }

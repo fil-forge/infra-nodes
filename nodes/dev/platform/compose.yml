@@ -158,6 +158,10 @@ services:
       - GRAFANA_PUSH_TOKEN=${GRAFANA_PUSH_TOKEN}
       - FILONE_NODE=${FILONE_NODE}
       - REGION_LABEL=${REGION_LABEL}
+      # Prefix for the service_name label on every log stream and metric series
+      # Alloy ships. Composed here so the format is written once instead of in
+      # each relabel rule.
+      - SERVICE_NAME_PREFIX=appliance-${STAGE}-${REGION_LABEL}
     volumes:
       - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
       # Read-only, all three. Alloy discovers containers and reads their logs
