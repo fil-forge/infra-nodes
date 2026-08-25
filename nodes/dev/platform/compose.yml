@@ -21,10 +21,10 @@ services:
   openbao:
     image: ${OPENBAO_IMAGE}
     container_name: filone-openbao
-    # The image drops to the `openbao` user only when it starts as root, and the
-    # raft directory on the control volume is root-owned. Staying root keeps the
-    # data directory readable and matches the same call in smelt's staging
-    # Vault.
+    # Start the entrypoint as root so it can chown the bind mount below, which
+    # cloud-init creates root-owned. It chowns /openbao/file, /openbao/config
+    # and /openbao/logs and then drops to the `openbao` user, so the server
+    # itself never runs as root and the raft path has to be one of those three.
     user: "0:0"
     command: ["server", "-config=/etc/openbao/bao.hcl"]
     environment:
@@ -39,7 +39,7 @@ services:
       - VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}
     volumes:
       - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
-      - /mnt/filone/control/openbao:/openbao/data
+      - /mnt/filone/control/openbao:/openbao/file
     # No ports and no filone network. The listener is on the container's
     # loopback, so the only way to reach this API is `docker exec`, which is
     # root on the host.
@@ -173,6 +173,13 @@ services:
       # Where deploy scripts stamp deploy_last_success_timestamp.
       - /mnt/filone/control/state/metrics:/metrics:ro
       - /mnt/filone/control/alloy:/var/lib/alloy/data
+      # The host's own filesystems, processes and devices, for the node
+      # exporter. rslave so a volume mounted on the host after this container
+      # started still shows up here; without it the appliance's EBS mounts would
+      # be invisible and only the container's overlay would be reported.
+      - /:/host/root:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
     restart: unless-stopped
     networks: [filone]
 

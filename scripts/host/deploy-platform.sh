@@ -16,6 +16,9 @@ filone_init
 
 echo "=== deploy platform ($FILONE_NODE) ==="
 
+require_configured GRAFANA_LOGS_USER 000000
+require_configured GRAFANA_METRICS_USER 000000
+
 echo "[1/5] Reading secrets"
 write_openbao_env
 

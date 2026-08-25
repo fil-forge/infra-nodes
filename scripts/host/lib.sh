@@ -58,6 +58,18 @@ filone_init() {
   FILONE_DEPLOY_START="$(date +%s)"
 }
 
+# Fail on a node.env value that is still the placeholder it was committed with.
+#
+# Some values cannot be known until the account they name exists, so they are
+# committed as an obviously-wrong string. Nothing downstream rejects them: a
+# Grafana push with user id 000000 is refused by Grafana and Alloy keeps
+# running, so without this the deploy stamps success while the node is invisible.
+require_configured() {
+  local name="$1" placeholder="$2"
+  [ "${!name}" != "$placeholder" ] ||
+    die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
+}
+
 # --- OpenBao ---------------------------------------------------------------
 
 # Run the bao CLI inside the OpenBao container. The container publishes no port
@@ -82,9 +94,13 @@ write_openbao_env() {
   [ -r "$FILONE_SEAL_TOKEN_FILE" ] ||
     die "no seal token at $FILONE_SEAL_TOKEN_FILE; run provision-platform.sh"
 
+  # write_secret_file returns 1 for "unchanged", which is not a failure. It
+  # calls die on an actual write failure, so nothing here has to inspect the
+  # status: a `|| true` would also disable errexit inside the function and let
+  # a failed mv leave a stale openbao.env behind.
   write_secret_file "$FILONE_SECRETS_DIR/openbao.env" \
     "SEAL_TOKEN=$(cat "$FILONE_SEAL_TOKEN_FILE")
-" || true
+" || [ "$?" -eq 1 ]
 
   [ -f "$FILONE_SECRETS_DIR/platform.env" ] ||
     install -m 0400 /dev/null "$FILONE_SECRETS_DIR/platform.env"
@@ -110,6 +126,10 @@ bao_has() {
   bao kv get -mount="$FILONE_BAO_MOUNT" -field="$2" "$1" >/dev/null 2>&1
 }
 
+bao_path_exists() {
+  bao kv get -mount="$FILONE_BAO_MOUNT" "$1" >/dev/null 2>&1
+}
+
 # Write a field only if it is not already there. Key generation runs on every
 # provision, and a second run must not mint a new identity for a node that is
 # already registered with central.
@@ -119,8 +139,17 @@ bao_put_if_absent() {
     echo "  $path#$field already set, keeping it"
     return 0
   fi
-  bao kv patch -mount="$FILONE_BAO_MOUNT" "$path" "$field=-" <<<"$value" >/dev/null ||
-    bao kv put -mount="$FILONE_BAO_MOUNT" "$path" "$field=-" <<<"$value" >/dev/null
+  # patch adds a field, put replaces the whole data map. Which one is correct
+  # depends on whether the path is there at all, so this asks rather than trying
+  # patch and falling back: a patch that failed for any other reason would send
+  # a put at a populated path and delete every field already on it.
+  if bao_path_exists "$path"; then
+    bao kv patch -mount="$FILONE_BAO_MOUNT" "$path" "$field=-" <<<"$value" >/dev/null ||
+      die "could not add $field to $FILONE_BAO_MOUNT/$path"
+  else
+    bao kv put -mount="$FILONE_BAO_MOUNT" "$path" "$field=-" <<<"$value" >/dev/null ||
+      die "could not create $FILONE_BAO_MOUNT/$path"
+  fi
   echo "  $path#$field written"
 }
 
@@ -138,8 +167,13 @@ render_template() {
   local template="$1" destination="$2" tmp
   [ -r "$template" ] || die "no template at $template"
 
-  tmp="$(mktemp "$FILONE_SECRETS_DIR/.render.XXXXXX")"
-  chmod 0400 "$tmp"
+  # Every write below is checked by hand. Both of these functions answer
+  # "changed?" through their exit status, so callers invoke them in an OR-list,
+  # and bash turns errexit off for the whole body of a function called that way.
+  # An unchecked mktemp or mv would then be silently ignored and the caller
+  # would carry on with a stale or missing file.
+  tmp="$(mktemp "$FILONE_SECRETS_DIR/.render.XXXXXX")" || die "mktemp failed in $FILONE_SECRETS_DIR"
+  chmod 0400 "$tmp" || die "could not chmod $tmp"
 
   if ! python3 -c '
 import os, re, sys
@@ -173,26 +207,26 @@ with open(destination, "w") as handle:
     return 1
   fi
 
-  mv "$tmp" "$destination"
-  chmod 0400 "$destination"
+  mv "$tmp" "$destination" || die "could not write $destination"
+  chmod 0400 "$destination" || die "could not chmod $destination"
   return 0
 }
 
 # Write a literal secret into the tmpfs, same 0400 and same changed/unchanged
-# answer as render_template.
+# answer as render_template, and the same hand-checked writes.
 write_secret_file() {
   local destination="$1" content="$2" tmp
-  tmp="$(mktemp "$FILONE_SECRETS_DIR/.write.XXXXXX")"
-  chmod 0400 "$tmp"
-  printf '%s' "$content" >"$tmp"
+  tmp="$(mktemp "$FILONE_SECRETS_DIR/.write.XXXXXX")" || die "mktemp failed in $FILONE_SECRETS_DIR"
+  chmod 0400 "$tmp" || die "could not chmod $tmp"
+  printf '%s' "$content" >"$tmp" || die "could not write $tmp"
 
   if [ -f "$destination" ] && cmp -s "$tmp" "$destination"; then
     rm -f "$tmp"
     return 1
   fi
 
-  mv "$tmp" "$destination"
-  chmod 0400 "$destination"
+  mv "$tmp" "$destination" || die "could not write $destination"
+  chmod 0400 "$destination" || die "could not chmod $destination"
   return 0
 }
 
@@ -243,6 +277,18 @@ wait_healthy() {
   echo "==> waiting for health (timeout ${timeout}s)"
   while :; do
     local bad=0 pending=0 name status health restarts exitcode started_at started_epoch
+    local ids inspected
+
+    # Read both commands into variables before the loop. Feeding the loop from
+    # a process substitution throws their exit status away, so a docker daemon
+    # that went down after `up` would yield no rows, leave bad and pending at
+    # zero, and be read as every service healthy.
+    ids="$("$compose_fn" ps -aq)" || die "could not list the project's containers"
+    [ -n "$ids" ] || die "the project has no containers"
+    # shellcheck disable=SC2086
+    inspected="$(docker inspect \
+      -f '{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}|{{.State.ExitCode}}|{{.State.StartedAt}}' \
+      $ids)" || die "could not inspect the project's containers"
 
     while IFS='|' read -r name status health restarts exitcode started_at; do
       name="${name#/}"
@@ -271,9 +317,7 @@ wait_healthy() {
         *)
           pending=$((pending + 1)) ;;
       esac
-    done < <(docker inspect \
-      -f '{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}|{{.State.ExitCode}}|{{.State.StartedAt}}' \
-      $("$compose_fn" ps -aq))
+    done <<<"$inspected"
 
     if [ "$bad" -gt 0 ]; then
       "$compose_fn" ps -a

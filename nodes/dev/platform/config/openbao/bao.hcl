@@ -10,8 +10,13 @@
 # has to be up before anything can read a secret, and Postgres's own password is
 # one of those secrets. infra-central runs the Postgres backend because Fargate
 # has no durable disk. This box has one.
+#
+# /openbao/file rather than a path of our own: the image's entrypoint chowns
+# that directory to the `openbao` user before it drops to it, so the bind mount
+# cloud-init creates root-owned becomes writable by the server. A custom path
+# would stay root-owned and raft could not create its files there.
 storage "raft" {
-  path    = "/openbao/data"
+  path    = "/openbao/file"
   node_id = "filone-node"
 }
 

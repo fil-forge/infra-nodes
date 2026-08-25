@@ -120,8 +120,23 @@ loki.source.docker "containers" {
 // this container does not have — cgroups for cAdvisor, the dbus socket for the
 // systemd collector — is left out rather than shipped broken; container health
 // is already visible through the deploy gate and the journal.
+//
+// netdev is out for the same reason and cannot be brought back by a mount:
+// /proc/net resolves through /proc/self, so it reports whichever network
+// namespace the reader is in. Only host network mode would give this container
+// the appliance's interfaces, and that would also put Alloy's own listener on
+// the host.
+//
+// The three paths below point the remaining collectors at the host mounts in
+// compose.yml. Without them, filesystem would report the container's overlay
+// and describe none of the EBS volumes this node's capacity actually depends
+// on.
 prometheus.exporter.unix "host" {
-	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "netdev", "textfile"]
+	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "textfile"]
+
+	rootfs_path = "/host/root"
+	procfs_path = "/host/proc"
+	sysfs_path  = "/host/sys"
 
 	textfile {
 		directory = "/metrics"

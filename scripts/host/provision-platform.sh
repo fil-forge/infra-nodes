@@ -103,7 +103,7 @@ if [ ! -r "$FILONE_BAO_TOKEN_FILE" ]; then
 
   bao policy write filone-deploy - <<POLICY >/dev/null
 path "$FILONE_BAO_MOUNT/data/*" {
-  capabilities = ["create", "read", "update"]
+  capabilities = ["create", "read", "update", "patch"]
 }
 path "$FILONE_BAO_MOUNT/metadata/*" {
   capabilities = ["read", "list"]
