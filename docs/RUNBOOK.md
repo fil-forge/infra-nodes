@@ -4,15 +4,11 @@ Bringing up a FilOne Appliance node, and what to do when one misbehaves.
 
 - [Prerequisites in other repositories](#prerequisites-in-other-repositories)
 - [Bringing up a node](#bringing-up-a-node)
-- [Onboarding by hand](#onboarding-by-hand)
 - [Day-to-day operations](#day-to-day-operations)
 - [Re-onboarding after identity loss](#re-onboarding-after-identity-loss)
 - [When something is wrong](#when-something-is-wrong)
 
 ## Prerequisites in other repositories
-
-Two things a node needs are built elsewhere. The first blocks everything; the second blocks
-onboarding.
 
 **The transit key at central**, in infra-central, on the existing `transit/` mount. Without it the
 node's OpenBao starts and stays sealed, and nothing else on the node can run. It is created by
@@ -21,8 +17,9 @@ applying, which infra-central's
 [appliance onboarding guide](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md)
 covers.
 
-**The onboarding Lambda**, also in infra-central. Until it exists, do the four registration steps by
-hand — see [Onboarding by hand](#onboarding-by-hand) — and treat that section as temporary.
+That guide is the other half of steps 3 and 5 below. Whoever runs infra-central mints the seal token
+and registers the node; nothing in this repository can do either, and nothing in that one can read
+this node's keys.
 
 ## Bringing up a node
 
@@ -105,15 +102,27 @@ retries and the deploy's health gate may time out; re-running `deploy-platform.s
 
 ### 5. Onboarding, then the apps
 
+On the node:
+
 ```sh
-FILONE_ONBOARD_FUNCTION=<lambda> scripts/operator/onboard.sh dev
+scripts/host/onboarding-request.sh
 ```
 
-Then on the node:
+It prints the node's Piri DID, its public URL and the delegation it signed with its own Piri key,
+in the form central's `make onboard-appliance` takes. Send that to whoever runs infra-central. The
+Ingot identity is not in it: central derives that from the region label, so there is nothing to
+mistype.
+
+What comes back is hilt's delegation to this node's Ingot, the one piece of onboarding only central
+can sign. Install it and start the apps:
 
 ```sh
+scripts/host/store-hilt-proof.sh ingot-proof.txt
 scripts/host/provision-apps.sh
 ```
+
+A second onboarding run at central is safe. It performs only what is missing and returns the same
+delegation byte for byte, so a node that lost its copy can ask for it again.
 
 Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means the
 node's DID is not on the delegator's allow list, which means onboarding did not complete.
@@ -121,7 +130,7 @@ node's DID is not on the delegator's allow list, which means onboarding did not 
 `provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
 `/readyz`, Ingot answers `/health`, and both hostnames serve over HTTPS with issued certificates.
 
-### 6. The timer
+### 6. The timers
 
 ```sh
 systemctl enable --now filone-reconcile.timer
@@ -132,54 +141,14 @@ systemctl list-timers | grep filone
 From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
 `/etc/filone/node.conf` names, which cloud-init writes as `main`.
 
-## Onboarding by hand
-
-Temporary, for as long as infra-central has no onboarding Lambda. Four steps, in this order. The
-first must precede Piri's first `piri init`.
-
-Read the node's DIDs and its Piri delegation first, in an SSM session on the node:
-
-```sh
-sudo -i
-export BAO_TOKEN=$(cat /etc/filone/bao-token)
-read_field() {
-  docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN filone-openbao \
-    bao kv get -mount=filone -field="$2" "$1"
-}
-read_field piri did
-read_field ingot did
-read_field piri sprue_proof
-```
-
-**1. Allow-list the Piri DID at the delegator.** Its DynamoDB table takes the DID as its hash key,
-so this one can be written directly with AWS credentials for the account, without going near a task:
-
-```sh
-aws dynamodb put-item --table-name fc-dev-delegator-allow-list \
-  --item '{"did": {"S": "<piri did>"}}'
-```
-
-**2. Register the provider with sprue**, and **3. add it to hilt** in region `us-east-9`. Both are
-admin CLI calls inside a Fargate task, and no service in infra-central has ECS Exec enabled, so
-these need either ECS Exec turned on for the duration or the equivalent writes made against the
-databases. The smelt scripts `staging-register-piri.sh` and `staging-register-ingot.sh` are the best
-statement of the arguments and the ordering.
-
-**4. Issue hilt's delegation to the Ingot DID**, covering `/s3/request/authorize` and the four
-`/s3/bucket/*` commands, signed with hilt's identity key. Store it on the node:
-
-```sh
-printf '%s' '<proof>' | docker exec -i \
-  -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN filone-openbao \
-  bao kv patch -mount=filone ingot hilt_proof=-
-```
-
-Without step 4, `deploy-apps.sh` refuses to start Ingot and says so.
-
 ## Day-to-day operations
 
 **Deploy a new image.** Edit `nodes/dev/apps/versions.env`, merge. Within five minutes the node
 pulls, waits for a safe proving window, restarts Piri and then Ingot, and health-gates both.
+
+A deploy that fails is retried on the next pass. Each project records the revision it was last
+deployed from, so reconcile compares against that rather than against the previous HEAD; the failed
+commit stays outstanding until a deploy of it succeeds.
 
 **Deploy by hand**, without waiting for the timer:
 
@@ -194,8 +163,10 @@ sed -i 's|^FILONE_GIT_REF=.*|FILONE_GIT_REF=my-branch|' /etc/filone/node.conf
 ```
 
 Set it back to `main` before the branch is deleted. A node tracking a ref that no longer exists
-fails the reset, so reconcile stops and the deploy deadman goes stale. For one pass against a ref
-without changing what the node tracks, `FILONE_GIT_REF=my-branch reconcile.sh` does that instead.
+fails the reset, so reconcile stops and the deploy deadman goes stale.
+
+`/etc/filone/node.conf` is the only statement of the ref. Reconcile reads it on every pass, so an
+environment variable passed to a single run would be undone five minutes later.
 
 **Upgrade ucantool or cast.** Edit the pins in `nodes/dev/node.env`, merge, then run
 `sudo -i /opt/filone/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run
@@ -245,13 +216,14 @@ identities. The transit key at central is per-node, not per-identity, so it stay
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
 for a new wrapping token.
 
-**2. Remove the old identity at central.** Delete the old Piri DID from the delegator's allow
-list — `aws dynamodb delete-item` mirrors the put in [Onboarding by hand](#onboarding-by-hand) —
-and remove or zero-weight the old provider registration in sprue and hilt the same way it was
-registered.
+**2. Remove the old identity at central.** Ask whoever runs infra-central to drop the old Piri DID
+from the delegator's allow list and to deregister or zero-weight the old provider at sprue and hilt.
+Central's guide covers this: hilt in particular refuses to move a provider and raises the same
+"already registered" error whichever region holds the row, so a stale row has to be corrected in its
+database.
 
-**3. Onboard the new DIDs.** All four steps of [Onboarding by hand](#onboarding-by-hand), then
-`provision-apps.sh` and the timers.
+**3. Onboard the new DIDs.** [Step 5](#5-onboarding-then-the-apps) again, then `provision-apps.sh`
+and the timers.
 
 The data volume still holds the old identity's blobs and spool. Dev data is disposable; wipe it and
 start clean rather than carry data the new identity cannot serve.
@@ -268,8 +240,8 @@ was taken, and work out who could read the channel it was delivered on.
 does not exist. A node whose Elastic IP changed has a token bound to the old one and needs a new
 token.
 
-**`deploy-apps.sh` says OpenBao has no hilt-to-ingot delegation.** Onboarding has not finished. See
-[Onboarding by hand](#onboarding-by-hand).
+**`deploy-apps.sh` says OpenBao has no hilt-to-ingot delegation.** Onboarding has not finished. Run
+`onboarding-request.sh` and install what central returns with `store-hilt-proof.sh`.
 
 **`deploy-apps.sh` says PAYER_ADDRESS is still the placeholder.** Read the address the central dev
 stage's signing service pays from — it is in that stage's provision output and in SSM under

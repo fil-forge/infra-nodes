@@ -62,8 +62,8 @@ nodes/
     platform/           OpenBao, Postgres, Caddy, Alloy
     apps/               Piri, Ingot
 scripts/
-  host/                 run on the node: provision, install tools, deploy, reconcile, keygen
-  operator/             run from a laptop with AWS credentials
+  host/                 run on the node: provision, deploy, reconcile, keygen, onboarding
+  operator/             run from a laptop with AWS credentials for the node's account
 systemd/                the reconcile timer and the seal-token renewal timer
 docs/
   RUNBOOK.md            bringing a node up, and what to do when it will not
@@ -115,10 +115,12 @@ Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:
    and send back the wrapping token that claims it.
 4. Run `provision-platform.sh` on the node: initialise OpenBao, install the identity tooling,
    generate keys, start the platform.
-5. Onboard against central, then run `provision-apps.sh`.
-6. Enable `filone-reconcile.timer`.
+5. Run `onboarding-request.sh`, send what it prints to Forge Central, and install the delegation
+   they return with `store-hilt-proof.sh`. Then run `provision-apps.sh`.
+6. Enable `filone-reconcile.timer` and `filone-seal-token-renew.timer`.
 
-One of those needs work that lands in other repositories first, and the runbook says which.
+Steps 3 and 5 are a conversation with Forge Central. Each side sends the other what it cannot
+produce itself, and neither needs a credential for the other's account.
 
 ## What survives a destroy
 
