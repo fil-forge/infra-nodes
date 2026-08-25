@@ -8,8 +8,10 @@
 # it prints and returns hilt's delegation to this node's Ingot, which
 # store-hilt-proof.sh installs.
 #
-# The Ingot identity is not in here. Central derives it from the region label,
-# so there is nothing to send and nothing to mistype.
+# The Ingot identity is not in here. Central derives it from the region label as
+# a did:web under the stage's domain, so there is nothing to send and nothing to
+# mistype, and the DID document publishes whichever key the node currently
+# holds. infra-central's docs/appliance-onboarding.md is where that is decided.
 #
 # Runs after keygen.sh, which creates the identity printed here, and before
 # provision-apps.sh: Piri's first `piri init` asks the delegator for approval and
