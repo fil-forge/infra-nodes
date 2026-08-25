@@ -32,13 +32,22 @@ ingot_changed=0
 
 echo "[1/5] Rendering configuration and keys"
 
-# Piri's identity and its owner wallet. The trailing newline on the PEM is
-# deliberate: OpenBao returns the value without one and a PEM whose END line
-# runs into EOF is not reliably decodable.
-mark piri_changed write_secret_file "$FILONE_SECRETS_DIR/piri.pem" "$(bao_get piri identity_pem)
+# Every read lands in its own assignment before the value is used. bao_get dies
+# on a missing or empty secret, and a die inside the command substitution of a
+# `mark ... write_secret_file "$(bao_get ...)"` only kills that subshell: bash
+# takes the status of the outer call, and the deploy carries on and overwrites a
+# valid key with nothing.
+#
+# The trailing newline on the PEM is deliberate: OpenBao returns the value
+# without one and a PEM whose END line runs into EOF is not reliably decodable.
+PIRI_IDENTITY_PEM="$(bao_get piri identity_pem)"
+mark piri_changed write_secret_file "$FILONE_SECRETS_DIR/piri.pem" "$PIRI_IDENTITY_PEM
 "
+
+PIRI_OWNER_WALLET_KEY="$(bao_get piri owner_wallet_key)"
+PIRI_OWNER_WALLET_HEX="$(piri_wallet_hex "$PIRI_OWNER_WALLET_KEY")"
 mark piri_changed write_secret_file "$FILONE_SECRETS_DIR/piri-owner-wallet.hex" \
-  "$(piri_wallet_hex "$(bao_get piri owner_wallet_key)")"
+  "$PIRI_OWNER_WALLET_HEX"
 
 # Piri's base config carries no secret, only addresses and URLs from node.env.
 mark piri_changed render_template \
@@ -54,7 +63,8 @@ mark piri_changed render_template \
 
 # Ingot's identity, its config (which embeds the DSN and the root credentials)
 # and hilt's delegation to it.
-mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/ingot.pem" "$(bao_get ingot identity_pem)
+INGOT_IDENTITY_PEM="$(bao_get ingot identity_pem)"
+mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/ingot.pem" "$INGOT_IDENTITY_PEM
 "
 
 INGOT_POSTGRES_PASSWORD="$(bao_get postgres ingot_password)"
@@ -70,7 +80,8 @@ mark ingot_changed render_template \
 bao_has ingot hilt_proof ||
   die "OpenBao has no hilt-to-ingot delegation. Run scripts/operator/onboard.sh; without it
        every S3 request Ingot makes to hilt is refused."
-mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/hilt-ingot-proof.txt" "$(bao_get ingot hilt_proof)
+INGOT_HILT_PROOF="$(bao_get ingot hilt_proof)"
+mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/hilt-ingot-proof.txt" "$INGOT_HILT_PROOF
 "
 
 # --- 2. Pull ----------------------------------------------------------------

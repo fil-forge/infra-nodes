@@ -295,16 +295,19 @@ write_secret_file() {
 # keystore record, {"Type":"delegated","PrivateKey":"<base64 raw key>"}, hex
 # again on the outside — piri reads the file, hex-decodes it and unmarshals the
 # JSON. OpenBao holds the bare key, so the wrapping happens here.
+#
+# The key goes in on stdin, not in argv. Another local process can read a root
+# process's /proc/<pid>/cmdline, and this runs on every apps deploy.
 piri_wallet_hex() {
   local raw_key="$1"
-  python3 -c '
+  printf '%s' "$raw_key" | python3 -c '
 import base64, binascii, json, sys
 
-raw = binascii.unhexlify(sys.argv[1])
+raw = binascii.unhexlify(sys.stdin.read().strip())
 record = json.dumps({"Type": "delegated", "PrivateKey": base64.b64encode(raw).decode()},
                     separators=(",", ":"))
 sys.stdout.write(binascii.hexlify(record.encode()).decode())
-' "$raw_key"
+'
 }
 
 # --- Compose ---------------------------------------------------------------
@@ -346,23 +349,54 @@ mark() {
   if "$@"; then flag=1; fi
 }
 
-# The project's fully resolved definition, hashed. An edit to node.env changes a
-# service's environment or its command without changing any rendered file, and
-# compose would recreate the container for it, so what is compared is the
-# definition rather than the files behind it.
+# The project's fully resolved definition, plus the contents of every committed
+# file it bind-mounts, hashed together. An edit to node.env changes a service's
+# environment or its command without changing any rendered file, and an edit to
+# the Caddyfile or to Piri's entrypoint changes neither: compose resolves a bind
+# mount to a path and never looks at what is behind it, so a definition-only
+# hash reads those edits as no change, the deploy picks --no-recreate, and the
+# container keeps serving its old configuration while the hash is recorded as
+# applied.
+#
+# Only bind sources under the node directory are read. That is where the
+# committed files live. The rendered secrets on the tmpfs are already covered by
+# what render_template and write_secret_file return, and the data volumes are
+# not configuration.
 #
 # With a service name, only that service's definition is hashed; without one,
 # the whole project's.
 compose_config_hash() {
   local compose_fn="$1" service="${2:-}"
   "$compose_fn" config --format json |
-    python3 -c '
-import hashlib, json, sys
+    FILONE_HASH_ROOT="$FILONE_NODE_DIR" python3 -c '
+import hashlib, json, os, sys
 
-config = json.load(sys.stdin)
+document = json.load(sys.stdin)
+root = os.path.realpath(os.environ["FILONE_HASH_ROOT"]) + os.sep
+
 if len(sys.argv) > 1:
-    config = config["services"][sys.argv[1]]
-print(hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest())
+    services = {sys.argv[1]: document["services"][sys.argv[1]]}
+    config = services[sys.argv[1]]
+else:
+    services = document.get("services", {})
+    config = document
+
+mounted = {}
+for name in sorted(services):
+    for volume in services[name].get("volumes") or []:
+        if not isinstance(volume, dict) or volume.get("type") != "bind":
+            continue
+        source = volume.get("source")
+        if not source:
+            continue
+        resolved = os.path.realpath(source)
+        if not resolved.startswith(root) or not os.path.isfile(resolved):
+            continue
+        with open(resolved, "rb") as handle:
+            mounted[resolved] = hashlib.sha256(handle.read()).hexdigest()
+
+payload = {"config": config, "mounted": mounted}
+print(hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest())
 ' ${service:+"$service"}
 }
 

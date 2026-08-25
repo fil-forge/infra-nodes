@@ -17,6 +17,9 @@ BASE_CONFIG="/config/piri-base-config.toml"
 DATA_DIR="/data/piri"
 TEMP_DIR="/tmp/piri"
 CONFIG_FILE="${DATA_DIR}/piri-config.toml"
+# The base config init last merged from. Compared on every boot, because a
+# changed address or service URL has to reach the generated config.
+BASE_CONFIG_SNAPSHOT="${DATA_DIR}/piri-base-config.applied.toml"
 
 LOTUS_ENDPOINT="${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
 PUBLIC_URL="${PUBLIC_URL:?PUBLIC_URL must be set}"
@@ -50,10 +53,26 @@ fi
 echo "  DID: $PIRI_DID"
 
 echo "[2/3] Initialising"
-if [ -f "$CONFIG_FILE" ] && grep -q "proof_set" "$CONFIG_FILE" 2>/dev/null; then
-    echo "  config exists, skipping init"
+# init merges the base config with what it discovers on chain and from the
+# registrar, and writes the result to CONFIG_FILE. Skipping it once a config
+# exists would strand every later edit to the base config: a changed contract
+# address, payer or service URL would recreate this container and never reach
+# the config Piri actually serves from.
+#
+# Re-running it is safe. `piri init` reuses an existing provider registration
+# and an existing proof set, and skips delegator registration for a DID that is
+# already registered, so a second run re-merges and rewrites the config without
+# touching anything on chain.
+if [ -f "$CONFIG_FILE" ] && grep -q "proof_set" "$CONFIG_FILE" 2>/dev/null &&
+   cmp -s "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"; then
+    echo "  config exists and the base config is unchanged, skipping init"
 else
-    [ -f "$CONFIG_FILE" ] && rm -f "$CONFIG_FILE"
+    if [ -f "$CONFIG_FILE" ]; then
+        echo "  re-running init to pick up the current base config"
+    fi
+    # CONFIG_FILE is left in place. init truncates it when it writes, and a run
+    # that dies on a network call partway through would otherwise leave the node
+    # with no config at all.
     cd "$DATA_DIR"
     # Built as positional parameters rather than a string run through eval, so
     # every value reaches piri as one argv entry and nothing in it can
@@ -76,7 +95,14 @@ else
     # init calls the registrar for approval, which returns 403 for any DID that
     # is not on the delegator's allow list. That write is the first step of
     # onboarding, so a 403 here means onboarding has not run.
-    "$@"
+    #
+    # stdout goes nowhere. init prints the generated config there, and that
+    # config carries the chain RPC bearer token, which would land in the
+    # container log Alloy ships to Grafana Cloud. Nothing is lost: the same
+    # bytes are what init writes to CONFIG_FILE. Progress and every error go to
+    # stderr and stay on the console.
+    "$@" >/dev/null
+    cp "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"
     echo "  init complete"
 fi
 

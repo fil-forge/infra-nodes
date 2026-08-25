@@ -201,6 +201,9 @@ it for the on-chain calls it makes during provider registration, and writes it i
 generates, which it also prints to stdout. When init runs with the variable set, the generated
 config and init's output both carry the token, so the config follows the same rules as the other
 rendered secret files and init's output must stay out of any log that Alloy ships to Grafana Cloud.
+The entrypoint sends init's stdout to `/dev/null` for that reason. That stream carries only the
+generated config, which init writes to the config file anyway; progress and errors go to stderr and
+stay on the console.
 
 ## Reaching the box
 
@@ -243,11 +246,31 @@ Both deploys wait for Piri's proving window before restarting Piri. `piri status
 answers this directly: exit 0 is safe, exit 1 is proving or in an unproven challenge window, exit 2
 is unable to tell.
 
+The gate fails closed. A node whose config carries no proof set has no proof to miss and skips the
+wait, and that is checked directly rather than inferred from `upgrade-check` declining to answer.
+Past that point the node owes proofs, so exit 2 counts as unsafe: a Piri that will not report its
+proving state until the timeout runs out aborts the deploy. An operator who knows Piri is wedged
+stops the container and re-runs, because a Piri that is already down has no proof in flight.
+
 An apps deploy waits when a rendered file, an image or a service definition changed. A platform
 deploy waits on the same gate when it has anything to apply, then stops Ingot and Piri, rebuilds the
 platform underneath them and starts them again: Postgres and Caddy are what those two run on, so
 recreating either one under a running Piri costs the same proof. A pass that finds nothing changed
 skips the gate and leaves both services running.
+
+The service definition each deploy hashes includes the contents of every committed file the project
+bind-mounts, not just the paths. Compose resolves a bind mount to a path and never reads what is
+behind it, so an edit to the Caddyfile, the Alloy config, OpenBao's `bao.hcl` or Piri's entrypoint
+would otherwise read as no change at all: the deploy would pick `--no-recreate`, record the hash as
+applied, and leave the container serving the file it started with.
+
+Piri's generated config is re-merged when its base config changes. `piri init` writes the config
+Piri serves from by merging the rendered base config with what it discovers on chain and from the
+registrar, so a run that skipped init whenever a config already existed would strand every later
+edit to a contract address, a payer or a service URL. The entrypoint keeps a copy of the base config
+it last merged and re-runs init when the rendered one differs. Re-running is safe: init reuses an
+existing provider registration and an existing proof set, and skips delegator registration for a DID
+that is already registered.
 
 Dev could skip the gate, but we want test this mechanism outside of production, because the gate is
 the mechanism that keeps a production node from failing a proof for an image bump.
