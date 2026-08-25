@@ -39,11 +39,26 @@ fi
 # for a benign reason, so it is established here rather than inferred from the
 # check failing to answer. Everything past this point owes proofs, and a check
 # that will not answer is a reason to stop.
-if ! docker exec -i "$PIRI_CONTAINER" \
-  grep -q proof_set "$PIRI_CONFIG" >/dev/null 2>&1; then
-  echo "  Piri has no proof set yet; nothing to wait for"
-  exit 0
-fi
+#
+# Only grep's own exit 1 counts as "no proof set". A docker exec that could not
+# run at all exits 125 or higher, and reading that as an absent proof set would
+# skip the gate on a daemon hiccup — the failure this check exists to close.
+set +e
+docker exec -i "$PIRI_CONTAINER" grep -q proof_set "$PIRI_CONFIG" >/dev/null 2>&1
+proof_set_probe=$?
+set -e
+
+case "$proof_set_probe" in
+  0) ;;
+  1)
+    echo "  Piri has no proof set yet; nothing to wait for"
+    exit 0
+    ;;
+  *)
+    die "could not read $PIRI_CONFIG in $PIRI_CONTAINER (docker exec exited $proof_set_probe).
+       Whether Piri owes a proof is unknown, so the deploy stops rather than restarting it."
+    ;;
+esac
 
 deadline=$(( $(date +%s) + PDP_GATE_TIMEOUT ))
 
