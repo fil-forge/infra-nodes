@@ -2,7 +2,8 @@
 #
 # Committed, so it carries no secret. The one credential this needs, the token
 # that authenticates to the central OpenBao, arrives as VAULT_TRANSIT_SEAL_TOKEN
-# from the 0400 file the operator delivers at provision.
+# from the 0400 file provision-platform.sh writes when it exchanges the
+# operator's wrapping token at central.
 
 # Raft on the control-plane volume.
 #

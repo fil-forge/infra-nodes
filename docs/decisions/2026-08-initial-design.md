@@ -126,13 +126,18 @@ The node authenticates with an **orphan periodic token, CIDR-bound to its Elasti
 revoking the operator's own token does not cascade into the node; periodic, so it renews forever
 without an expiry cliff; CIDR-bound, so the token is worthless anywhere but on that node. It can
 only be minted after the apply that allocates the EIP, though the key and the policy can be prepared
-at any time. The operator delivers it once, into a root-only `0400` file, and a systemd timer renews
-it from then on.
+at any time. It lands on the node in a root-only `0400` file, and a systemd timer renews it from
+then on.
 
-Two alternatives were considered. Wrapped enrollment tokens add a single-use exchange that has to be
-delivered on exactly the same channel as the token itself, which buys nothing at one node. AWS IAM
-auth removes the shared secret entirely, but it binds the node's identity to an AWS instance profile
-— a poor fit for appliances that will eventually run outside AWS.
+**Central hands the token over wrapped.** infra-central mints it with a wrapping TTL and gives the
+operator a single-use wrapping token. `provision-platform.sh` exchanges that at
+`sys/wrapping/unwrap` and stores what comes back, so the credential never travels on the channel the
+hand-off used. A wrapping token expires in 24 hours and can be spent once, which makes an exchange
+central refuses within that window a compromise rather than a delivery to repeat: somebody else has
+already spent it.
+
+AWS IAM auth would remove the shared secret entirely, but it binds the node's identity to an AWS
+instance profile — a poor fit for appliances that will eventually run outside AWS.
 
 ### Secrets reach Piri and Ingot as rendered files
 
@@ -174,8 +179,8 @@ Each DID is written into OpenBao beside its key at generation time, so a re-run 
 than deriving it. ucantool v0.1.0's `identity inspect` prints the DID of an existing PEM; switching
 to it would remove the stored copy.
 
-The operator supplies exactly three secrets by hand: the OpenBao seal token, the chain.love access
-token, and the Grafana Cloud push token.
+The operator supplies exactly three secrets by hand: the wrapping token the seal token is claimed
+with, the chain.love access token, and the Grafana Cloud push token.
 
 ## Chain access
 

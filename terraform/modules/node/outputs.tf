@@ -4,7 +4,7 @@ output "instance_id" {
 }
 
 output "public_ip" {
-  description = "The address the seal token is bound to. scripts/operator/mint-seal-token.sh needs it, and a change here invalidates the token the node holds."
+  description = "The address the seal token is bound to. Central needs it to mint the token, and a change here invalidates the token the node holds."
   value       = aws_eip.node.public_ip
 }
 

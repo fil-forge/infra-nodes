@@ -20,17 +20,63 @@ echo "=== provision platform ($FILONE_NODE) ==="
 
 # --- 1. The seal token ------------------------------------------------------
 
-# Minted at central by scripts/operator/mint-seal-token.sh, which can only run
-# after the apply that allocated this node's Elastic IP, because the token is
-# bound to that address.
+# Central mints this token wrapped, so an operator carries a single-use wrapping
+# token here and the seal token itself stays inside the central OpenBao until
+# this node claims it below. Nothing but this exchange ever sees the credential,
+# and because the exchange can happen once, a token central refuses is one
+# somebody else has already spent.
+#
+# Minting waits on the apply that allocated this node's Elastic IP, because the
+# token central mints is bound to that address.
 if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
+  central="$(central_seal_addr)"
+  echo "[1/7] Claiming the seal token from $central"
   echo
-  echo "This node needs its OpenBao seal token. Run scripts/operator/mint-seal-token.sh"
-  echo "on a machine with credentials for the central OpenBao, then paste the token here."
-  echo "It is not echoed, and it is stored 0400 root."
-  read -rsp "seal token: " seal_token
+  echo "  Central runs 'make mint-appliance-token' in infra-central and hands back a"
+  echo "  wrapping token. Paste it here; it is not echoed. Exchanging it spends it, and"
+  echo "  what comes back is stored 0400 root."
+  read -rsp "wrapping token: " wrapping_token
   echo
-  [ -n "$seal_token" ] || die "no token given"
+  [ -n "$wrapping_token" ] || die "no wrapping token given"
+
+  response="$(curl -sS --max-time 30 -w '\n%{http_code}' \
+    --header "X-Vault-Token: $wrapping_token" \
+    --request POST "$central/v1/sys/wrapping/unwrap")" ||
+    die "could not reach the central OpenBao at $central"
+  unset wrapping_token
+
+  status="$(printf '%s' "$response" | tail -1)"
+  # On a 200 this holds the seal token, so it is printed only on a failure.
+  body="$(printf '%s' "$response" | sed '$d')"
+  unset response
+
+  case "$status" in
+    200) ;;
+    400 | 403 | 404)
+      die "central refused the wrapping token (HTTP $status): $body
+       A wrapping token can be spent once and expires 24 hours after it is minted,
+       so this is a token that has already been exchanged or one that has run out.
+       If nobody on this side exchanged it, somebody who could read the channel it
+       was delivered on did. Treat that as a compromise rather than as a retry:
+       re-mint at central with TOKEN_ARGS=--reissue, which revokes the token that
+       was taken." ;;
+    *)
+      die "claiming the seal token failed with HTTP $status: $body" ;;
+  esac
+
+  # Assert the one path the credential comes back on rather than searching for
+  # it. A response shaped any other way is worth stopping on: the alternative is
+  # storing an empty file and finding out at the unseal three steps later.
+  seal_token="$(printf '%s' "$body" | python3 -c '
+import json, sys
+
+token = (json.load(sys.stdin).get("auth") or {}).get("client_token")
+if not token:
+    sys.exit("the unwrapped response carries no auth.client_token")
+print(token)
+')" || die "central returned something other than a wrapped token; nothing was stored"
+  unset body
+
   install -m 0400 /dev/null "$FILONE_SEAL_TOKEN_FILE"
   printf '%s\n' "$seal_token" >"$FILONE_SEAL_TOKEN_FILE"
   unset seal_token
