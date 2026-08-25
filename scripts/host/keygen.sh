@@ -29,9 +29,9 @@ command -v cast >/dev/null || die "cast is not on PATH; run scripts/host/install
 
 # --- Identities -------------------------------------------------------------
 
-# ucantool prints the PEM on stdout and the DID on stderr. The DID is stored
-# beside the key at the moment it is generated, and every later run reads it
-# rather than deriving it. ucantool v0.1.0 gained `identity inspect`, which
+# ucantool prints the PEM on stdout and the DID on stderr. The DID goes into
+# OpenBao in the same write as the key, and every later run reads it rather than
+# deriving it. ucantool v0.1.0 gained `identity inspect`, which
 # prints the DID of an existing PEM; switching to it would let the DID be
 # derived on demand instead of stored.
 generate_identity() {
@@ -56,8 +56,7 @@ generate_identity() {
   did="$(grep -oE 'did:key:z[a-zA-Z0-9]+' "$did_file")" ||
     die "ucantool identity generate printed no DID"
 
-  bao_put_if_absent "$name" identity_pem "$(cat "$pem_file")"
-  bao_put_if_absent "$name" did "$did"
+  bao_put_if_absent "$name" identity_pem "$(cat "$pem_file")" did "$did"
   echo "  $name identity: $did"
 }
 
@@ -105,6 +104,10 @@ fi
 # re-registering.
 echo "[3/4] Owner wallet"
 if bao_has piri owner_wallet_key; then
+  bao_has piri owner_wallet_address ||
+    die "piri has an owner wallet key in OpenBao but no address beside it. Derive it — read the
+       key from OpenBao and pipe it to 'cast wallet address' — and write it to
+       $FILONE_BAO_MOUNT/piri#owner_wallet_address."
   echo "  already generated ($(bao_get piri owner_wallet_address))"
 else
   wallet="$(cast wallet new)"
@@ -120,8 +123,7 @@ else
     die "could not parse 'cast wallet new' output"
   fi
 
-  bao_put_if_absent piri owner_wallet_key "$private_key"
-  bao_put_if_absent piri owner_wallet_address "$address"
+  bao_put_if_absent piri owner_wallet_key "$private_key" owner_wallet_address "$address"
   unset private_key
   echo "  generated: $address"
 fi

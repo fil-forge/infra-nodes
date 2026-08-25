@@ -151,27 +151,67 @@ bao_path_exists() {
   bao kv get -mount="$FILONE_BAO_MOUNT" "$1" >/dev/null 2>&1
 }
 
-# Write a field only if it is not already there. Key generation runs on every
-# provision, and a second run must not mint a new identity for a node that is
-# already registered with central.
+# Write one or more field/value pairs, in a single OpenBao write, and only if
+# the first field is not already there. Key generation runs on every provision,
+# and a second run must not mint a new identity for a node that is already
+# registered with central.
+#
+# The whole group lands or none of it does, because a key and the metadata that
+# names it are useless apart. A Piri key written without its DID leaves a node
+# that cannot be provisioned and cannot be retried either: the next run finds
+# the key, refuses to mint a second identity, and has nothing to derive the DID
+# from. The first field is the one that is looked up, so pass the key itself
+# first and its metadata after it.
 bao_put_if_absent() {
-  local path="$1" field="$2" value="$3"
+  local path="$1" field="$2" fields json
+  shift
+  [ "$#" -ge 2 ] && [ $(( $# % 2 )) -eq 0 ] ||
+    die "bao_put_if_absent $path: expected field/value pairs, got $# arguments"
+
   if bao_has "$path" "$field"; then
     echo "  $path#$field already set, keeping it"
     return 0
   fi
-  # patch adds a field, put replaces the whole data map. Which one is correct
+
+  json="$(bao_fields_json "$@")" || die "could not encode the fields for $FILONE_BAO_MOUNT/$path"
+
+  # patch adds fields, put replaces the whole data map. Which one is correct
   # depends on whether the path is there at all, so this asks rather than trying
   # patch and falling back: a patch that failed for any other reason would send
   # a put at a populated path and delete every field already on it.
+  #
+  # The values go in over stdin as one JSON object. On the command line they
+  # would be in the container's argv, which every user on the box can read.
+  fields="$(bao_field_names "$@")"
   if bao_path_exists "$path"; then
-    bao kv patch -mount="$FILONE_BAO_MOUNT" "$path" "$field=-" <<<"$value" >/dev/null ||
-      die "could not add $field to $FILONE_BAO_MOUNT/$path"
+    bao kv patch -mount="$FILONE_BAO_MOUNT" "$path" - <<<"$json" >/dev/null ||
+      die "could not add $fields to $FILONE_BAO_MOUNT/$path"
   else
-    bao kv put -mount="$FILONE_BAO_MOUNT" "$path" "$field=-" <<<"$value" >/dev/null ||
+    bao kv put -mount="$FILONE_BAO_MOUNT" "$path" - <<<"$json" >/dev/null ||
       die "could not create $FILONE_BAO_MOUNT/$path"
   fi
-  echo "  $path#$field written"
+  echo "  $path#$fields written"
+}
+
+# Encode field/value pairs as a JSON object. The pairs arrive over stdin, NUL
+# separated, so no secret is ever an argument to anything.
+bao_fields_json() {
+  printf '%s\0' "$@" | python3 -c '
+import json, sys
+
+parts = sys.stdin.buffer.read().split(b"\0")[:-1]
+names, values = parts[0::2], parts[1::2]
+json.dump(dict(zip((n.decode() for n in names), (v.decode() for v in values))), sys.stdout)
+'
+}
+
+bao_field_names() {
+  local names=""
+  while [ "$#" -gt 0 ]; do
+    names="${names:+$names,}$1"
+    shift 2
+  done
+  printf '%s' "$names"
 }
 
 # --- Rendering -------------------------------------------------------------
