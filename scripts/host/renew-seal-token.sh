@@ -16,14 +16,7 @@ filone_init
 
 [ -r "$FILONE_SEAL_TOKEN_FILE" ] || die "no seal token at $FILONE_SEAL_TOKEN_FILE"
 
-BAO_CONFIG="$FILONE_NODE_DIR/platform/config/openbao/bao.hcl"
-
-# The seal stanza in bao.hcl is the only statement of where central is, so read
-# it from there rather than keeping a second copy that can disagree with the one
-# OpenBao actually uses.
-central_addr="$(sed -n 's/^[[:space:]]*address[[:space:]]*=[[:space:]]*"\(https\?:[^"]*\)".*/\1/p' \
-  "$BAO_CONFIG" | head -1)"
-[ -n "$central_addr" ] || die "no seal address in $BAO_CONFIG"
+central_addr="$(central_seal_addr)"
 
 response="$(curl -sS --max-time 30 -w '\n%{http_code}' \
   --header "X-Vault-Token: $(cat "$FILONE_SEAL_TOKEN_FILE")" \

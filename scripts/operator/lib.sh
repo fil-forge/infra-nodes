@@ -33,27 +33,6 @@ tofu_output() {
   echo "$value"
 }
 
-# The seal stanza in the node's bao.hcl is the only statement of where central
-# is and which key this node uses, so everything reads it from there.
-#
-# Scoped to that stanza rather than to the file. `address` appears twice in
-# bao.hcl — once in the listener block, which comes first — so taking the first
-# match in the file would point an operator at the node's own loopback instead
-# of at central.
-bao_hcl_seal_value() {
-  local node="$1" key="$2" value
-  value="$(awk -v key="$key" '
-    /^seal[[:space:]]+"/ { inside = 1; next }
-    inside && /^}/       { inside = 0 }
-    inside && $1 == key && match($0, /"[^"]*"/) {
-      print substr($0, RSTART + 1, RLENGTH - 2)
-      exit
-    }
-  ' "$(node_dir "$node")/platform/config/openbao/bao.hcl")"
-  [ -n "$value" ] || die "no '$key' in the seal stanza of the node's bao.hcl"
-  echo "$value"
-}
-
 # Run a command on the node over SSM and return its stdout.
 #
 # There is no SSH on these boxes and no inbound port for one. Every command sent
