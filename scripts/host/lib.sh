@@ -166,8 +166,9 @@ bao_path_exists() {
 bao_put_if_absent() {
   local path="$1" field="$2" fields json
   shift
-  [ "$#" -ge 2 ] && [ $(( $# % 2 )) -eq 0 ] ||
+  if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
     die "bao_put_if_absent $path: expected field/value pairs, got $# arguments"
+  fi
 
   if bao_has "$path" "$field"; then
     echo "  $path#$field already set, keeping it"

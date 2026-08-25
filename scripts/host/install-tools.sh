@@ -31,8 +31,9 @@ install_from_archive() {
   local name="$1" version="$2" sha256="$3" url="$4" member="$5"
   local stamp="/etc/filone/$name.version"
 
-  [ -n "$version" ] && [ -n "$sha256" ] ||
+  if [ -z "$version" ] || [ -z "$sha256" ]; then
     die "no $name pin: set its version and sha256 in nodes/$FILONE_NODE/node.env"
+  fi
 
   if [ -x "/usr/local/bin/$name" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$version" ]; then
     echo "  $name already at $version"
