@@ -17,7 +17,6 @@ NODE_NAME="${node_name}"
 CONTROL_VOLUME_ID="${control_volume_id}"
 DATA_VOLUME_ID="${data_volume_id}"
 REPOSITORY_URL="${repository_url}"
-REPOSITORY_REF="${repository_ref}"
 
 CHECKOUT_DIR=/opt/filone/infra-nodes
 CONTROL_MOUNT=/mnt/filone/control
@@ -112,18 +111,31 @@ echo "[5/7] Creating the shared docker network"
 # neither races the other to create it and neither deletes it on `down`.
 docker network inspect filone >/dev/null 2>&1 || docker network create filone
 
-echo "[6/7] Cloning $REPOSITORY_URL at $REPOSITORY_REF"
+echo "[6/7] Cloning $REPOSITORY_URL at main"
 # Public repository, so no credential is delivered to the node.
 mkdir -p "$(dirname "$CHECKOUT_DIR")"
 if [ ! -d "$CHECKOUT_DIR/.git" ]; then
-  git clone --branch "$REPOSITORY_REF" "$REPOSITORY_URL" "$CHECKOUT_DIR"
+  git clone --branch main "$REPOSITORY_URL" "$CHECKOUT_DIR"
 fi
 
-# The one piece of node identity that cannot come from the checkout: which
-# directory under nodes/ this box is. Every host script reads it.
+# The pieces of node identity that cannot come from the checkout: which
+# directory under nodes/ this box is, where the checkout lives, and which ref it
+# tracks. Every host script reads them.
+#
+# FILONE_GIT_REF has to be written here rather than inferred from the clone,
+# because systemd runs reconcile.sh with an empty environment and it would
+# otherwise fall back to main on every pass.
+#
+# It is a literal rather than an OpenTofu variable, deliberately. Anything that
+# reaches the node through user_data is subject to user_data_replace_on_change,
+# so a config edit here would destroy the instance and build a new one, which
+# costs a re-provision: the seal token and the OpenBao root token have to be
+# pasted back in by hand. Point a node at a feature branch by editing this line
+# on the box and letting the next reconcile pass pick it up.
 cat > /etc/filone/node.conf <<CONF
 FILONE_NODE=$NODE_NAME
 FILONE_CHECKOUT=$CHECKOUT_DIR
+FILONE_GIT_REF=main
 CONF
 
 echo "[7/7] Installing systemd units"

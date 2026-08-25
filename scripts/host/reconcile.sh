@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Make the node match origin/main, and deploy only what changed.
+# Make the node match the ref it tracks, and deploy only what changed.
 #
 # Runs every five minutes from filone-reconcile.timer. This is how a change
 # reaches a node: merge it, and within five minutes the node is running it.
@@ -7,7 +7,16 @@
 # Deliberately narrow. It updates the checkout, works out which of the two
 # compose projects the new commits touch, and calls the ordinary deploy scripts.
 # It creates nothing, prompts for nothing, and holds no secret.
+#
+# Env overrides:
+#   FILONE_GIT_REF   branch, tag or commit the node tracks, for this run
+#                    only (default: FILONE_GIT_REF in /etc/filone/node.conf,
+#                    or main)
 set -euo pipefail
+
+# Read before filone_init, which sources /etc/filone/node.conf and would
+# overwrite an override passed on the command line with the persistent value.
+git_ref_override="${FILONE_GIT_REF:-}"
 
 # Reconcile replaces the very files it is executing from. Bash reads a script
 # incrementally, so a `git reset --hard` partway through this one can leave the
@@ -25,7 +34,10 @@ trap 'rm -rf "$FILONE_RECONCILE_COPY"' EXIT
 
 filone_init
 
-REF="${FILONE_REF:-main}"
+# The node's own node.conf carries the ref it normally tracks; the environment
+# wins for a single run, which is how a feature branch gets tested on a node
+# without editing anything on the box.
+REF="${git_ref_override:-${FILONE_GIT_REF:-main}}"
 
 echo "=== reconcile ($FILONE_NODE) ==="
 
@@ -42,7 +54,10 @@ fi
 
 before="$(git -C "$FILONE_CHECKOUT" rev-parse HEAD)"
 git -C "$FILONE_CHECKOUT" fetch --quiet --tags --force origin
-git -C "$FILONE_CHECKOUT" reset --quiet --hard "origin/$REF"
+# origin/<ref> for a branch. A tag or a commit sha has no origin/ prefix, and
+# the fetch above brought both local, so fall back to the bare ref.
+git -C "$FILONE_CHECKOUT" reset --quiet --hard "origin/$REF" 2>/dev/null ||
+  git -C "$FILONE_CHECKOUT" reset --quiet --hard "$REF"
 after="$(git -C "$FILONE_CHECKOUT" rev-parse HEAD)"
 
 if [ "$before" = "$after" ]; then

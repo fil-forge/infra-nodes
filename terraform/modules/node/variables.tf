@@ -52,9 +52,3 @@ variable "repository_url" {
   type        = string
   default     = "https://github.com/fil-forge/infra-nodes.git"
 }
-
-variable "repository_ref" {
-  description = "Branch the node tracks. The reconcile timer resets to origin/<ref> every five minutes, so this is the thing that decides what the node runs."
-  type        = string
-  default     = "main"
-}
