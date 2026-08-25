@@ -132,9 +132,10 @@ then on.
 **Central hands the token over wrapped.** infra-central mints it with a wrapping TTL and gives the
 operator a single-use wrapping token. `provision-platform.sh` exchanges that at
 `sys/wrapping/unwrap` and stores what comes back, so the credential never travels on the channel the
-hand-off used. A wrapping token expires in 24 hours and can be spent once, which makes an exchange
-central refuses within that window a compromise rather than a delivery to repeat: somebody else has
-already spent it.
+hand-off used. A wrapping token expires in 24 hours and can be spent once, so an exchange central
+refuses within that window is never a delivery to repeat: the token has been spent, either by
+somebody else or by an earlier attempt that broke off after central accepted the request. The
+script says so and points at the reissue that revokes it.
 
 AWS IAM auth would remove the shared secret entirely, but it binds the node's identity to an AWS
 instance profile — a poor fit for appliances that will eventually run outside AWS.

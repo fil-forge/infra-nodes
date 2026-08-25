@@ -23,8 +23,9 @@ echo "=== provision platform ($FILONE_NODE) ==="
 # Central mints this token wrapped, so an operator carries a single-use wrapping
 # token here and the seal token itself stays inside the central OpenBao until
 # this node claims it below. Nothing but this exchange ever sees the credential,
-# and because the exchange can happen once, a token central refuses is one
-# somebody else has already spent.
+# and because the exchange can happen once, a token central refuses is one that
+# has already been spent, whether by somebody else or by a run of this script
+# that broke off before it stored anything.
 #
 # Minting waits on the apply that allocated this node's Elastic IP, because the
 # token central mints is bound to that address.
@@ -39,11 +40,31 @@ if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
   echo
   [ -n "$wrapping_token" ] || die "no wrapping token given"
 
-  response="$(curl -sS --max-time 30 -w '\n%{http_code}' \
-    --header "X-Vault-Token: $wrapping_token" \
-    --request POST "$central/v1/sys/wrapping/unwrap")" ||
-    die "could not reach the central OpenBao at $central"
+  # curl puts --header values in its own argv, where anything on the host that
+  # can read /proc can take the token while the request is in flight, so the
+  # header goes in on stdin. printf is a shell builtin and never gets an argv of
+  # its own. The exit code is kept because it is what says whether the request
+  # ever left, which an `if !` would collapse to 1.
+  curl_status=0
+  response="$(printf 'X-Vault-Token: %s\n' "$wrapping_token" |
+    curl -sS --max-time 30 -w '\n%{http_code}' --header @- \
+      --request POST "$central/v1/sys/wrapping/unwrap")" || curl_status=$?
   unset wrapping_token
+
+  case "$curl_status" in
+    0) ;;
+    6 | 7)
+      die "could not reach the central OpenBao at $central (curl $curl_status).
+       Nothing left this node, so the wrapping token is unspent: fix the route to
+       central and re-run with the same token." ;;
+    *)
+      die "the exchange with $central broke off mid-flight (curl $curl_status), so
+       whether central spent the wrapping token is unknown, and so is whether the
+       seal token it unwrapped went anywhere. Do not paste this token again: if it
+       was spent, the next attempt is refused and that refusal says nothing about
+       who spent it. Re-mint at central with TOKEN_ARGS=--reissue, which revokes
+       this one, and claim the token that comes back." ;;
+  esac
 
   status="$(printf '%s' "$response" | tail -1)"
   # On a 200 this holds the seal token, so it is printed only on a failure.
@@ -56,10 +77,10 @@ if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
       die "central refused the wrapping token (HTTP $status): $body
        A wrapping token can be spent once and expires 24 hours after it is minted,
        so this is a token that has already been exchanged or one that has run out.
-       If nobody on this side exchanged it, somebody who could read the channel it
-       was delivered on did. Treat that as a compromise rather than as a retry:
-       re-mint at central with TOKEN_ARGS=--reissue, which revokes the token that
-       was taken." ;;
+       An earlier run of this script that broke off mid-flight spends it the same
+       way; failing that, somebody who could read the channel it was delivered on
+       spent it. Either way this is not a retry: re-mint at central with
+       TOKEN_ARGS=--reissue, which revokes this one." ;;
     *)
       die "claiming the seal token failed with HTTP $status: $body" ;;
   esac
