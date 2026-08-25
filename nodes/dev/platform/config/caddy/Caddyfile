@@ -1,0 +1,23 @@
+# Caddy is the only thing on this node listening on a public interface.
+#
+# Two public sites, both with certificates Caddy obtains and renews itself over
+# ACME. Nothing else: Piri and Ingot reach everything they need directly.
+
+{
+	# The admin API, on the container's loopback. The healthcheck reads it; the
+	# host does not, because the port is not published.
+	admin 127.0.0.1:2019
+}
+
+# Piri. Storage protocol endpoints, the readiness probe sprue polls, and the
+# node's did:web document.
+https://{$PIRI_HOSTNAME} {
+	reverse_proxy piri:3000
+}
+
+# Ingot. Addressed path-style: there is no wildcard certificate for
+# <bucket>.ingot.<suffix>, so a client using virtual-host addressing fails TLS
+# before it reaches anything here.
+https://{$INGOT_HOSTNAME} {
+	reverse_proxy ingot:9000
+}

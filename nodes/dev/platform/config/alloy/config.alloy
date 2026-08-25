@@ -1,0 +1,162 @@
+// Telemetry out of the node: journald, container logs, host metrics and the
+// deploy stamp, all pushed to Grafana Cloud.
+//
+// Push-only credentials, so this is a one-way pipe: nothing in Grafana Cloud
+// can reach back into the node. Piri's own OTEL export to the Forge collector is
+// separate and untouched — that carries application traces, this carries whether
+// the box is alive.
+
+logging {
+	level  = "info"
+	format = "logfmt"
+}
+
+// Every series and every log line carries the node and its region label, which
+// is what lets one Grafana stack hold every appliance without them running
+// together.
+loki.write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_LOGS_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_LOGS_USER")
+			password = sys.env("GRAFANA_PUSH_TOKEN")
+		}
+	}
+
+	external_labels = {
+		node   = sys.env("FILONE_NODE"),
+		region = sys.env("REGION_LABEL"),
+	}
+}
+
+prometheus.remote_write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_METRICS_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_METRICS_USER")
+			password = sys.env("GRAFANA_PUSH_TOKEN")
+		}
+	}
+
+	external_labels = {
+		node   = sys.env("FILONE_NODE"),
+		region = sys.env("REGION_LABEL"),
+	}
+}
+
+// The host's journal: cloud-init, the reconcile timer, docker itself, and any
+// unit that fails. This is where a failed deploy is legible after the fact.
+loki.source.journal "host" {
+	forward_to = [loki.write.grafana_cloud.receiver]
+
+	// The journal is the host itself, not any one container, so it carries the
+	// -host service name rather than a per-unit one. The unit is on its own
+	// label below, which is what narrows a query to the failing timer.
+	labels = {
+		job          = "journal",
+		service_name = sys.env("SERVICE_NAME_PREFIX") + "-host",
+	}
+
+	relabel_rules = loki.relabel.journal.rules
+}
+
+loki.relabel "journal" {
+	forward_to = []
+
+	rule {
+		source_labels = ["__journal__systemd_unit"]
+		target_label  = "unit"
+	}
+}
+
+// Container logs, discovered rather than listed, so a service added to either
+// compose project starts shipping without a change here.
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+		target_label  = "compose_project"
+	}
+
+	// The label Grafana groups a service by, built from the compose service
+	// name. Two nodes in the same stage and region deliberately share it: it
+	// names the service, and the node label is what tells the instances apart.
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		// (.+) rather than the default (.*): a container started by hand carries
+		// no compose label, and the rule skips it instead of shipping a name
+		// that ends in a dash.
+		regex        = "(.+)"
+		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-$1"
+		target_label = "service_name"
+	}
+}
+
+loki.source.docker "containers" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.containers.output
+	labels     = {job = "docker"}
+	forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+// Host metrics, plus the textfile collector, which is how a shell script gets a
+// metric into Prometheus: the deploy scripts write deploy.prom into this
+// directory and Alloy picks it up on the next scrape.
+//
+// The collector list is deliberately short. Anything that needs a host mount
+// this container does not have — cgroups for cAdvisor, the dbus socket for the
+// systemd collector — is left out rather than shipped broken; container health
+// is already visible through the deploy gate and the journal.
+//
+// netdev is out for the same reason and cannot be brought back by a mount:
+// /proc/net resolves through /proc/self, so it reports whichever network
+// namespace the reader is in. Only host network mode would give this container
+// the appliance's interfaces, and that would also put Alloy's own listener on
+// the host.
+//
+// The three paths below point the remaining collectors at the host mounts in
+// compose.yml. Without them, filesystem would report the container's overlay
+// and describe none of the EBS volumes this node's capacity actually depends
+// on.
+prometheus.exporter.unix "host" {
+	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "textfile"]
+
+	rootfs_path = "/host/root"
+	procfs_path = "/host/proc"
+	sysfs_path  = "/host/sys"
+
+	textfile {
+		directory = "/metrics"
+	}
+}
+
+prometheus.scrape "host" {
+	targets         = prometheus.exporter.unix.host.targets
+	forward_to      = [prometheus.relabel.host.receiver]
+	scrape_interval = "60s"
+}
+
+// service_name goes on the series rather than in external_labels, which would
+// stamp every series the writer carries. Once Piri and Ingot expose their own
+// /metrics through the same writer, their series need their own names.
+prometheus.relabel "host" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	rule {
+		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-host"
+		target_label = "service_name"
+	}
+}

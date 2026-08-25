@@ -258,6 +258,18 @@ Cloud over a push-only token held in OpenBao. Piri's own OTEL export to the Forg
 untouched and unrelated: that carries application traces to the central collector, this carries
 host and container health to a place an operator can page from.
 
+Every stream carries three labels. `node` and `region` come from `node.env` and identify the box.
+`service_name` is `appliance-<stage>-<region>-<service>`, so `appliance-dev-us-east-9-piri`, and it
+identifies the service rather than the instance: two nodes in the same stage and region report the
+same `service_name` and are told apart by `node`. Container logs take the `<service>` part from the
+compose service name, so a service added to either project ships labelled without a change to the
+Alloy config. The journal and the host's own metrics have no compose service and use
+`appliance-<stage>-<region>-host`.
+
+This is why `STAGE` exists in `node.env` alongside `FILONE_NODE`. A stage is a group of nodes
+talking to one set of central services, and more than one node can be in it, so the node's directory
+name cannot stand in for it.
+
 ## No backups in dev
 
 The dev node takes no backups at all. Its data is disposable and re-onboarding is a documented
