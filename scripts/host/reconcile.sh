@@ -8,15 +8,9 @@
 # compose projects the new commits touch, and calls the ordinary deploy scripts.
 # It creates nothing, prompts for nothing, and holds no secret.
 #
-# Env overrides:
-#   FILONE_GIT_REF   branch, tag or commit the node tracks, for this run
-#                    only (default: FILONE_GIT_REF in /etc/filone/node.conf,
-#                    or main)
+# The ref it tracks is FILONE_GIT_REF in /etc/filone/node.conf, which is the
+# only statement of it. Point a node at a feature branch by editing that file.
 set -euo pipefail
-
-# Read before filone_init, which sources /etc/filone/node.conf and would
-# overwrite an override passed on the command line with the persistent value.
-git_ref_override="${FILONE_GIT_REF:-}"
 
 # Reconcile replaces the very files it is executing from. Bash reads a script
 # incrementally, so a `git reset --hard` partway through this one can leave the
@@ -34,10 +28,7 @@ trap 'rm -rf "$FILONE_RECONCILE_COPY"' EXIT
 
 filone_init
 
-# The node's own node.conf carries the ref it normally tracks; the environment
-# wins for a single run, which is how a feature branch gets tested on a node
-# without editing anything on the box.
-REF="${git_ref_override:-${FILONE_GIT_REF:-main}}"
+REF="${FILONE_GIT_REF:-main}"
 
 echo "=== reconcile ($FILONE_NODE) ==="
 
@@ -66,47 +57,95 @@ else
   echo "  ${before:0:8} -> ${after:0:8}"
 fi
 
-# --- 2. Work out what changed ----------------------------------------------
+# --- 2. Reconcile the systemd units -----------------------------------------
 
-changed_paths="$(git -C "$FILONE_CHECKOUT" diff --name-only "$before" "$after")"
+# Every pass, against the whole directory rather than against the diff. A unit
+# deleted or renamed in the checkout has to leave /etc/systemd/system too:
+# daemon-reload leaves an orphan installed, and an orphan that was enabled goes
+# on running a workflow git no longer contains.
+sync_systemd_units() {
+  local unit name wanted="" changed=0
 
-touches() {
-  printf '%s\n' "$changed_paths" | grep -qE "$1"
+  shopt -s nullglob
+  for unit in "$FILONE_CHECKOUT"/systemd/filone-*.service "$FILONE_CHECKOUT"/systemd/filone-*.timer; do
+    name="$(basename "$unit")"
+    wanted+="$name"$'\n'
+    cmp -s "$unit" "/etc/systemd/system/$name" && continue
+    install -m 0644 "$unit" "/etc/systemd/system/$name"
+    echo "  installed $name"
+    changed=1
+  done
+
+  # Only this project's units. Anything else in /etc/systemd/system belongs to
+  # the distribution or to whoever put it there, and is none of our business.
+  for unit in /etc/systemd/system/filone-*.service /etc/systemd/system/filone-*.timer; do
+    name="$(basename "$unit")"
+    grep -qxF "$name" <<<"$wanted" && continue
+    echo "  removing $name, which the checkout no longer has"
+    systemctl disable --now "$name" >/dev/null 2>&1 || true
+    rm -f "$unit"
+    changed=1
+  done
+  shopt -u nullglob
+
+  [ "$changed" -eq 0 ] || systemctl daemon-reload
+}
+
+sync_systemd_units
+
+# --- 3. Work out what changed ----------------------------------------------
+
+# Per project, against the revision that project was last deployed from rather
+# than against the checkout's previous HEAD. A deploy that failed leaves its
+# revision unrecorded, so the next pass sees the same work still to do; diffing
+# HEAD to HEAD would report nothing and stamp the pass a success.
+deployed_rev() {
+  local project="$1" rev
+  rev="$(cat "$FILONE_REVISIONS_DIR/$project" 2>/dev/null || true)"
+  [ -n "$rev" ] || return 0
+
+  # Report none for a recorded revision this repository no longer has, after a
+  # force-push or a gc. That deploys the project, which is the safe way to be
+  # wrong; diffing against a missing object fails the pass instead.
+  git -C "$FILONE_CHECKOUT" cat-file -e "$rev^{commit}" 2>/dev/null || return 0
+  printf '%s' "$rev"
+}
+
+# The shared helpers and the node's own non-secret configuration feed both
+# projects, so a change to either deploys both.
+shared_paths="^scripts/host/|^nodes/$FILONE_NODE/node\.env$"
+
+project_is_stale() {
+  local project="$1" pattern="$2" base
+  base="$(deployed_rev "$project")"
+
+  if [ -z "$base" ]; then
+    echo "  $project has no deployed revision to compare against"
+    return 0
+  fi
+  [ "$base" != "$after" ] || return 1
+
+  git -C "$FILONE_CHECKOUT" diff --name-only "$base" "$after" | grep -qE "$pattern"
 }
 
 deploy_platform=0
 deploy_apps=0
+if project_is_stale platform "$shared_paths|^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
+if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
 
-if [ "$before" != "$after" ]; then
-  # The shared helpers and the node's own non-secret configuration feed both
-  # projects, so a change to either deploys both.
-  if touches "^scripts/host/" || touches "^nodes/$FILONE_NODE/node\.env$"; then
-    deploy_platform=1
-    deploy_apps=1
-  fi
-  if touches "^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
-  if touches "^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
+# --- 4. Deploy --------------------------------------------------------------
 
-  # Units are installed by cloud-init on a fresh box and by this branch on every
-  # box after that.
-  if touches "^systemd/"; then
-    echo "  reinstalling systemd units"
-    install -m 0644 "$FILONE_CHECKOUT"/systemd/*.service "$FILONE_CHECKOUT"/systemd/*.timer \
-      /etc/systemd/system/
-    systemctl daemon-reload
-  fi
-fi
-
-# --- 3. Deploy --------------------------------------------------------------
-
+# From the checkout, not from the copy this script re-exec'd out of. A commit
+# that fixes a deploy script has to take effect on the pass that pulls it: the
+# checkout HEAD has already moved, so a later pass sees nothing to do.
 if [ "$deploy_platform" -eq 1 ]; then
   echo "==> platform changed"
-  "$FILONE_RECONCILE_COPY/deploy-platform.sh"
+  "$FILONE_CHECKOUT/scripts/host/deploy-platform.sh"
 fi
 
 if [ "$deploy_apps" -eq 1 ]; then
   echo "==> apps changed"
-  "$FILONE_RECONCILE_COPY/deploy-apps.sh"
+  "$FILONE_CHECKOUT/scripts/host/deploy-apps.sh"
 fi
 
 if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ]; then

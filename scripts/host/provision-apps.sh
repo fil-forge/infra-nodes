@@ -4,8 +4,8 @@
 #
 # Runs after onboarding. Piri's first `piri init` calls the registrar for
 # approval and gets a 403 for any DID that is not on the delegator's allow list,
-# so running this before scripts/operator/onboard.sh produces a crash loop that
-# names nothing useful.
+# so running this before central has registered the node produces a crash loop
+# that names nothing useful.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -25,9 +25,8 @@ bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 bao_has piri did || die "no Piri DID in OpenBao; run keygen.sh"
 bao_has ingot hilt_proof ||
   die "OpenBao has no hilt-to-ingot delegation, so onboarding has not finished.
-       Run scripts/operator/onboard.sh from a machine with central credentials.
-       docs/RUNBOOK.md has the manual fallback for as long as the onboarding
-       Lambda does not exist."
+       onboarding-request.sh prints what Forge Central needs; store-hilt-proof.sh
+       installs the delegation they send back."
 
 echo "  Piri:  $(bao_get piri did)"
 echo "  Ingot: $(bao_get ingot did)"
@@ -96,4 +95,6 @@ fi
 
 echo
 echo "=== node provisioned ==="
-echo "Last step: systemctl enable --now filone-reconcile.timer"
+echo "Last step, both timers:"
+echo "  systemctl enable --now filone-reconcile.timer"
+echo "  systemctl enable --now filone-seal-token-renew.timer"

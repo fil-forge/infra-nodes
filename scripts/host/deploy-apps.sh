@@ -78,8 +78,9 @@ mark ingot_changed render_template \
 # Issued by hilt during onboarding, because it names an Ingot DID that does not
 # exist until this node is provisioned.
 bao_has ingot hilt_proof ||
-  die "OpenBao has no hilt-to-ingot delegation. Run scripts/operator/onboard.sh; without it
-       every S3 request Ingot makes to hilt is refused."
+  die "OpenBao has no hilt-to-ingot delegation. Run store-hilt-proof.sh with the
+       delegation central returned; without it every S3 request Ingot makes to
+       hilt is refused."
 INGOT_HILT_PROOF="$(bao_get ingot hilt_proof)"
 mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/hilt-ingot-proof.txt" "$INGOT_HILT_PROOF
 "

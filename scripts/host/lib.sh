@@ -11,6 +11,7 @@ FILONE_CONTROL_DIR=/mnt/filone/control
 FILONE_SECRETS_DIR=/run/filone/secrets
 FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
 FILONE_METRICS_DIR="$FILONE_CONTROL_DIR/state/metrics"
+FILONE_REVISIONS_DIR="$FILONE_CONTROL_DIR/state/revisions"
 FILONE_SEAL_TOKEN_FILE=/etc/filone/seal-token
 FILONE_BAO_TOKEN_FILE=/etc/filone/bao-token
 FILONE_BAO_CONTAINER=filone-openbao
@@ -567,8 +568,14 @@ wait_healthy() {
 # that takes every metric on the node down with it.
 stamp_deploy_success() {
   local project="$1" tmp stamp
-  mkdir -p "$FILONE_METRICS_DIR" "$FILONE_STATE_DIR/deploys"
+  mkdir -p "$FILONE_METRICS_DIR" "$FILONE_STATE_DIR/deploys" "$FILONE_REVISIONS_DIR"
   date +%s >"$FILONE_STATE_DIR/deploys/$project"
+
+  # Which revision this project was deployed from. reconcile.sh diffs the new
+  # checkout against it, so a deploy that failed is retried on the next pass:
+  # the checkout HEAD has already moved to the failed commit by then, and
+  # diffing against that would report nothing left to do.
+  git -C "$FILONE_CHECKOUT" rev-parse HEAD >"$FILONE_REVISIONS_DIR/$project"
 
   tmp="$(mktemp "$FILONE_METRICS_DIR/.deploy.XXXXXX")"
   {

@@ -232,5 +232,5 @@ echo "[7/7] Starting Postgres, Caddy and Alloy"
 
 echo
 echo "=== platform provisioned ==="
-echo "Next: scripts/operator/onboard.sh from a machine with central credentials,"
-echo "then provision-apps.sh here."
+echo "Next: onboarding-request.sh, send what it prints to Forge Central, and"
+echo "store-hilt-proof.sh with the delegation they return. Then provision-apps.sh."
