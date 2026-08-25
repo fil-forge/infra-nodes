@@ -122,7 +122,8 @@ systemctl enable --now filone-seal-token-renew.timer
 systemctl list-timers | grep filone
 ```
 
-From here, changes reach the node by being merged.
+From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
+`/etc/filone/node.conf` names, which cloud-init writes as `main`.
 
 ## Onboarding by hand
 
@@ -178,6 +179,16 @@ pulls, waits for a safe proving window, restarts Piri and then Ingot, and health
 ```sh
 sudo -i /opt/filone/infra-nodes/scripts/host/reconcile.sh
 ```
+
+**Test a branch before it merges.** Point the node at it and let the next pass pick it up:
+
+```sh
+sed -i 's|^FILONE_GIT_REF=.*|FILONE_GIT_REF=my-branch|' /etc/filone/node.conf
+```
+
+Set it back to `main` before the branch is deleted. A node tracking a ref that no longer exists
+fails the reset, so reconcile stops and the deploy deadman goes stale. For one pass against a ref
+without changing what the node tracks, `FILONE_GIT_REF=my-branch reconcile.sh` does that instead.
 
 **Upgrade ucantool or cast.** Edit the pins in `nodes/dev/node.env`, merge, then run
 `sudo -i /opt/filone/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run
