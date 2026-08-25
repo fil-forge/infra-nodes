@@ -32,6 +32,11 @@ REF="${FILONE_GIT_REF:-main}"
 
 echo "=== reconcile ($FILONE_NODE) ==="
 
+# Before the checkout is touched and until this script exits, so a manual
+# deploy started from a shell reads one revision from end to end. The deploy
+# scripts below take the same lock when they are run on their own.
+take_deploy_lock
+
 # --- 1. Update the checkout -------------------------------------------------
 
 # Refuse to clobber hand edits. The reset below would discard uncommitted

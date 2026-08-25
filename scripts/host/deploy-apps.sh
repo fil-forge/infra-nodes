@@ -17,6 +17,11 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 
 filone_init
 
+# Reconcile resets the checkout under whatever is running, so a hand-started
+# deploy waits for it rather than reading half of one revision and half of the
+# next. A deploy reconcile started itself already holds this.
+take_deploy_lock
+
 echo "=== deploy apps ($FILONE_NODE) ==="
 
 bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"

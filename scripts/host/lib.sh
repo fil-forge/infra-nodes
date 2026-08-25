@@ -71,6 +71,34 @@ require_configured() {
     die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
 }
 
+# --- Serialising deploys ---------------------------------------------------
+
+# One lock for the checkout and every deploy entry point. The reconcile timer
+# resets the checkout while an operator may be part-way through a manual deploy,
+# and that reset replaces the very scripts and rendered configuration the manual
+# run is reading: it would finish having run a mixture of two revisions and then
+# record whichever HEAD won the race as the one it deployed.
+#
+# The wait is long because a deploy waiting on Piri's proving window legitimately
+# takes most of an hour. Past that, something is stuck and saying so beats a
+# timer that hangs forever.
+FILONE_DEPLOY_LOCK_FILE=/run/filone/deploy.lock
+FILONE_DEPLOY_LOCK_WAIT=3600
+
+# flock does not nest, so a deploy script called by reconcile.sh would wait for
+# a lock its own parent holds. The parent exports this instead, and children see
+# the lock as already taken because they inherit the descriptor with it.
+take_deploy_lock() {
+  [ -z "${FILONE_DEPLOY_LOCK_HELD:-}" ] || return 0
+
+  install -d -m 0700 /run/filone
+  exec 9>"$FILONE_DEPLOY_LOCK_FILE"
+  flock -w "$FILONE_DEPLOY_LOCK_WAIT" 9 ||
+    die "another deploy has held $FILONE_DEPLOY_LOCK_FILE for ${FILONE_DEPLOY_LOCK_WAIT}s.
+       'fuser -v $FILONE_DEPLOY_LOCK_FILE' names the process holding it."
+  export FILONE_DEPLOY_LOCK_HELD=1
+}
+
 # --- OpenBao ---------------------------------------------------------------
 
 # Run the bao CLI inside the OpenBao container. The container publishes no port
