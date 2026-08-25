@@ -18,10 +18,12 @@ filone_init
 
 central_addr="$(central_seal_addr)"
 
-response="$(curl -sS --max-time 30 -w '\n%{http_code}' \
-  --header "X-Vault-Token: $(cat "$FILONE_SEAL_TOKEN_FILE")" \
-  --request POST \
-  "$central_addr/v1/auth/token/renew-self")"
+# curl puts --header values in its own argv, where anything on the host that can
+# read /proc can take the token while the request is in flight, so the header
+# goes in on stdin. printf is a shell builtin and never gets an argv of its own.
+response="$(printf 'X-Vault-Token: %s\n' "$(cat "$FILONE_SEAL_TOKEN_FILE")" |
+  curl -sS --max-time 30 -w '\n%{http_code}' --header @- \
+    --request POST "$central_addr/v1/auth/token/renew-self")"
 
 status="$(printf '%s' "$response" | tail -1)"
 body="$(printf '%s' "$response" | sed '$d')"
