@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Bring Piri and Ingot to what the checkout says they should be.
 #
-# Runs on the node, as root, from the reconcile timer or by hand. The one thing
-# it does that the platform deploy does not: wait for Piri's proving window
-# before restarting Piri, because a restart in the wrong minute is a missed
-# proof.
+# Runs on the node, as root, from the reconcile timer or by hand. Nothing here
+# restarts Piri without first waiting for its proving window, because a restart
+# in the wrong minute is a missed proof. A platform deploy that has something to
+# apply waits on the same gate and stops both services while it works.
 #
 # Idempotent. A run that changes nothing renders identical files, finds the
 # running images already correct, restarts nothing and never touches the gate.
@@ -27,14 +27,6 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
 
 piri_changed=0
 ingot_changed=0
-
-# render_template and write_secret_file report "changed" by exit status, which
-# `set -e` would otherwise read as a failure on every unchanged file.
-mark() {
-  local -n flag="$1"
-  shift
-  if "$@"; then flag=1; fi
-}
 
 # --- 1. Render --------------------------------------------------------------
 
@@ -88,44 +80,17 @@ echo "[2/5] Pulling images"
 # safe window would spend the window on a download.
 compose_apps pull --quiet
 
-# shellcheck disable=SC1091
-. "$FILONE_NODE_DIR/apps/versions.env"
-
-# A moving tag resolving to a new digest is invisible to compose, which compares
-# the tag string, so the running image id is compared against the pulled one.
-image_differs() {
-  local container="$1" wanted="$2" running desired
-  running="$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null || echo none)"
-  desired="$(docker image inspect -f '{{.Id}}' "$wanted" 2>/dev/null || echo unknown)"
-  [ "$running" != "$desired" ]
-}
-
-mark piri_changed image_differs filone-piri "$PIRI_IMAGE"
-mark ingot_changed image_differs filone-ingot "$INGOT_IMAGE"
+mark piri_changed image_differs compose_apps piri
+mark ingot_changed image_differs compose_apps ingot
 
 # And the definition itself: an edit to node.env changes a service's environment
 # or its command without changing any rendered file, and compose would recreate
 # the container for it. That has to go through the gate like everything else, so
 # it is detected here rather than discovered by `up -d`.
-service_config_hash() {
-  compose_apps config --format json |
-    python3 -c '
-import hashlib, json, sys
-service = json.load(sys.stdin)["services"][sys.argv[1]]
-print(hashlib.sha256(json.dumps(service, sort_keys=True).encode()).hexdigest())
-' "$1"
-}
-
-config_changed() {
-  local service="$1" current="$2" previous
-  previous="$(cat "$FILONE_STATE_DIR/apps-$service.sha256" 2>/dev/null || true)"
-  [ "$current" != "$previous" ]
-}
-
-piri_config_hash="$(service_config_hash piri)"
-ingot_config_hash="$(service_config_hash ingot)"
-mark piri_changed config_changed piri "$piri_config_hash"
-mark ingot_changed config_changed ingot "$ingot_config_hash"
+piri_config_hash="$(compose_config_hash compose_apps piri)"
+ingot_config_hash="$(compose_config_hash compose_apps ingot)"
+mark piri_changed config_changed apps-piri "$piri_config_hash"
+mark ingot_changed config_changed apps-ingot "$ingot_config_hash"
 
 # --- 3. Piri ----------------------------------------------------------------
 
@@ -168,8 +133,8 @@ wait_healthy compose_apps 420
 
 # Only now, after the deploy is known good. Recording the hashes earlier would
 # make a failed deploy look like an up-to-date one on the next pass.
-printf '%s\n' "$piri_config_hash" >"$FILONE_STATE_DIR/apps-piri.sha256"
-printf '%s\n' "$ingot_config_hash" >"$FILONE_STATE_DIR/apps-ingot.sha256"
+config_hash_record apps-piri "$piri_config_hash"
+config_hash_record apps-ingot "$ingot_config_hash"
 
 stamp_deploy_success apps
 echo "=== apps deploy complete ==="

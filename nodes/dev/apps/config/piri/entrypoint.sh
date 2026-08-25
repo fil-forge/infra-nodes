@@ -7,8 +7,8 @@
 # once and serve from then on.
 #
 # Adapted from smelt's staging entrypoint. Same shape, one node instead of a
-# numbered one, and the chain endpoint points at Caddy rather than at a Lotus on
-# the host.
+# numbered one, and the chain endpoint is the hosted RPC provider from node.env,
+# authenticated with the bearer token the container gets in its environment.
 set -e
 
 KEY_FILE="/keys/piri.pem"

@@ -3,8 +3,9 @@
 #
 # Separate from the platform project because these two are the ones that cannot
 # restart at an arbitrary moment. Piri restarting during its challenge window
-# means a missed proof, so deploy-apps.sh waits for the window to pass; a
-# platform deploy never has to.
+# means a missed proof, so deploy-apps.sh waits for the window to pass. A
+# platform deploy with something to apply waits on the same gate and stops both
+# of these while it works.
 #
 # Neither publishes a port. Caddy, in the platform project, is the only listener
 # on a public interface, and it reaches both over the shared filone network.

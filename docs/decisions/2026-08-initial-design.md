@@ -239,9 +239,15 @@ cannot see.
 
 ### The proving gate is enabled in dev
 
-An apps deploy waits for Piri's proving window before restarting Piri. `piri status upgrade-check`
+Both deploys wait for Piri's proving window before restarting Piri. `piri status upgrade-check`
 answers this directly: exit 0 is safe, exit 1 is proving or in an unproven challenge window, exit 2
 is unable to tell.
+
+An apps deploy waits when a rendered file, an image or a service definition changed. A platform
+deploy waits on the same gate when it has anything to apply, then stops Ingot and Piri, rebuilds the
+platform underneath them and starts them again: Postgres and Caddy are what those two run on, so
+recreating either one under a running Piri costs the same proof. A pass that finds nothing changed
+skips the gate and leaves both services running.
 
 Dev could skip the gate, but we want test this mechanism outside of production, because the gate is
 the mechanism that keeps a production node from failing a proof for an image bump.
