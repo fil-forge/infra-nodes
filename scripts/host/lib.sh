@@ -71,6 +71,18 @@ require_configured() {
     die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
 }
 
+# --- systemd ---------------------------------------------------------------
+
+# The service unit this process is running inside, or nothing when it was
+# started from a shell. Read from the cgroup, which is where systemd records it
+# and the one answer that stays right through a re-exec.
+current_service_unit() {
+  local cgroup
+  cgroup="$(tail -1 /proc/self/cgroup 2>/dev/null || true)"
+  [[ "$cgroup" =~ /([^/[:space:]]+\.service) ]] || return 0
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
 # --- Serialising deploys ---------------------------------------------------
 
 # One lock for the checkout and every deploy entry point. The reconcile timer
