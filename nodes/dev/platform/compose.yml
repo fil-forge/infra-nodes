@@ -1,8 +1,9 @@
 # Platform services for the dev node: OpenBao, Postgres, Caddy and Alloy.
 #
-# Everything Piri and Ingot need in order to exist, and nothing that has to wait
-# for a proving window to restart. The apps project next door holds the two
-# services that do.
+# Everything Piri and Ingot need in order to exist. The apps project next door
+# holds those two. Postgres and Caddy sit underneath them, so deploy-platform.sh
+# waits for Piri's proving window and stops both apps before it applies a change
+# here.
 #
 # Run through scripts/host/deploy-platform.sh, which supplies the env files and
 # renders the secrets these definitions point at:

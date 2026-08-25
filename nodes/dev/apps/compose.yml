@@ -1,0 +1,91 @@
+# The two services this node exists to run: Piri, the storage node, and Ingot,
+# the S3 gateway in front of it.
+#
+# Separate from the platform project because these two are the ones that cannot
+# restart at an arbitrary moment. Piri restarting during its challenge window
+# means a missed proof, so deploy-apps.sh waits for the window to pass. A
+# platform deploy with something to apply waits on the same gate and stops both
+# of these while it works.
+#
+# Neither publishes a port. Caddy, in the platform project, is the only listener
+# on a public interface, and it reaches both over the shared filone network.
+name: filone-apps
+
+services:
+  piri:
+    image: ${PIRI_IMAGE}
+    container_name: filone-piri
+    # The image runs as `nobody`, the rendered key files are 0400 root and the
+    # data directory on the volume is root-owned, so a non-root process can
+    # neither read its identity nor write its blobs.
+    user: "0:0"
+    entrypoint: ["/entrypoint.sh"]
+    environment:
+      - LOTUS_ENDPOINT=${LOTUS_RPC_URL}
+      # Hosted RPC providers want an Authorization header, and Piri sends one
+      # from this. The raw token; Piri prepends "Bearer ". Passed by environment
+      # rather than written into the config, because `piri init` writes the
+      # config it generates onto the data volume and echoes it to stdout, where
+      # Alloy would ship it to Grafana Cloud. The setting has no CLI flag for
+      # the same family of reasons.
+      - PIRI_PDP_LOTUS_AUTH_TOKEN=${CHAIN_RPC_TOKEN}
+      - PUBLIC_URL=${PIRI_PUBLIC_URL}
+      - PORT=3000
+      - HOST=0.0.0.0
+      - REGISTRAR_URL=${REGISTRAR_URL}
+      - OPERATOR_EMAIL=${OPERATOR_EMAIL}
+      - PIRI_DB_BACKEND=postgres
+      # The password reaches the container's environment, where `docker inspect`
+      # shows it to root. Piri takes its DSN as one string and has no file
+      # option, so the alternative is a file with the same string in it.
+      - PIRI_DB_POSTGRES_URL=postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri?sslmode=disable
+      - PIRI_BLOB_BACKEND=filesystem
+    volumes:
+      # Rendered from OpenBao into a root-only tmpfs by deploy-apps.sh. Nothing
+      # here survives a reboot.
+      - /run/filone/secrets/piri.pem:/keys/piri.pem:ro
+      - /run/filone/secrets/piri-owner-wallet.hex:/keys/owner-wallet.hex:ro
+      - /run/filone/secrets/piri-base-config.toml:/config/piri-base-config.toml:ro
+      - ./config/piri/entrypoint.sh:/entrypoint.sh:ro
+      # Blobs and the config `piri init` writes, on the data volume.
+      - /mnt/filone/data/piri:/data/piri
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/readyz | grep -qE '\"status\":[[:space:]]*\"ok\"'"]
+      start_interval: 2s
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      # First boot runs `piri init`, which talks to the registrar and the chain.
+      start_period: 180s
+    restart: unless-stopped
+    networks: [filone]
+
+  # S3 in front of Forge. Ships object data to sprue and authorizes every S3
+  # request against hilt, under the delegation hilt issued to this node's Ingot
+  # DID at onboarding. Reads resolve from Ingot's own blob_locations registry,
+  # so no indexer is involved.
+  ingot:
+    image: ${INGOT_IMAGE}
+    container_name: filone-ingot
+    user: "0:0" # same reason as piri: 0400 key files, root-owned data directory
+    command: ["serve", "--config", "/etc/ingot/config.yaml"]
+    volumes:
+      - /run/filone/secrets/ingot.pem:/keys/ingot.pem:ro
+      # Embeds the Postgres DSN and the root S3 credentials, so it is a secret
+      # in its own right and lives on the tmpfs with the rest.
+      - /run/filone/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
+      - /run/filone/secrets/hilt-ingot-proof.txt:/proofs/hilt-ingot-proof.txt:ro
+      - /mnt/filone/data/ingot:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
+      start_interval: 1s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks: [filone]
+
+networks:
+  filone:
+    external: true

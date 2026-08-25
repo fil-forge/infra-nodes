@@ -291,6 +291,25 @@ write_secret_file() {
   return 0
 }
 
+# Piri's --wallet-file is not a private key. It is a hex-encoded Filecoin
+# keystore record, {"Type":"delegated","PrivateKey":"<base64 raw key>"}, hex
+# again on the outside — piri reads the file, hex-decodes it and unmarshals the
+# JSON. OpenBao holds the bare key, so the wrapping happens here.
+#
+# The key goes in on stdin, not in argv. Another local process can read a root
+# process's /proc/<pid>/cmdline, and this runs on every apps deploy.
+piri_wallet_hex() {
+  local raw_key="$1"
+  printf '%s' "$raw_key" | python3 -c '
+import base64, binascii, json, sys
+
+raw = binascii.unhexlify(sys.stdin.read().strip())
+record = json.dumps({"Type": "delegated", "PrivateKey": base64.b64encode(raw).decode()},
+                    separators=(",", ":"))
+sys.stdout.write(binascii.hexlify(record.encode()).decode())
+'
+}
+
 # --- Compose ---------------------------------------------------------------
 
 # The seal token is in an env file of its own because of the order things come
@@ -315,6 +334,142 @@ compose_apps() {
     --env-file "$FILONE_NODE_DIR/apps/versions.env" \
     --env-file "$FILONE_SECRETS_DIR/apps.env" \
     "$@"
+}
+
+# --- Change detection --------------------------------------------------------
+
+# Set a flag variable when a check reports "changed" by exit status, which
+# `set -e` would otherwise read as a failure on every unchanged file.
+#
+# Usage: mark <flag variable name> <command> [args...]
+mark() {
+  local -n flag="$1"
+  shift
+  # shellcheck disable=SC2034 # flag is a nameref; the write lands in the caller
+  if "$@"; then flag=1; fi
+}
+
+# The project's fully resolved definition, plus the contents of every committed
+# file it bind-mounts, hashed together. An edit to node.env changes a service's
+# environment or its command without changing any rendered file, and an edit to
+# the Caddyfile or to Piri's entrypoint changes neither: compose resolves a bind
+# mount to a path and never looks at what is behind it, so a definition-only
+# hash reads those edits as no change, the deploy picks --no-recreate, and the
+# container keeps serving its old configuration while the hash is recorded as
+# applied.
+#
+# Only bind sources under the node directory are read. That is where the
+# committed files live. The rendered secrets on the tmpfs are already covered by
+# what render_template and write_secret_file return, and the data volumes are
+# not configuration.
+#
+# With a service name, only that service's definition is hashed; without one,
+# the whole project's.
+compose_config_hash() {
+  local compose_fn="$1" service="${2:-}"
+  "$compose_fn" config --format json |
+    FILONE_HASH_ROOT="$FILONE_NODE_DIR" python3 -c '
+import hashlib, json, os, sys
+
+document = json.load(sys.stdin)
+root = os.path.realpath(os.environ["FILONE_HASH_ROOT"]) + os.sep
+
+if len(sys.argv) > 1:
+    services = {sys.argv[1]: document["services"][sys.argv[1]]}
+    config = services[sys.argv[1]]
+else:
+    services = document.get("services", {})
+    config = document
+
+mounted = {}
+for name in sorted(services):
+    for volume in services[name].get("volumes") or []:
+        if not isinstance(volume, dict) or volume.get("type") != "bind":
+            continue
+        source = volume.get("source")
+        if not source:
+            continue
+        resolved = os.path.realpath(source)
+        if not resolved.startswith(root) or not os.path.isfile(resolved):
+            continue
+        with open(resolved, "rb") as handle:
+            mounted[resolved] = hashlib.sha256(handle.read()).hexdigest()
+
+payload = {"config": config, "mounted": mounted}
+print(hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest())
+' ${service:+"$service"}
+}
+
+# Compare a hash against the one the last successful deploy recorded under this
+# name. A name nothing has recorded yet counts as changed.
+config_changed() {
+  local name="$1" current="$2" previous
+  previous="$(cat "$FILONE_STATE_DIR/$name.sha256" 2>/dev/null || true)"
+  [ "$current" != "$previous" ]
+}
+
+config_hash_record() {
+  printf '%s\n' "$2" >"$FILONE_STATE_DIR/$1.sha256"
+}
+
+# A moving tag resolving to a new digest is invisible to compose, which compares
+# the tag string, so the running image id is compared against the pulled one. A
+# service with no container yet counts as different: it has to be created.
+image_differs() {
+  local compose_fn="$1" service="$2" container image running desired
+  container="$("$compose_fn" ps -aq "$service" 2>/dev/null | head -n1)"
+  [ -n "$container" ] || return 0
+
+  image="$("$compose_fn" config --format json |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' \
+      "$service")"
+  running="$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null || echo none)"
+  desired="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo unknown)"
+  [ "$running" != "$desired" ]
+}
+
+# --- Piri and Ingot ----------------------------------------------------------
+
+# The two containers a platform deploy has to take down before it touches
+# anything underneath them, and bring back once it is done.
+#
+# By container name rather than through compose_apps, because the apps project
+# takes an --env-file that does not exist until provision-apps.sh has run and
+# compose refuses to start without it. A node that has never deployed apps still
+# has to be able to deploy the platform.
+container_exists() {
+  docker inspect "$1" >/dev/null 2>&1
+}
+
+container_running() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = true ]
+}
+
+# Ingot first: it writes through to Piri, so it should not outlive it. Returns
+# non-zero when there was nothing to stop, so a caller can tell a node whose apps
+# it took down from one that has never deployed them.
+stop_apps() {
+  local container stopped=1
+  for container in filone-ingot filone-piri; do
+    if container_running "$container"; then
+      echo "  stopping $container"
+      docker stop "$container" >/dev/null || die "could not stop $container"
+      stopped=0
+    fi
+  done
+  return "$stopped"
+}
+
+# Piri first, the same order in reverse: Ingot started against a Piri that is
+# still coming up produces a burst of failures for no reason.
+start_apps() {
+  local container
+  for container in filone-piri filone-ingot; do
+    if container_exists "$container"; then
+      echo "  starting $container"
+      docker start "$container" >/dev/null || die "could not start $container"
+    fi
+  done
 }
 
 # --- Health ----------------------------------------------------------------
