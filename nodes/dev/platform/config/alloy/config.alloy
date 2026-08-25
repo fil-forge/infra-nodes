@@ -99,9 +99,9 @@ discovery.relabel "containers" {
 		// (.+) rather than the default (.*): a container started by hand carries
 		// no compose label, and the rule skips it instead of shipping a name
 		// that ends in a dash.
-		regex         = "(.+)"
-		replacement   = sys.env("SERVICE_NAME_PREFIX") + "-$1"
-		target_label  = "service_name"
+		regex        = "(.+)"
+		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-$1"
+		target_label = "service_name"
 	}
 }
 
