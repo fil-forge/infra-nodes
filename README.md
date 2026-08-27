@@ -178,7 +178,9 @@ A major bump stays open for someone to read. So does a group whose highest chang
 does any Dependabot branch that carries a commit Dependabot did not write.
 
 Dependabot rebases its pull requests in place, and the workflow runs again on each new head, so a
-branch that stops qualifying also loses the auto-merge it was given earlier.
+branch that stops qualifying also loses the auto-merge it was given earlier. Each auto-merge is
+bound to the head the workflow inspected, which is what stops a head that arrives mid-run from
+merging on the previous head's decision.
 
 The container images in `versions.env` are outside all of this. No ecosystem reads them, and bumping
 one is a release to the node rather than a dependency update.
