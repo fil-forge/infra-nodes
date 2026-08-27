@@ -113,8 +113,8 @@ in the form central's `make onboard-appliance` takes. Send that to whoever runs 
 Ingot identity is not in it: central derives that from the region label, so there is nothing to
 mistype.
 
-What comes back is hilt's delegation to this node's Ingot, the one piece of onboarding only central
-can sign. Install it and start the apps:
+Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
+onboarding only central can sign. Install the delegation and start the apps:
 
 ```sh
 scripts/host/store-hilt-proof.sh ingot-proof.txt
