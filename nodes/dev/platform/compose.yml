@@ -132,6 +132,10 @@ services:
       # spending Let's Encrypt rate limit.
       - /mnt/filone/control/caddy/data:/data
       - /mnt/filone/control/caddy/config:/config
+      # The node's status document, served at
+      # /.well-known/filone-node-status.json. Read-only, and the Caddyfile's
+      # exact path matcher exposes the one file rather than the directory.
+      - /mnt/filone/control/state:/srv/filone/.well-known:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:2019/config/"]
       start_interval: 2s

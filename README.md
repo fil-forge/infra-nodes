@@ -95,6 +95,12 @@ Each completed pass stamps `deploy_last_success_timestamp`, which Alloy ships to
 is stamped even when nothing was deployed, because it exists to go stale when the node stops
 reconciling.
 
+The node also publishes what it is running, at
+`https://<piri hostname>/.well-known/filone-node-status.json`: the commit each pass and each project
+last stamped, and the image digests the two containers are actually on. `reconcile` is the commit the
+node has reached, stamped on every pass; `apps` and `platform` move only when that project deploys.
+The digests are read off the containers, so a pin the node never applied shows up as a mismatch.
+
 ## Secrets
 
 Every secret a node holds is in the OpenBao on that node, except the unseal token that unseals it
