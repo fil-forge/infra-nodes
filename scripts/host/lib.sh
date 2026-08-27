@@ -699,4 +699,73 @@ stamp_deploy_success() {
   } >"$tmp"
   chmod 0644 "$tmp"
   mv "$tmp" "$FILONE_METRICS_DIR/deploy.prom"
+
+  publish_node_status
+}
+
+# --- The status document ---------------------------------------------------
+
+# Write what this node is running to a file Caddy serves at
+# https://<piri hostname>/.well-known/filone-node-status.json.
+#
+# Nothing else on the node says which commit it reached, so nothing could tell a
+# merged image bump from a broken one: the merge happens up to an hour before
+# the node applies it. scripts/ci/smoke-test.sh reads both halves from here, and
+# they answer different questions.
+#
+# `reconcile` is the commit the node has reached. Every pass stamps it, whether
+# or not it deployed anything, so a merge that touches only CI or docs advances
+# it too. That is the entry to wait on after a merge.
+#
+# `platform` and `apps` are the revision each project was last deployed from,
+# which only moves when that project actually deploys. That is the entry the pin
+# comparison has to be made against.
+#
+# The running digests are read off the containers rather than out of
+# versions.env, which is the point. A pin the node never applied shows up as a
+# mismatch instead of as agreement with itself.
+#
+# Public and unauthenticated, and it carries nothing else: a commit SHA from a
+# public repository and digests of public images.
+publish_node_status() {
+  local tmp revision_file project revision stamped_at service repo_digest
+  local projects='{}' images='{}'
+
+  # Everything stamp_deploy_success has recorded, rather than a list here that
+  # would go stale the next time a project or a pass is added.
+  for revision_file in "$FILONE_REVISIONS_DIR"/*; do
+    [ -f "$revision_file" ] || continue
+    project="$(basename "$revision_file")"
+    revision="$(cat "$revision_file")"
+    [ -n "$revision" ] || continue
+    stamped_at=''
+    [ -f "$FILONE_STATE_DIR/deploys/$project" ] && stamped_at="$(cat "$FILONE_STATE_DIR/deploys/$project")"
+    projects="$(jq -c \
+      --arg project "$project" --arg revision "$revision" --arg stamped_at "$stamped_at" \
+      '.[$project] = {revision: $revision,
+                      stamped_at: ($stamped_at | if . == "" then null else tonumber end)}' \
+      <<<"$projects")"
+  done
+
+  # Absent rather than fatal when a container is not there. A platform deploy
+  # stamps too, and platform is provisioned before apps exist.
+  for service in piri ingot; do
+    repo_digest="$(docker inspect --format '{{index .RepoDigests 0}}' "filone-$service" 2>/dev/null || true)"
+    images="$(jq -c --arg service "$service" --arg digest "$repo_digest" \
+      '.[$service] = (if $digest == "" then null else $digest end)' <<<"$images")"
+  done
+
+  # Written aside and moved, as deploy.prom is: Caddy serves this file to the
+  # public and must never see a half-written one.
+  tmp="$(mktemp "$FILONE_STATE_DIR/.node-status.XXXXXX")"
+  jq -n \
+    --arg node "$FILONE_NODE" \
+    --arg stage "$STAGE" \
+    --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson projects "$projects" \
+    --argjson images "$images" \
+    '{node: $node, stage: $stage, published_at: $published_at,
+      projects: $projects, images: $images}' >"$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$FILONE_STATE_DIR/filone-node-status.json"
 }
