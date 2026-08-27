@@ -21,6 +21,11 @@ filone_init
 bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 
 if [ "$SOURCE" = "-" ]; then
+  # Reading a pasted blob looks like a hang otherwise: no prompt, and nothing
+  # happens until the stream closes.
+  if [ -t 0 ]; then
+    echo "Paste the delegation, press Enter, then Ctrl-D to close the input." >&2
+  fi
   proof="$(cat)"
 else
   [ -r "$SOURCE" ] || die "cannot read $SOURCE"

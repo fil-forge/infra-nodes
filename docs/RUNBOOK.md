@@ -141,10 +141,17 @@ Ingot identity is not in it: central derives that from the region label, so ther
 mistype.
 
 Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
-onboarding only central can sign. Install the delegation and start the apps:
+onboarding only central can sign. It lands on your machine, and there is no SSH on the node to copy
+it across, so pass it to `store-hilt-proof.sh` over stdin:
 
 ```sh
-scripts/host/store-hilt-proof.sh ingot-proof.txt
+scripts/host/store-hilt-proof.sh -
+```
+
+Paste the delegation, press Enter, then Ctrl-D. It is a single line short enough to paste, and the
+script strips whitespace, so the extra newline does no harm. Then start the apps:
+
+```sh
 scripts/host/provision-apps.sh
 ```
 

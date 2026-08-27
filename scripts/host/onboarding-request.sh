@@ -51,9 +51,10 @@ echo
 cat <<'INFO'
 
 Central runs that command and sends back ingot-proof.txt, hilt's delegation to
-this node's Ingot. Install the delegation, then start the apps:
+this node's Ingot. The file lands on your own machine, so paste the delegation
+into store-hilt-proof.sh over stdin, then start the apps:
 
-  scripts/host/store-hilt-proof.sh ingot-proof.txt
+  scripts/host/store-hilt-proof.sh -
   scripts/host/provision-apps.sh
 
 infra-central's docs/appliance-onboarding.md covers central's side of this.
