@@ -728,7 +728,7 @@ stamp_deploy_success() {
 # Public and unauthenticated, and it carries nothing else: a commit SHA from a
 # public repository and digests of public images.
 publish_node_status() {
-  local tmp revision_file project revision stamped_at service repo_digest
+  local tmp revision_file project revision stamped_at service image_id repo_digest
   local projects='{}' images='{}'
 
   # Everything stamp_deploy_success has recorded, rather than a list here that
@@ -750,7 +750,14 @@ publish_node_status() {
   # Absent rather than fatal when a container is not there. A platform deploy
   # stamps too, and platform is provisioned before apps exist.
   for service in piri ingot; do
-    repo_digest="$(docker inspect --format '{{index .RepoDigests 0}}' "filone-$service" 2>/dev/null || true)"
+    # Two hops: the container carries an image ID, the image carries the
+    # repository digest. Empty when the image was never pulled from a registry.
+    image_id="$(docker container inspect --format '{{.Image}}' "filone-$service" 2>/dev/null || true)"
+    repo_digest=''
+    if [ -n "$image_id" ]; then
+      repo_digest="$(docker image inspect \
+        --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$image_id" 2>/dev/null || true)"
+    fi
     images="$(jq -c --arg service "$service" --arg digest "$repo_digest" \
       '.[$service] = (if $digest == "" then null else $digest end)' <<<"$images")"
   done
