@@ -101,9 +101,15 @@ stop_deploy() {
 # Guarded on the container existing: on a first provision the poll starts before
 # compose has created it, and `docker logs` on a missing container is an error
 # per pass.
+#
+# Best-effort past that guard. The deploy runs `up -d --force-recreate piri`, so
+# the container can go away between the check and the read, and under
+# `set -euo pipefail` that one expected error would abort provisioning while the
+# deploy keeps running and keeps the deploy lock. The next pass reads whatever
+# container is current.
 drain_piri_log() {
   container_exists filone-piri || return 0
-  docker logs --since "$1" filone-piri 2>&1 | sed 's/^/  piri | /'
+  docker logs --since "$1" filone-piri 2>&1 | sed 's/^/  piri | /' || true
 }
 
 echo "[2/3] Starting"
