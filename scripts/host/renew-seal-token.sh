@@ -8,6 +8,10 @@
 # the token's period. Let the period lapse and the node cannot unseal, which
 # needs an operator and a new token from central.
 #
+# Renewing needs no local OpenBao: the token is central's, so this is one HTTPS
+# call from the host to central. Unsealing is the operation that needs the local
+# server, which is why a stopped one cannot keep its own token alive.
+#
 # A box that is off renews nothing either way. It comes back to a live token for
 # as long as it was off for less than the period, and to a dead one after that.
 #
