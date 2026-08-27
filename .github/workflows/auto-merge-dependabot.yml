@@ -1,0 +1,125 @@
+# Merges the Dependabot pull requests nobody needs to read: a minor or patch
+# bump, once the checks have passed. A major bump is left open for a human,
+# because that is the one where the changelog matters.
+name: Auto-merge Dependabot updates
+
+# `pull_request_target` rather than `pull_request`, for two reasons that point
+# the same way.
+#
+# Secrets: a run triggered by a Dependabot `pull_request` reads the Dependabot
+# secret store rather than the Actions one, so `secrets.FORGE_BOT_PRIVATE_KEY`
+# would arrive empty. `pull_request_target` is not one of the events GitHub
+# restricts that way, because the base ref it runs from was not created by
+# Dependabot.
+#
+# Supply chain: `pull_request_target` runs the workflow file, and therefore the
+# action pins below, from `main` rather than from the pull request's own head.
+# Under `pull_request` the weekly `actions` group bump would run the very
+# `create-github-app-token` release it proposes while holding the app's private
+# key, before anyone had read the diff, and then merge itself.
+#
+# What that accepts: this job is privileged and the branch beside it is
+# unreviewed, so nothing here may check out or execute the pull request's
+# contents. Every step below talks to the API and nothing else. An
+# `actions/checkout` of the head SHA added here would hand the app key to
+# unreviewed code.
+on: pull_request_target
+
+# Queue rather than cancel: a cancelled run can leave a qualifying pull request
+# with no auto-merge armed, and nothing arms it again until Dependabot next
+# pushes to the branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # For fetch-metadata, which reads the pull request with the default token.
+      pull-requests: read
+    steps:
+      # `update-type` is the highest semver change in the pull request, so a
+      # group of four patches and one major reads as major and stops below. This
+      # step fails outright, rather than reporting a type, unless every commit
+      # on the branch is Dependabot's own, which is what keeps a commit pushed
+      # onto a Dependabot branch by someone else from riding in on this.
+      - name: Read the update metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      # An allowlist rather than "anything but major": an empty `update-type`,
+      # from metadata the action above declined to vouch for, must not merge
+      # either.
+      #
+      # `!cancelled()` here and on both steps below: a pull request that has
+      # stopped qualifying needs its auto-merge revoked, and a failed metadata
+      # step is one of the ways it stops qualifying. The job still goes red on
+      # that failure, it just revokes first.
+      - name: Decide whether to merge it
+        id: decide
+        if: ${{ !cancelled() }}
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+        run: |
+          set -euo pipefail
+          case "$UPDATE_TYPE" in
+            version-update:semver-minor | version-update:semver-patch)
+              echo "$UPDATE_TYPE for ${DEPENDENCY_NAMES:-unknown}; enabling auto-merge"
+              echo "eligible=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "update-type is '${UPDATE_TYPE:-unset}'; leaving this one for a human"
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      # Not GITHUB_TOKEN: a merge it performs does not trigger workflows, so the
+      # push to `main` would never start the `check` run that guards the branch
+      # the nodes pull. Minted whether or not the update qualifies, because
+      # revoking auto-merge needs a token as well.
+      - name: Mint fil-forge-bot token
+        if: ${{ !cancelled() }}
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
+      # Arming a merge is not performing one: the required checks still gate it,
+      # and a pull request that fails tofu, shell or compose stays open.
+      # Squashed, so one bump is one commit in `main`.
+      #
+      # Revoking matters as much as arming. Dependabot rebases an open pull
+      # request in place, so a branch armed while it held four patches can come
+      # back holding a major, or holding a commit Dependabot did not write, and
+      # the auto-merge from the earlier head would take that new head into
+      # `main` as soon as the checks pass. Anyone's auto-merge goes, including
+      # one a human enabled on a major deliberately; re-enabling it is a click.
+      - name: Manage auto-merge
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          ELIGIBLE: ${{ steps.decide.outputs.eligible }}
+        run: |
+          set -euo pipefail
+          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$ELIGIBLE" = true ]; then
+            if [ "$armed" = true ]; then
+              echo "auto-merge is already enabled on $PR_URL"
+            else
+              gh pr merge --auto --squash "$PR_URL"
+            fi
+          elif [ "$armed" = true ]; then
+            echo "this head does not qualify; revoking auto-merge on $PR_URL"
+            gh pr merge --disable-auto "$PR_URL"
+          else
+            echo "this head does not qualify and no auto-merge is enabled"
+          fi
