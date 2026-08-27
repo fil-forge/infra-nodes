@@ -54,10 +54,20 @@ piri_needs_init() {
 # the container, and a follower attached to the old container ID exits silently
 # at that moment. A fresh call per pass resolves whatever container is current.
 run_deploy_streaming_piri_log() {
+  # Job control, so the deploy leads a process group of its own and the trap
+  # below can signal everything it started. Ctrl+C reaches only the foreground
+  # group, which is this script; unforwarded, the deploy runs on orphaned and
+  # keeps the deploy lock that its children inherited.
+  set -m
   # </dev/null because bao_get runs `docker exec -i`, and a background process
   # that reads the terminal takes SIGTTIN and stops.
   "$SCRIPT_DIR/deploy-apps.sh" </dev/null &
   local deploy_pid=$!
+  set +m
+  # SC2064: expanding the pid now is the point; the trap must not depend on a
+  # local that is out of scope by the time a signal arrives.
+  # shellcheck disable=SC2064
+  trap "stop_deploy $deploy_pid" INT TERM
 
   local since next
   since="$(date +%s)"
@@ -70,8 +80,22 @@ run_deploy_streaming_piri_log() {
     sleep 2
   done
 
+  trap - INT TERM
   drain_piri_log "$since"
   wait "$deploy_pid" || die "deploy-apps.sh failed"
+}
+
+# Take the deploy down on Ctrl+C. Signals the group rather than the pid: the
+# deploy lock lives on an open file description that every child inherited, and
+# one surviving `sleep` holds it for the full hour the next run will wait.
+stop_deploy() {
+  local deploy_pid="$1"
+  echo
+  echo "  interrupted; stopping the deploy"
+  kill -TERM -- "-$deploy_pid" 2>/dev/null || true
+  wait "$deploy_pid" 2>/dev/null || true
+  kill -KILL -- "-$deploy_pid" 2>/dev/null || true
+  die "interrupted while deploying. Piri may be mid-restart; rerun this script."
 }
 
 # Guarded on the container existing: on a first provision the poll starts before
