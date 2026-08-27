@@ -11,6 +11,7 @@ FILONE_CONTROL_DIR=/mnt/filone/control
 FILONE_SECRETS_DIR=/run/filone/secrets
 FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
 FILONE_METRICS_DIR="$FILONE_CONTROL_DIR/state/metrics"
+FILONE_REVISIONS_DIR="$FILONE_CONTROL_DIR/state/revisions"
 FILONE_SEAL_TOKEN_FILE=/etc/filone/seal-token
 FILONE_BAO_TOKEN_FILE=/etc/filone/bao-token
 FILONE_BAO_CONTAINER=filone-openbao
@@ -68,6 +69,46 @@ require_configured() {
   local name="$1" placeholder="$2"
   [ "${!name}" != "$placeholder" ] ||
     die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
+}
+
+# --- systemd ---------------------------------------------------------------
+
+# The service unit this process is running inside, or nothing when it was
+# started from a shell. Read from the cgroup, which is where systemd records it
+# and the one answer that stays right through a re-exec.
+current_service_unit() {
+  local cgroup
+  cgroup="$(tail -1 /proc/self/cgroup 2>/dev/null || true)"
+  [[ "$cgroup" =~ /([^/[:space:]]+\.service) ]] || return 0
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# --- Serialising deploys ---------------------------------------------------
+
+# One lock for the checkout and every deploy entry point. The reconcile timer
+# resets the checkout while an operator may be part-way through a manual deploy,
+# and that reset replaces the very scripts and rendered configuration the manual
+# run is reading: it would finish having run a mixture of two revisions and then
+# record whichever HEAD won the race as the one it deployed.
+#
+# The wait is long because a deploy waiting on Piri's proving window legitimately
+# takes most of an hour. Past that, something is stuck and saying so beats a
+# timer that hangs forever.
+FILONE_DEPLOY_LOCK_FILE=/run/filone/deploy.lock
+FILONE_DEPLOY_LOCK_WAIT=3600
+
+# flock does not nest, so a deploy script called by reconcile.sh would wait for
+# a lock its own parent holds. The parent exports this instead, and children see
+# the lock as already taken because they inherit the descriptor with it.
+take_deploy_lock() {
+  [ -z "${FILONE_DEPLOY_LOCK_HELD:-}" ] || return 0
+
+  install -d -m 0700 /run/filone
+  exec 9>"$FILONE_DEPLOY_LOCK_FILE"
+  flock -w "$FILONE_DEPLOY_LOCK_WAIT" 9 ||
+    die "another deploy has held $FILONE_DEPLOY_LOCK_FILE for ${FILONE_DEPLOY_LOCK_WAIT}s.
+       'fuser -v $FILONE_DEPLOY_LOCK_FILE' names the process holding it."
+  export FILONE_DEPLOY_LOCK_HELD=1
 }
 
 # --- OpenBao ---------------------------------------------------------------
@@ -133,6 +174,20 @@ bao_is_unsealed() {
     bao status >/dev/null 2>&1
 }
 
+# Renew the node's local deploy token. It is periodic, which means it renews
+# forever but only for as long as something calls renew, and nothing on the node
+# holds it long enough to: every use is a one-shot `docker exec ... bao` that
+# exits when the command does, leaving no client behind to keep a lease alive.
+# The seal token works the other way, and the local OpenBao renews that one
+# itself through the lifetime watcher on its transit seal.
+#
+# So this runs on every reconcile pass, including a pass with nothing to deploy.
+# Let the period lapse and the next deploy stops at its first secret read.
+renew_bao_token() {
+  bao token renew >/dev/null ||
+    die "could not renew the local OpenBao deploy token"
+}
+
 # Read one field. Missing paths and missing fields both fail loudly rather than
 # rendering an empty string into a config file.
 bao_get() {
@@ -165,8 +220,9 @@ bao_path_exists() {
 bao_put_if_absent() {
   local path="$1" field="$2" fields json
   shift
-  [ "$#" -ge 2 ] && [ $(( $# % 2 )) -eq 0 ] ||
+  if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
     die "bao_put_if_absent $path: expected field/value pairs, got $# arguments"
+  fi
 
   if bao_has "$path" "$field"; then
     echo "  $path#$field already set, keeping it"
@@ -567,8 +623,14 @@ wait_healthy() {
 # that takes every metric on the node down with it.
 stamp_deploy_success() {
   local project="$1" tmp stamp
-  mkdir -p "$FILONE_METRICS_DIR" "$FILONE_STATE_DIR/deploys"
+  mkdir -p "$FILONE_METRICS_DIR" "$FILONE_STATE_DIR/deploys" "$FILONE_REVISIONS_DIR"
   date +%s >"$FILONE_STATE_DIR/deploys/$project"
+
+  # Which revision this project was deployed from. reconcile.sh diffs the new
+  # checkout against it, so a deploy that failed is retried on the next pass:
+  # the checkout HEAD has already moved to the failed commit by then, and
+  # diffing against that would report nothing left to do.
+  git -C "$FILONE_CHECKOUT" rev-parse HEAD >"$FILONE_REVISIONS_DIR/$project"
 
   tmp="$(mktemp "$FILONE_METRICS_DIR/.deploy.XXXXXX")"
   {

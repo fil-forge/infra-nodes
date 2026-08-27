@@ -240,6 +240,13 @@ successful pass stamps `deploy_last_success_timestamp`, which Alloy ships to Gra
 deadman alert fires when the node stops reporting at all — the failure mode a per-deploy alert
 cannot see.
 
+Every pass renews the node's local OpenBao token, whether or not it deploys anything. That token is
+periodic, which renews it forever only for as long as something keeps renewing it, and a node can go
+days without a platform commit; let the period lapse and the next deploy stops at its first secret
+read. Every pass also takes a lock that the deploy scripts take when an operator runs them by hand, so the
+five-minute `git reset` cannot replace the scripts and rendered configuration a manual deploy is
+part-way through reading.
+
 ### The proving gate is enabled in dev
 
 Both deploys wait for Piri's proving window before restarting Piri. `piri status upgrade-check`

@@ -21,6 +21,11 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 
 filone_init
 
+# Reconcile resets the checkout under whatever is running, so a hand-started
+# deploy waits for it rather than reading half of one revision and half of the
+# next. A deploy reconcile started itself already holds this.
+take_deploy_lock
+
 echo "=== deploy platform ($FILONE_NODE) ==="
 
 require_configured GRAFANA_LOGS_USER 000000
@@ -41,13 +46,9 @@ bao_is_unsealed || die "OpenBao is sealed. Either the seal token is revoked or e
        named in platform/config/openbao/bao.hcl does not exist on the central
        OpenBao yet. 'docker logs filone-openbao' says which."
 
-# `bao token renew` with no argument renews the token the client is using. A
-# periodic token stops renewing itself when nothing renews it, and this runs
-# every five minutes from the reconcile timer, which is far inside any period
-# worth setting. The failure is loud on purpose: a deploy token nobody renews
-# expires, and every deploy after that stops at the first secret read.
-bao token renew >/dev/null ||
-  die "could not renew the local OpenBao deploy token"
+# Also renewed on every reconcile pass, so this one is for the operator running
+# this script by hand on a node that has been quiet.
+renew_bao_token
 
 POSTGRES_ADMIN_PASSWORD="$(bao_get postgres admin_password)"
 PIRI_POSTGRES_PASSWORD="$(bao_get postgres piri_password)"

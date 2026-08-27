@@ -203,7 +203,6 @@ resource "aws_instance" "node" {
     control_volume_id = aws_ebs_volume.control.id
     data_volume_id    = aws_ebs_volume.data.id
     repository_url    = var.repository_url
-    repository_ref    = var.repository_ref
   })
 
   # Bootstrap only ever runs once, so an edit to it reaches the node by
