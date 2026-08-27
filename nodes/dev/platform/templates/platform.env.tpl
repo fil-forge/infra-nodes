@@ -4,8 +4,8 @@
 # /run/filone/secrets/platform.env, 0400 root, on a tmpfs. Never written to a
 # disk that survives a reboot and never committed with values in it.
 #
-# Only ${NAME} is substituted, and a name with no value is an error rather than
-# an empty string.
+# Only the placeholders below are substituted, and a name with no value in the
+# environment is an error rather than an empty string.
 
 # The seal token is not here. It goes into openbao.env next door, written
 # straight from /etc/filone/seal-token, because OpenBao needs it before OpenBao
