@@ -27,6 +27,11 @@ bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 
 bao_has piri did || die "no Piri DID in OpenBao; run keygen.sh"
 bao_has piri sprue_proof || die "no Piri delegation in OpenBao; run keygen.sh"
+# Checked here rather than left to the bao_get below it, which sits inside the
+# command substitution of a heredoc: a die in there kills only that subshell and
+# the address would come out blank.
+bao_has piri owner_wallet_address ||
+  die "no Piri owner wallet address in OpenBao; run keygen.sh"
 
 cat <<INFO
 === onboarding request ($FILONE_NODE) ===
@@ -48,12 +53,24 @@ INFO
 bao_get piri sprue_proof
 echo
 
-cat <<'INFO'
+cat <<INFO
 
-Central runs that command and sends back ingot-proof.txt, hilt's delegation to
-this node's Ingot. Install the delegation, then start the apps:
+While central works on that, fund this node's owner wallet from a Calibration
+faucet:
 
-  scripts/host/store-hilt-proof.sh ingot-proof.txt
+  $(bao_get piri owner_wallet_address)
+
+Piri registers itself in the provider registry on its first start, and that
+transaction sends 5 tFIL from this wallet. Send at least 6, so the 5 and the gas
+both fit; an unfunded wallet makes Piri crash-loop on "wallet balance is too
+low". This is the only thing the node ever pays for. Proofs are paid by the
+central signing service from PAYER_ADDRESS.
+
+Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot. The
+file lands on your own machine, so paste the delegation into store-hilt-proof.sh
+over stdin, then start the apps:
+
+  scripts/host/store-hilt-proof.sh -
   scripts/host/provision-apps.sh
 
 infra-central's docs/appliance-onboarding.md covers central's side of this.

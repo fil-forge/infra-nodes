@@ -140,11 +140,31 @@ in the form central's `make onboard-appliance` takes. Send that to whoever runs 
 Ingot identity is not in it: central derives that from the region label, so there is nothing to
 mistype.
 
-Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
-onboarding only central can sign. Install the delegation and start the apps:
+While central works on that, fund the node's owner wallet. Piri registers itself in the provider
+registry on its first start, and that transaction sends 5 tFIL from this wallet, so send it at least
+6 from a Calibration faucet. The address is printed by `onboarding-request.sh`, and also readable
+directly:
 
 ```sh
-scripts/host/store-hilt-proof.sh ingot-proof.txt
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/filone/bao-token)" \
+  filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri
+```
+
+This is the only thing the node ever pays for. Proofs are paid by the central signing service from
+`PAYER_ADDRESS`.
+
+Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
+onboarding only central can sign. It lands on your machine, and there is no SSH on the node to copy
+it across, so pass it to `store-hilt-proof.sh` over stdin:
+
+```sh
+scripts/host/store-hilt-proof.sh -
+```
+
+Paste the delegation, press Enter, then Ctrl-D. It is a single line short enough to paste, and the
+script strips whitespace, so the extra newline does no harm. Then start the apps:
+
+```sh
 scripts/host/provision-apps.sh
 ```
 
@@ -154,8 +174,16 @@ delegation byte for byte, so a node that lost its copy can ask for it again.
 Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means the
 node's DID is not on the delegator's allow list, which means onboarding did not complete.
 
+That first start also registers the provider and creates the proof set, and waits for both
+transactions to land, which takes minutes. The first `provision-apps.sh` prints Piri's own log while
+it waits, prefixed `piri |`, so a registration or a proof-set transaction that never confirms is
+visible as it happens. Later runs skip init and print nothing extra.
+
 `provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
 `/readyz`, Ingot answers `/health`, and both hostnames serve over HTTPS with issued certificates.
+
+It then installs the systemd units from the checkout, so the timers below exist whatever revision
+cloud-init bootstrapped the box from.
 
 ### 6. The timers
 
@@ -275,6 +303,11 @@ the address the stage's signing service pays from, and commit it to `nodes/dev/n
 
 **Piri crash-loops with a 403 from the registrar.** Its DID is not on the delegator's allow list.
 
+**Piri crash-loops on `wallet balance is too low`.** The owner wallet holds less than the 5 tFIL
+provider registration sends to the registry. Fund it with at least 6, as [step
+5](#5-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
+because the 5 is the transaction's value and the gas comes out of the same wallet.
+
 **Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
 OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri sends the token
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
@@ -282,8 +315,16 @@ itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually re
 
 **The proving gate never lets a deploy through.** `pdp-gate.sh` waits 45 minutes by default. If Piri
 reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it after
-the challenge window. If Piri never reports its state at all, the gate proceeds with a warning,
-which is expected before the node has a proof set and worth investigating afterwards.
+the challenge window. A Piri that owes proofs and will not report its state at all is treated the
+same way, most often because the chain RPC is unreachable.
+
+**The gate says `piri-config.toml` is missing.** The container is running but the file is not there
+yet, which is where a node sits while `piri init` is still working and where it stays if init died.
+`docker logs filone-piri` says which of the two it is. The gate lets the deploy through only when
+`piri-base-config.applied.toml` is missing too, because init writes that file last and a node that
+has never got that far holds no proof set. A missing config next to a present snapshot aborts the
+deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
+`docker stop filone-piri` if the node is being decommissioned.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
