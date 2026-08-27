@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Renew the token this node's OpenBao unseals with.
 #
-# Runs daily from filone-seal-token-renew.timer. OpenBao renews this token
-# itself while it is running, through the lifetime watcher on its transit seal,
-# so this exists for the case that watcher cannot cover: a container that has
-# been stopped, or a box that has been off, for longer than the token's period.
-# Let the period lapse and the node cannot unseal, which needs an operator and a
-# new token from central.
+# Runs daily from filone-seal-token-renew.timer. OpenBao renews this token itself
+# while it is running, through the lifetime watcher on its transit seal, so this
+# covers the window where the box is up and that watcher is not: a container
+# stopped for debugging, or one crash-looping after a bad deploy, for longer than
+# the token's period. Let the period lapse and the node cannot unseal, which
+# needs an operator and a new token from central.
+#
+# A box that is off renews nothing either way. It comes back to a live token for
+# as long as it was off for less than the period, and to a dead one after that.
+#
+# The daily run also finds a revoked token on the day it is revoked, rather than
+# at the next restart, when the node would already be unable to unseal.
 set -euo pipefail
 
 # shellcheck source=lib.sh

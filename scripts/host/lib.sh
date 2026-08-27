@@ -175,10 +175,14 @@ bao_is_unsealed() {
 }
 
 # Renew the node's local deploy token. It is periodic, which means it renews
-# forever but only for as long as something keeps renewing it. Nothing else on
-# the node does, so this runs on every reconcile pass, including a pass with
-# nothing to deploy: let the period lapse and the next deploy stops at its first
-# secret read.
+# forever but only for as long as something calls renew, and nothing on the node
+# holds it long enough to: every use is a one-shot `docker exec ... bao` that
+# exits when the command does, leaving no client behind to keep a lease alive.
+# The seal token works the other way, and the local OpenBao renews that one
+# itself through the lifetime watcher on its transit seal.
+#
+# So this runs on every reconcile pass, including a pass with nothing to deploy.
+# Let the period lapse and the next deploy stops at its first secret read.
 renew_bao_token() {
   bao token renew >/dev/null ||
     die "could not renew the local OpenBao deploy token"
