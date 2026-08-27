@@ -65,51 +65,6 @@ fi
 
 # --- 2. Reconcile the systemd units -----------------------------------------
 
-# Every pass, against the whole directory rather than against the diff. A unit
-# deleted or renamed in the checkout has to leave /etc/systemd/system too:
-# daemon-reload leaves an orphan installed, and an orphan that was enabled goes
-# on running a workflow git no longer contains.
-sync_systemd_units() {
-  local unit name wanted="" changed=0
-  local self_unit
-  self_unit="$(current_service_unit)"
-
-  shopt -s nullglob
-  for unit in "$FILONE_CHECKOUT"/systemd/filone-*.service "$FILONE_CHECKOUT"/systemd/filone-*.timer; do
-    name="$(basename "$unit")"
-    wanted+="$name"$'\n'
-    cmp -s "$unit" "/etc/systemd/system/$name" && continue
-    install -m 0644 "$unit" "/etc/systemd/system/$name"
-    echo "  installed $name"
-    changed=1
-  done
-
-  # Only this project's units. Anything else in /etc/systemd/system belongs to
-  # the distribution or to whoever put it there, and is none of our business.
-  #
-  # Timers before services, because a service stopped while its timer is still
-  # enabled gets started again on the timer's next tick.
-  for unit in /etc/systemd/system/filone-*.timer /etc/systemd/system/filone-*.service; do
-    name="$(basename "$unit")"
-    grep -qxF "$name" <<<"$wanted" && continue
-    echo "  removing $name, which the checkout no longer has"
-    if [ "$name" = "$self_unit" ]; then
-      # This script is running inside that unit, and `--now` would stop it here,
-      # before the removal, the daemon-reload and the deploys below ever happen.
-      # Disabling is enough: the unit goes when this run ends.
-      echo "    it is the unit this run is inside, so it is disabled and left to exit"
-      systemctl disable "$name" >/dev/null 2>&1 || true
-    else
-      systemctl disable --now "$name" >/dev/null 2>&1 || true
-    fi
-    rm -f "$unit"
-    changed=1
-  done
-  shopt -u nullglob
-
-  [ "$changed" -eq 0 ] || systemctl daemon-reload
-}
-
 sync_systemd_units
 
 # --- 3. Work out what changed ----------------------------------------------

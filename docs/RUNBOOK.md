@@ -182,6 +182,9 @@ visible as it happens. Later runs skip init and print nothing extra.
 `provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
 `/readyz`, Ingot answers `/health`, and both hostnames serve over HTTPS with issued certificates.
 
+It then installs the systemd units from the checkout, so the timers below exist whatever revision
+cloud-init bootstrapped the box from.
+
 ### 6. The timers
 
 ```sh

@@ -174,6 +174,14 @@ if [ "$failures" -gt 0 ]; then
        docs/RUNBOOK.md has what each check means when it fails."
 fi
 
+# Bootstrap installs the units too, but a node bootstrapped from a revision that
+# did not have them yet, or one whose checkout has moved since, reaches this
+# point with nothing in /etc/systemd/system for the operator to enable. Only the
+# reconcile timer would install them, and it cannot run until it exists.
+echo
+echo "Installing the systemd units"
+sync_systemd_units
+
 echo
 echo "=== node provisioned ==="
 echo "Last step, both timers:"
