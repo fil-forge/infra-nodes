@@ -1,0 +1,224 @@
+# Queues a new image for the dev node by pinning the digest a service just
+# published. Services dispatch here from their own publish workflow; the commit
+# this opens is what reaches the node, because the reconcile timer resets the
+# node to `origin/main` every five minutes.
+name: Bump deployed image
+
+on:
+  repository_dispatch:
+    types: [bump-deployed-image]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to pin, piri or ingot
+        required: true
+      digest:
+        description: Manifest index digest, sha256:...
+        required: true
+
+# Queue rather than cancel: a cancelled run could leave a branch pushed with no
+# pull request behind it.
+concurrency:
+  group: bump-deployed-image-${{ github.event.client_payload.service || inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump ${{ github.event.client_payload.service || inputs.service }} on dev
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Not GITHUB_TOKEN: a pull request it opens does not trigger workflows, so
+      # the checks auto-merge waits on would never start. Minted before the
+      # request is validated because the actor check below needs the app's slug.
+      - name: Mint fil-forge-bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
+      # client_payload is untrusted input: every field reaches the shell through
+      # env, never through ${{ }} interpolation into a script body.
+      - name: Validate the request
+        id: req
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          APP_SLUG: ${{ steps.bot.outputs.app-slug }}
+          SERVICE: ${{ github.event.client_payload.service || inputs.service }}
+          DIGEST: ${{ github.event.client_payload.digest || inputs.digest }}
+          SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+          COMMIT: ${{ github.event.client_payload.commit }}
+          SOURCE_PR_URL: ${{ github.event.client_payload.pr_url }}
+          RUN_URL: ${{ github.event.client_payload.run_url }}
+        run: |
+          set -euo pipefail
+          # The repository each service publishes from, mirroring the ghcr.io
+          # references in nodes/dev/apps/versions.env.
+          case "$SERVICE" in
+            piri)  publisher=fil-forge/piri ;;
+            ingot) publisher=fil-forge/ingot ;;
+            *) echo "::error::unknown service '$SERVICE'"; exit 1 ;;
+          esac
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::malformed digest '$DIGEST'"; exit 1; }
+
+          # The link fields land in GITHUB_OUTPUT, where an embedded newline
+          # would define further outputs. Shapes are checked, empty is allowed.
+          [[ -z "$SOURCE_REPO" || "$SOURCE_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
+            || { echo "::error::malformed source_repo '$SOURCE_REPO'"; exit 1; }
+          [[ -z "$COMMIT" || "$COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::malformed commit '$COMMIT'"; exit 1; }
+          for url in "$SOURCE_PR_URL" "$RUN_URL"; do
+            [[ -z "$url" || "$url" =~ ^https://github\.com/[A-Za-z0-9._/-]+$ ]] \
+              || { echo "::error::malformed url '$url'"; exit 1; }
+          done
+
+          # The commit message links to $SOURCE_REPO/commit/$COMMIT, so the two
+          # fields are only meaningful together.
+          [[ -z "$COMMIT" || -n "$SOURCE_REPO" ]] \
+            || { echo "::error::commit given without source_repo"; exit 1; }
+
+          if [ "$EVENT" = repository_dispatch ]; then
+            # Anyone holding a token with write access here can dispatch. This
+            # is the boundary that keeps that to the publish workflows.
+            [ "$ACTOR" = "${APP_SLUG}[bot]" ] \
+              || { echo "::error::dispatch from '$ACTOR', expected ${APP_SLUG}[bot]"; exit 1; }
+            # Both publishers share that one app installation, so the payload
+            # is self-reported and this pairing catches a misconfigured publish
+            # workflow rather than a lying one.
+            [ "$SOURCE_REPO" = "$publisher" ] \
+              || { echo "::error::$SERVICE is published from $publisher, not '$SOURCE_REPO'"; exit 1; }
+          fi
+
+          {
+            echo "service=$SERVICE"
+            echo "digest=$DIGEST"
+            echo "source_repo=$SOURCE_REPO"
+            echo "commit=$COMMIT"
+            echo "source_pr_url=$SOURCE_PR_URL"
+            echo "run_url=$RUN_URL"
+            echo "branch=bot/bump-$SERVICE-image-dev"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token }}
+
+      # The rewrite itself lives in scripts/ci/set-node-pin.sh, which the
+      # refresh workflow and a person at a terminal run too. Its stdout is the
+      # `changed` output and nothing else; what a person reads goes to stderr.
+      #
+      # No formatting check after it: versions.env is an env file with no
+      # formatter, and the `compose` required check already resolves it through
+      # `docker compose config` on the pull request.
+      - name: Rewrite the pin
+        id: edit
+        env:
+          SERVICE: ${{ steps.req.outputs.service }}
+          DIGEST: ${{ steps.req.outputs.digest }}
+        run: |
+          set -euo pipefail
+          scripts/ci/set-node-pin.sh "$SERVICE" "$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Compose the message
+        if: steps.edit.outputs.changed == 'true'
+        id: message
+        env:
+          SERVICE: ${{ steps.req.outputs.service }}
+          DIGEST: ${{ steps.req.outputs.digest }}
+          SOURCE_REPO: ${{ steps.req.outputs.source_repo }}
+          COMMIT: ${{ steps.req.outputs.commit }}
+          SOURCE_PR_URL: ${{ steps.req.outputs.source_pr_url }}
+          RUN_URL: ${{ steps.req.outputs.run_url }}
+          ACTOR: ${{ github.actor }}
+          PINS_FILE: nodes/dev/apps/versions.env
+          PINS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/nodes/dev/apps/versions.env
+        run: |
+          set -euo pipefail
+          short=${DIGEST#sha256:}
+          echo "subject=Bump $SERVICE on dev to sha256:${short:0:7}" >> "$GITHUB_OUTPUT"
+
+          {
+            if [ -n "$SOURCE_PR_URL" ]; then
+              echo "Published from $SOURCE_PR_URL"
+            elif [ -n "$COMMIT" ]; then
+              echo "Published from $SOURCE_REPO@${COMMIT:0:7}, which reached main without a pull request."
+            else
+              echo "Dispatched manually by @$ACTOR."
+            fi
+            echo
+            echo "- Digest: \`$DIGEST\`"
+            [ -n "$COMMIT" ] && echo "- Commit: https://github.com/$SOURCE_REPO/commit/$COMMIT"
+            [ -n "$RUN_URL" ] && echo "- Publish run: $RUN_URL"
+            echo
+            echo "Merging rewrites [\`$PINS_FILE\`]($PINS_URL) and queues the image. The node picks"
+            echo "it up on its next reconcile pass, waits for a safe proving window and then"
+            echo "restarts the service, so the deploy happens well after this merges."
+          } > "$RUNNER_TEMP/message.md"
+          cat "$RUNNER_TEMP/message.md"
+
+      - name: Commit and push
+        if: steps.edit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          APP_SLUG: ${{ steps.bot.outputs.app-slug }}
+          BRANCH: ${{ steps.req.outputs.branch }}
+          SUBJECT: ${{ steps.message.outputs.subject }}
+        run: |
+          set -euo pipefail
+          # Attribute the commit to the app rather than to a nameless actor.
+          bot_id=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+          { echo "$SUBJECT"; echo; cat "$RUNNER_TEMP/message.md"; } > "$RUNNER_TEMP/commit.txt"
+          git checkout -b "$BRANCH"
+          git commit --all --file "$RUNNER_TEMP/commit.txt"
+          git push --force origin "$BRANCH"
+
+      # One branch per service, force-pushed: a second publish updates the open
+      # pull request rather than stacking a stale one beside it.
+      - name: Open or refresh the pull request
+        if: steps.edit.outputs.changed == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BRANCH: ${{ steps.req.outputs.branch }}
+          SUBJECT: ${{ steps.message.outputs.subject }}
+        run: |
+          set -euo pipefail
+          url=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url // ""')
+          if [ -z "$url" ]; then
+            url=$(gh pr create --base main --head "$BRANCH" \
+              --title "$SUBJECT" --body-file "$RUNNER_TEMP/message.md")
+            action=Opened
+          else
+            gh pr edit "$url" --title "$SUBJECT" --body-file "$RUNNER_TEMP/message.md"
+            { echo "Superseded by a newer image."; echo; cat "$RUNNER_TEMP/message.md"; } \
+              > "$RUNNER_TEMP/comment.md"
+            gh pr comment "$url" --body-file "$RUNNER_TEMP/comment.md"
+            action=Refreshed
+          fi
+          echo "$action $url"
+          echo "$action $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge
+        if: steps.edit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          set -euo pipefail
+          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$armed" = true ]; then
+            echo "auto-merge is already enabled on $PR_URL"
+          else
+            gh pr merge --auto --squash "$PR_URL"
+          fi

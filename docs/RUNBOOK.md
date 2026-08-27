@@ -198,8 +198,28 @@ From here, changes reach the node by being merged. The node tracks whatever `FIL
 
 ## Day-to-day operations
 
-**Deploy a new image.** Edit `nodes/dev/apps/versions.env`, merge. Within five minutes the node
-pulls, waits for a safe proving window, restarts Piri and then Ingot, and health-gates both.
+**Deploy a new image.** Nothing to do. Piri and Ingot dispatch their new digest here when they
+publish a `:main` image, `bump-deployed-image.yml` opens the pull request that rewrites
+`nodes/dev/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and `compose` pass.
+Within five minutes of the merge the node pulls, waits for a safe proving window, restarts Piri and
+then Ingot, and health-gates both.
+
+Two ways in by hand. Run the same workflow with a digest you read off the registry:
+
+```sh
+gh workflow run bump-deployed-image.yml -f service=piri \
+  -f digest="$(crane digest ghcr.io/fil-forge/piri:main)"
+```
+
+Or write the pin in a branch of your own and open the pull request yourself:
+
+```sh
+scripts/ci/set-node-pin.sh piri "$(crane digest ghcr.io/fil-forge/piri:main)"
+```
+
+`set-node-pin.sh` is the only thing that knows how a pin is written, so both routes and the workflow
+produce the same line. It prints `changed=true` or `changed=false` and fails on an unknown service, a
+malformed digest or a pin somebody moved to another tag.
 
 A deploy that fails is retried on the next pass. Each project records the revision it was last
 deployed from, so reconcile compares against that rather than against the previous HEAD; the failed
