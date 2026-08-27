@@ -174,6 +174,11 @@ delegation byte for byte, so a node that lost its copy can ask for it again.
 Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means the
 node's DID is not on the delegator's allow list, which means onboarding did not complete.
 
+That first start also registers the provider and creates the proof set, and waits for both
+transactions to land, which takes minutes. The first `provision-apps.sh` prints Piri's own log while
+it waits, prefixed `piri |`, so a registration or a proof-set transaction that never confirms is
+visible as it happens. Later runs skip init and print nothing extra.
+
 `provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
 `/readyz`, Ingot answers `/health`, and both hostnames serve over HTTPS with issued certificates.
 
