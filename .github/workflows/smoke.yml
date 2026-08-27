@@ -1,0 +1,185 @@
+# Checks that the dev node is serving what main pins.
+#
+# A merge queues an image rather than deploying it: the node picks it up on its
+# next reconcile pass and can spend 45 minutes in the proving gate before Piri
+# restarts. So the run that merges a bump ends long before the node runs it, and
+# nothing else would tell us a merged image is broken. This waits for the node to
+# reach the commit, then tests it.
+name: Smoke test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # Off the hour, so a node that stops answering between merges is noticed
+  # within the hour rather than at the next merge.
+  schedule:
+    - cron: "17 * * * *"
+
+# Per trigger, so a push supersedes an older push and nothing else. A wait can
+# legitimately run for an hour, and one group for every trigger would let the
+# hourly schedule cancel it: the scheduled run would then find the node on the
+# previous image, pass, and alert nothing, which is the gap this workflow exists
+# to close.
+concurrency:
+  group: smoke-dev-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Only a push has a commit to wait for. A schedule and a manual run check the
+  # node as it stands.
+  wait:
+    name: Wait for the node to reach this commit
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # The budget below plus room for the checkout and a slow first poll.
+    timeout-minutes: 75
+    steps:
+      # fetch-depth: 0 because the ancestor test needs both commits in the
+      # checkout, and the node can be several commits behind.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Poll the node's status document
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          host=$(sed -nE 's/^PIRI_HOSTNAME=(.*)$/\1/p' nodes/dev/node.env | tail -1)
+          [ -n "$host" ] || { echo "::error::no PIRI_HOSTNAME in nodes/dev/node.env"; exit 1; }
+          url="https://$host/.well-known/filone-node-status.json"
+
+          # Five minutes of reconcile interval, plus the 45-minute proving gate,
+          # plus the deploy and the health gate behind it.
+          deadline=$(( $(date +%s) + 60 * 60 ))
+          echo "waiting for $url to report ${COMMIT:0:7} or a descendant"
+
+          while :; do
+            # reconcile, not apps: it is stamped on every pass, so a commit
+            # that deployed neither project still advances it. apps would sit
+            # still and this would wait out the full hour on a docs merge.
+            reported=$(curl --silent --max-time 10 --fail "$url" 2>/dev/null \
+              | jq -r '.projects.reconcile.revision // empty' 2>/dev/null || true)
+
+            if [ -z "$reported" ]; then
+              echo "  no revision reported yet"
+            elif ! git cat-file -e "$reported^{commit}" 2>/dev/null; then
+              echo "  reports $reported, which is not in this checkout"
+            elif git merge-base --is-ancestor "$COMMIT" "$reported"; then
+              echo "  the node is on ${reported:0:7}"
+              exit 0
+            else
+              echo "  still on ${reported:0:7}"
+            fi
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::the node did not reach ${COMMIT:0:7} within 60 minutes"
+              exit 1
+            fi
+            sleep 60
+          done
+
+  smoke:
+    name: Smoke test
+    needs: [wait]
+    # `wait` is skipped on a schedule and a manual run, and a skipped job is not
+    # a success. A failed wait skips this: the node never got the commit, so
+    # testing it would report on the previous one.
+    if: ${{ !cancelled() && (needs.wait.result == 'success' || needs.wait.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Retried, so one slow TLS handshake is not an alert. Piri restarts as
+      # part of the deploy the wait above observed, and the node's own health
+      # gate has already passed by then, so this is about the network rather
+      # than about the node still coming up.
+      - name: Run the smoke test
+        env:
+          # Only on a push: a schedule and a manual run check the node as it
+          # stands, against whatever revision it reports.
+          REVISION: ${{ github.event_name == 'push' && github.sha || '' }}
+        run: |
+          set -uo pipefail
+          args=(dev)
+          [ -z "$REVISION" ] || args+=(--revision "$REVISION")
+
+          for attempt in 1 2 3 4 5; do
+            echo "::group::attempt $attempt"
+            if scripts/ci/smoke-test.sh "${args[@]}"; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            [ "$attempt" -eq 5 ] || sleep 30
+          done
+          echo "::error::the dev node did not pass: 5 attempts over 2 minutes"
+          exit 1
+
+  # One job for both failures. They need different responses, so the message
+  # says which one happened: the node never reached the commit, or it reached it
+  # and the smoke test failed.
+  notify-failure:
+    needs: [wait, smoke]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      # Only for the commit subject below. github.event.head_commit.message
+      # would save the checkout, but it is the whole message, newlines included.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: what
+        env:
+          WAIT_RESULT: ${{ needs.wait.result }}
+        run: |
+          set -euo pipefail
+          echo "subject=$(git log -1 --format=%s)" >> "$GITHUB_OUTPUT"
+          if [ "$WAIT_RESULT" = failure ]; then
+            echo "headline=The dev node never reached this commit" >> "$GITHUB_OUTPUT"
+            echo "next=Check reconcile on the node: the proving gate, a failing deploy, or a node tracking another ref." >> "$GITHUB_OUTPUT"
+          else
+            echo "headline=The dev node failed its smoke test" >> "$GITHUB_OUTPUT"
+            echo "next=The node has this commit and is not serving it. Suspect the image it pinned." >> "$GITHUB_OUTPUT"
+          fi
+
+      # Every interpolation goes through toJSON, because the payload is JSON and
+      # a commit subject is free to contain a quote or a backslash.
+      - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": ${{ toJSON(format('{0}. Commit: {1} by @{2}. Details: {3}/{4}/actions/runs/{5}', steps.what.outputs.headline, steps.what.outputs.subject, github.actor, github.server_url, github.repository, github.run_id)) }},
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(format(':warning: *{0}* · <{1}/{2}/actions/runs/{3}|Details>', steps.what.outputs.headline, github.server_url, github.repository, github.run_id)) }}
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(format('Commit: `{0}` by <https://github.com/{1}|@{1}>', steps.what.outputs.subject, github.actor)) }}
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(steps.what.outputs.next) }}
+                  }
+                }
+              ]
+            }

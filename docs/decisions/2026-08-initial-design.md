@@ -285,6 +285,35 @@ that is already registered.
 Dev could skip the gate, but we want test this mechanism outside of production, because the gate is
 the mechanism that keeps a production node from failing a proof for an image bump.
 
+### Image bumps are dispatched from the service repositories
+
+Piri and Ingot dispatch the digest they just published to `bump-deployed-image.yml`, which rewrites
+the one line in `nodes/dev/apps/versions.env` and opens a pull request with auto-merge armed. The
+alternative was a person reading a digest off the registry, and nobody did: both pins sat at the
+digest they were first written with while every merge into either service repository published an
+image the node did not run.
+
+The pull request is not ceremony. The three required checks run on it, the ruleset applies, and the
+commit carries a link back to the pull request that published the image, so `git log` on the node's
+own history says where each image came from.
+
+A merge queues the image rather than deploying it. The node picks it up within five minutes and can
+then spend 45 minutes in the proving gate before Piri restarts, so the run that merges a bump ends
+well before the node runs it. That is the gap `smoke.yml` closes: it waits for the node to report a
+commit at or past the merged one, then compares the digests the containers report against the pins at
+the revision the node deployed apps from, and posts to `filone-alerts` when either half fails.
+Without it a merged image that crash-loops would sit unnoticed until somebody looked.
+
+The node publishes both revisions itself, at `/.well-known/filone-node-status.json` under the Piri
+hostname. They are separate because they answer separate questions: every reconcile pass stamps the
+commit the node has reached, whether or not it deployed anything, while the apps revision moves only
+when that project deploys, and a pin comparison is only meaningful against the second. Reading the
+digests off the containers rather than out of `versions.env` is what makes the comparison mean
+anything: a pin the node never applied shows up as a mismatch instead of as agreement with itself.
+
+`smoke` is deliberately not a required check. It runs after the merge, so requiring it would deadlock
+every pull request.
+
 ## Per-node directories, not shared templates
 
 Each node owns its Compose files and its templates, under `nodes/<node>/`. A change is made on one

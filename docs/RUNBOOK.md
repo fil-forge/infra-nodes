@@ -225,6 +225,19 @@ A deploy that fails is retried on the next pass. Each project records the revisi
 deployed from, so reconcile compares against that rather than against the previous HEAD; the failed
 commit stays outstanding until a deploy of it succeeds.
 
+**Check a node by hand.** The smoke test needs no credentials and checks the node the way the world
+sees it:
+
+```sh
+scripts/ci/smoke-test.sh dev
+curl -s https://piri.dev.forge-sandbox.fil.one/.well-known/filone-node-status.json | jq
+```
+
+The document carries a revision per stamp. `reconcile` is the commit the node has reached, advanced
+on every pass; `apps` and `platform` move only when that project deploys. The smoke test waits on
+`reconcile` and compares the running digests against the pins at `apps`, which is what proves a bump
+took. `smoke.yml` runs the same test after every merge and hourly.
+
 **Deploy by hand**, without waiting for the timer:
 
 ```sh
@@ -355,6 +368,23 @@ step 2 did not happen, or its weight is zero.
 **Hilt rejects every tenant in the region.** The region label does not match. It has to be identical
 in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, and in the
 `AWS_REGION` the client signs with.
+
+**A `filone-alerts` message arrived.** It says which of two things happened.
+
+*The dev node never reached this commit.* The commit merged and the node has not deployed it within
+an hour. `journalctl -u filone-reconcile.service -n 200` on the box shows which: a pass that never
+ran, a proving gate that has not opened, a deploy that failed, or a node pointed at another ref by
+`FILONE_GIT_REF` in `/etc/filone/node.conf`. The entries below cover each.
+
+*The dev node failed its smoke test.* The node has the commit and is not serving what the commit
+pins, so suspect the image. The run's log names the failing check. A check that says the deployed
+revision is not in this checkout usually means the clone is behind, so `git fetch` and run it again;
+if the revision is still nowhere on origin, the node is following another ref and
+`FILONE_GIT_REF` in `/etc/filone/node.conf` says which. Rolling back is a pin bump like any other:
+
+```sh
+gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
+```
 
 **A bump pull request is sitting open.** The refresh workflow rebuilds every open bump on current
 main, so a stale base is not the reason. It leaves one alone in exactly one case: main moved that
