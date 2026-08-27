@@ -122,8 +122,13 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-initialised="$(docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 "$FILONE_BAO_CONTAINER" \
-  bao status -format=json 2>/dev/null | python3 -c \
+# `bao status` exits 2 on the sealed server this expects to find, so the read and
+# the parse are separate statements. Piping the two together under pipefail hands
+# the fallback a non-zero pipeline even when the parse succeeded, and the variable
+# ends up holding the answer and the word unknown.
+status_json="$(docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 "$FILONE_BAO_CONTAINER" \
+  bao status -format=json 2>/dev/null || true)"
+initialised="$(printf '%s' "$status_json" | python3 -c \
   'import json,sys; print(json.load(sys.stdin)["initialized"])' 2>/dev/null || echo unknown)"
 
 if [ "$initialised" = "False" ]; then

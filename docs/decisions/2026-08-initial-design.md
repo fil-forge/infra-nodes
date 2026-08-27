@@ -99,8 +99,8 @@ signs with.
 ## Secrets
 
 Every secret the node holds lives in a **local OpenBao**, transit-sealed by the central OpenBao at
-`ssm.dev.forge-sandbox.fil.one`, with two exceptions that cannot move there: the seal token, which
-is what unseals OpenBao in the first place, and the certificate keys Caddy manages itself. This is
+`ssm.dev.forge-sandbox.fil.one`, with two exceptions that cannot move there: the unseal token,
+without which OpenBao cannot start, and the certificate keys Caddy manages itself. This is
 [RFC 21]'s model, and the reason for it is the kill lever:
 central can revoke a node's ability to unseal, and the next restart of that node comes back sealed
 and useless.
@@ -180,7 +180,7 @@ Each DID is written into OpenBao beside its key at generation time, so a re-run 
 than deriving it. ucantool v0.1.0's `identity inspect` prints the DID of an existing PEM; switching
 to it would remove the stored copy.
 
-The operator supplies exactly three secrets by hand: the wrapping token the seal token is claimed
+The operator supplies exactly three secrets by hand: the wrapping token the unseal token is claimed
 with, the chain.love access token, and the Grafana Cloud push token.
 
 ## Chain access
