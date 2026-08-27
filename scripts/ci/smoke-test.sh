@@ -154,6 +154,18 @@ check_status() {
     fi
   fi
 
+  # A missing revision or a missing pins file has to be reported, not skipped.
+  # `pin_at` runs under `set -e`, so a failing `git show` would kill this job
+  # before it printed either digest line and the run would end up passing.
+  if ! git cat-file -e "$deployed^{commit}" 2>/dev/null; then
+    fail "apps — the node deployed from $deployed, which is not in this checkout; fetch more history"
+    return
+  fi
+  if ! git cat-file -e "$deployed:$PINS" 2>/dev/null; then
+    fail "apps — $PINS does not exist at ${deployed:0:7}"
+    return
+  fi
+
   # Against the pins at the revision apps was deployed from, not the working
   # tree. A merge that changed neither compose project leaves apps where it was,
   # so the working tree is routinely ahead of it and comparing against that would
@@ -192,11 +204,20 @@ CHECKS=("piri:Piri" "ingot:Ingot" "status:Node status")
 results="$(mktemp -d "${TMPDIR:-/tmp}/filone-smoke.XXXXXX")"
 trap 'rm -rf "$results"' EXIT
 
+pids=()
 for entry in "${CHECKS[@]}"; do
   "check_${entry%%:*}" >"$results/${entry%%:*}" 2>&1 &
+  pids+=("$!")
 done
 
-wait
+# Each job is waited on by pid. A bare `wait` reports success however the jobs
+# ended, so a check that died halfway would leave a short results file and the
+# run would report OK on the checks that never happened.
+for i in "${!CHECKS[@]}"; do
+  entry="${CHECKS[$i]}"
+  wait "${pids[$i]}" ||
+    fail "the check exited before it finished" >>"$results/${entry%%:*}"
+done
 
 for entry in "${CHECKS[@]}"; do
   echo "${entry#*:}"

@@ -377,8 +377,9 @@ ran, a proving gate that has not opened, a deploy that failed, or a node pointed
 `FILONE_GIT_REF` in `/etc/filone/node.conf`. The entries below cover each.
 
 *The dev node failed its smoke test.* The node has the commit and is not serving what the commit
-pins, so suspect the image. The run's log names the failing check. Rolling back is a pin bump like
-any other:
+pins, so suspect the image. The run's log names the failing check. A check that says the deployed
+revision is not in this checkout means the node is following another ref, so read `FILONE_GIT_REF`
+in `/etc/filone/node.conf` before touching a pin. Rolling back is a pin bump like any other:
 
 ```sh
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
