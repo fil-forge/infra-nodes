@@ -102,21 +102,35 @@ jobs:
       # the auto-merge from the earlier head would take that new head into
       # `main` as soon as the checks pass. Anyone's auto-merge goes, including
       # one a human enabled on a major deliberately; re-enabling it is a click.
+      #
+      # `--match-head-commit` closes the gap between the two. The metadata step
+      # above described one head; by the time this step runs the branch may
+      # already hold another, and the revoking run for that head is still
+      # queued behind this one. Binding the merge to the SHA this run inspected
+      # means a head that moved underneath it fails here rather than inheriting
+      # the earlier decision. That failure is the design working: the job goes
+      # red, and the queued run evaluates the new head from scratch.
+      #
+      # Re-arming an already-armed pull request, rather than leaving it alone,
+      # is what keeps that binding current. GitHub does not report which SHA a
+      # live auto-merge is bound to, so a surviving one has to be assumed stale
+      # and replaced.
       - name: Manage auto-merge
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           ELIGIBLE: ${{ steps.decide.outputs.eligible }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
           if [ "$ELIGIBLE" = true ]; then
             if [ "$armed" = true ]; then
-              echo "auto-merge is already enabled on $PR_URL"
-            else
-              gh pr merge --auto --squash "$PR_URL"
+              echo "replacing the auto-merge on $PR_URL, which may predate $HEAD_SHA"
+              gh pr merge --disable-auto "$PR_URL"
             fi
+            gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
           elif [ "$armed" = true ]; then
             echo "this head does not qualify; revoking auto-merge on $PR_URL"
             gh pr merge --disable-auto "$PR_URL"
