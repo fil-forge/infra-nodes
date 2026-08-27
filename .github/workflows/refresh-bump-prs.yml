@@ -1,0 +1,72 @@
+# Rebuilds every open bump pull request on top of current main. The ruleset
+# requires a branch to be up to date before it merges, so one bump landing
+# leaves every other open bump behind main and unmergeable until something
+# moves it. Nothing did: bump-deployed-image.yml rebuilds a branch only when
+# that service publishes again.
+#
+# What a rebuild is and why it is safe: scripts/ci/refresh-bump-prs.sh.
+name: Refresh bump pull requests
+
+# One at a time. Two runs would force-push the same branches from two different
+# commits, and the loser's pull request would show the older main.
+concurrency:
+  group: refresh-bump-prs
+  cancel-in-progress: false
+
+on:
+  push:
+    branches:
+      - main
+      # A bump commit is built from the main its run checked out, which can be
+      # behind by the time the push lands, and nothing after that push would
+      # move the branch until main moves or the service publishes again. The
+      # run a bump push starts here rebuilds it right away. Rebuild pushes
+      # start a run too; it finds every branch current and stops.
+      - bot/bump-*-image-dev
+  # A service's first bump pushes its branch before it opens the pull request,
+  # so the run that push starts can list pull requests before this one exists
+  # and find nothing to rebuild. Opening it starts a run of its own, which the
+  # concurrency group holds until the first finishes, and that run sees it.
+  # The app opens these, and a pull request opened by an app triggers workflows.
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    name: Refresh bump pull requests
+    runs-on: ubuntu-latest
+    # Before the checkout, so an unrelated pull request costs nothing. A fork
+    # cannot reach the signing key anyway, so admitting one would only fail the
+    # token step loudly on every fork branch that borrowed the name.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository
+      && startsWith(github.event.pull_request.head.ref, 'bot/bump-'))
+    steps:
+      # Not GITHUB_TOKEN: a push it makes starts no workflows, so the checks the
+      # refreshed pull request needs would never run and auto-merge would wait
+      # for a status that never arrives.
+      - name: Mint fil-forge-bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token }}
+
+      # The rebuild itself lives in scripts/ci/refresh-bump-prs.sh, so
+      # shellcheck can read it and a person can run it from a terminal.
+      - name: Rebuild every open bump branch
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          APP_SLUG: ${{ steps.bot.outputs.app-slug }}
+        run: scripts/ci/refresh-bump-prs.sh

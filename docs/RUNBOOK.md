@@ -356,6 +356,16 @@ step 2 did not happen, or its weight is zero.
 in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, and in the
 `AWS_REGION` the client signs with.
 
+**A bump pull request is sitting open.** The refresh workflow rebuilds every open bump on current
+main, so a stale base is not the reason. It leaves one alone in exactly one case: main moved that
+service to a third digest while the branch sat there, which makes the digest the node should run a
+question rather than an edit. The run says so in its log. Decide which digest is wanted, then close
+the pull request or dispatch a bump for the digest you want:
+
+```sh
+gh workflow run bump-deployed-image.yml -f service=piri -f digest=sha256:...
+```
+
 **The deadman alert fired.** The node stopped reconciling. Check
 `systemctl status filone-reconcile.timer` and the last few
 `journalctl -u filone-reconcile.service` runs; a failing pass leaves its error there.
