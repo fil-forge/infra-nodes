@@ -17,11 +17,27 @@ applying, which infra-central's
 [appliance onboarding guide](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md)
 covers.
 
-That guide is the other half of steps 3 and 5 below. Whoever runs infra-central mints the seal token
-and registers the node; nothing in this repository can do either, and nothing in that one can read
-this node's keys.
+That guide is the other half of steps 3 and 5 below. Whoever runs infra-central mints the unseal
+token, supplies the payer address and registers the node; nothing in this repository can do any of
+that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
+
+`nodes/dev/node.env` describes the dev node and the accounts it talks to, and the values below name
+those accounts rather than anything in this repository. They are set for dev. A node added later
+needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
+placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
+`origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
+
+`GRAFANA_LOGS_USER` and `GRAFANA_METRICS_USER` are the Loki and Prometheus instance ids of the
+Grafana Cloud stack the node ships to. Both are on the stack's details page in the Grafana Cloud
+portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
+tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
+the cluster its stack sits on, so another stack pushes elsewhere.
+
+`PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
+Only the central account can read it, so ask whoever runs infra-central; their runbook says where
+they get it. It is a public address, so any channel will do.
 
 ### 1. The state bucket, once per account
 
@@ -60,20 +76,27 @@ scripts/operator/ssm-session.sh dev
 sudo -i
 cat /etc/filone/bootstrap-complete     # a timestamp; absent means bootstrap died
 tail -50 /var/log/filone-bootstrap.log
-findmnt /mnt/filone/control /mnt/filone/data
+findmnt /mnt/filone/control
+findmnt /mnt/filone/data
 docker network ls | grep filone
 ```
 
-### 3. The seal token
+### 3. The unseal token
 
-Central mints it, and only now: the token is bound to the address the apply just allocated. Send
-whoever runs infra-central the Elastic IP, and they run
+Central mints it, and only now: the token is bound to the address the apply just allocated. The
+apply printed the Elastic IP; to read it again:
+
+```sh
+tofu -chdir=terraform/envs/dev output -raw public_ip
+```
+
+Send that address to whoever runs infra-central, and they run
 
 ```sh
 make mint-appliance-token STAGE=dev REGION=us-east-9 NODE_IP=<the elastic ip>
 ```
 
-What comes back to you is a **wrapping token**, not the seal token itself. The credential stays
+What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
 inside the central OpenBao until the node claims it in step 4. The wrapping token can be spent once
 and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
 better.
@@ -88,7 +111,7 @@ cd /opt/filone/infra-nodes
 scripts/host/provision-platform.sh
 ```
 
-It asks for the wrapping token, exchanges it at central for the seal token, initialises OpenBao,
+It asks for the wrapping token, exchanges it at central for the unseal token, initialises OpenBao,
 and prints **one recovery key and one root token**.
 Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
 neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
@@ -96,6 +119,10 @@ neither, the only way back into this OpenBao is to rebuild the node and re-onboa
 It then asks for the root token back, to create the deploy token and the KV mount; installs the
 identity tooling (ucantool and cast, pinned in `nodes/dev/node.env`); generates the node's keys;
 asks for the chain.love and Grafana Cloud tokens; and starts Postgres, Caddy and Alloy.
+
+The Grafana Cloud token is an access policy token scoped to the stack with `logs:write` and
+`metrics:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
+needs Admin on the org, so ask whoever holds it if the page tells you to.
 
 Certificates are issued on Caddy's first start. If the DNS records have not propagated yet, Caddy
 retries and the deploy's health gate may time out; re-running `deploy-platform.sh` is safe.
@@ -189,7 +216,7 @@ docker exec -it filone-platform-postgres-1 psql -U admin -d admin \
 The per-service roles have no such problem: `postgres-init` runs `ALTER ROLE` on every deploy, so
 rotating those is a write to OpenBao and a deploy.
 
-**Take a node out of service.** Revoke its seal token at central and restart its OpenBao. It comes
+**Take a node out of service.** Revoke its unseal token at central and restart its OpenBao. It comes
 back sealed, and every deploy on it fails at the first step.
 
 ```sh
@@ -212,7 +239,7 @@ central still carries the old ones.
 
 **1. Rebuild.** Attach a fresh control volume (or replace the instance and let cloud-init mount
 one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
-identities. The transit key at central is per-node, not per-identity, so it stays. The seal token
+identities. The transit key at central is per-node, not per-identity, so it stays. The unseal token
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
 for a new wrapping token.
 
@@ -243,9 +270,8 @@ token.
 **`deploy-apps.sh` says OpenBao has no hilt-to-ingot delegation.** Onboarding has not finished. Run
 `onboarding-request.sh` and install what central returns with `store-hilt-proof.sh`.
 
-**`deploy-apps.sh` says PAYER_ADDRESS is still the placeholder.** Read the address the central dev
-stage's signing service pays from — it is in that stage's provision output and in SSM under
-`/forge-central/dev/signing-service/` — and commit it to `nodes/dev/node.env`.
+**`deploy-apps.sh` says PAYER_ADDRESS is still the placeholder.** Ask whoever runs infra-central for
+the address the stage's signing service pays from, and commit it to `nodes/dev/node.env`.
 
 **Piri crash-loops with a 403 from the registrar.** Its DID is not on the delegator's allow list.
 
