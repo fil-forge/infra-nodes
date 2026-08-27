@@ -315,6 +315,11 @@ reports "not safe" for that whole time, the deploy aborts rather than risk a pro
 the challenge window. If Piri never reports its state at all, the gate proceeds with a warning,
 which is expected before the node has a proof set and worth investigating afterwards.
 
+**The gate says it cannot read `piri-config.toml`.** The container is running but the file is not
+there yet, which is where a node sits while `piri init` is still working and where it stays if init
+died. The gate treats a missing config as "no proof set, nothing to wait for" and lets the deploy
+through; `docker logs filone-piri` says which of the two it is.
+
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
 

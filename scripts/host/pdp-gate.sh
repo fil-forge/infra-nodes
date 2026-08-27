@@ -40,9 +40,34 @@ fi
 # check failing to answer. Everything past this point owes proofs, and a check
 # that will not answer is a reason to stop.
 #
-# Only grep's own exit 1 counts as "no proof set". A docker exec that could not
-# run at all exits 125 or higher, and reading that as an absent proof set would
-# skip the gate on a daemon hiccup — the failure this check exists to close.
+# The config is looked for before it is read. `piri init` writes it on the first
+# boot, and until init returns there is no file: a node in that state has no
+# proof set and no proof in flight, and interrupting init costs nothing, because
+# init is safe to re-run. Folding that case into the read below would report it
+# as a broken `docker exec` — grep exits 2 for a file it cannot open, and the
+# gate would stop a first deploy every time.
+set +e
+docker exec -i "$PIRI_CONTAINER" sh -c 'test -f "$1"' sh "$PIRI_CONFIG" >/dev/null 2>&1
+config_probe=$?
+set -e
+
+case "$config_probe" in
+  0) ;;
+  1)
+    echo "  Piri has not written $PIRI_CONFIG yet; nothing to wait for"
+    exit 0
+    ;;
+  *)
+    die "could not look for $PIRI_CONFIG in $PIRI_CONTAINER (docker exec exited $config_probe).
+       Whether Piri owes a proof is unknown, so the deploy stops rather than restarting it."
+    ;;
+esac
+
+# Only grep's own exit 1 counts as "no proof set". The file is known to exist by
+# now, so a grep that exits 2 found it unreadable, and a docker exec that could
+# not run at all exits 125 or higher. Reading either as an absent proof set
+# would skip the gate on a daemon hiccup — the failure this check exists to
+# close.
 set +e
 docker exec -i "$PIRI_CONTAINER" grep -q proof_set "$PIRI_CONFIG" >/dev/null 2>&1
 proof_set_probe=$?
@@ -55,7 +80,7 @@ case "$proof_set_probe" in
     exit 0
     ;;
   *)
-    die "could not read $PIRI_CONFIG in $PIRI_CONTAINER (docker exec exited $proof_set_probe).
+    die "could not read $PIRI_CONFIG in $PIRI_CONTAINER (exit $proof_set_probe).
        Whether Piri owes a proof is unknown, so the deploy stops rather than restarting it."
     ;;
 esac
