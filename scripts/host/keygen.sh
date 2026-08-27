@@ -102,10 +102,12 @@ fi
 
 # --- The owner wallet -------------------------------------------------------
 
-# The EVM account Piri registers as its owner on-chain. It signs nothing in
-# normal operation — the central signing service does that for the payer — but
-# it is the identity the provider registry records, so losing it means
-# re-registering.
+# The EVM account Piri registers as its owner on-chain. Registration sends 5
+# tFIL from it to the provider registry, so this wallet has to be funded before
+# Piri's first start; docs/RUNBOOK.md step 5 says how much and from where.
+# Nothing after registration spends from it, because the central signing service
+# pays for proofs, but it stays the identity the registry records, so losing it
+# means re-registering.
 echo "[3/4] Owner wallet"
 if bao_has piri owner_wallet_key; then
   bao_has piri owner_wallet_address ||

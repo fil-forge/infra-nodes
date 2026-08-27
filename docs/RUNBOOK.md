@@ -140,6 +140,19 @@ in the form central's `make onboard-appliance` takes. Send that to whoever runs 
 Ingot identity is not in it: central derives that from the region label, so there is nothing to
 mistype.
 
+While central works on that, fund the node's owner wallet. Piri registers itself in the provider
+registry on its first start, and that transaction sends 5 tFIL from this wallet, so send it at least
+6 from a Calibration faucet. The address is printed by `onboarding-request.sh`, and also readable
+directly:
+
+```sh
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/filone/bao-token)" \
+  filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri
+```
+
+This is the only thing the node ever pays for. Proofs are paid by the central signing service from
+`PAYER_ADDRESS`.
+
 Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
 onboarding only central can sign. It lands on your machine, and there is no SSH on the node to copy
 it across, so pass it to `store-hilt-proof.sh` over stdin:
@@ -281,6 +294,11 @@ token.
 the address the stage's signing service pays from, and commit it to `nodes/dev/node.env`.
 
 **Piri crash-loops with a 403 from the registrar.** Its DID is not on the delegator's allow list.
+
+**Piri crash-loops on `wallet balance is too low`.** The owner wallet holds less than the 5 tFIL
+provider registration sends to the registry. Fund it with at least 6, as [step
+5](#5-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
+because the 5 is the transaction's value and the gas comes out of the same wallet.
 
 **Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
 OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri sends the token
