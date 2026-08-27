@@ -166,6 +166,25 @@ Every OpenTofu root is OpenTofu-only, enforced by a `versions.tf` that no Terraf
 satisfies. Running `terraform` in one of these directories stops at that constraint rather than
 writing a state file OpenTofu then refuses to read.
 
+### Dependency updates
+
+Dependabot opens the pull requests, `.github/dependabot.yml` says which and how often, and
+[`auto-merge-dependabot.yml`](.github/workflows/auto-merge-dependabot.yml) merges the ones that are
+minor or patch bumps. The merge is squashed and armed through `fil-forge-bot`, so `main` moves only
+after `tofu`, `shell` and `compose` have passed, and the nodes pull it on the next reconcile like
+any other merge.
+
+A major bump stays open for someone to read. So does a group whose highest change is a major, and so
+does any Dependabot branch that carries a commit Dependabot did not write.
+
+Dependabot rebases its pull requests in place, and the workflow runs again on each new head, so a
+branch that stops qualifying also loses the auto-merge it was given earlier. Each auto-merge is
+bound to the head the workflow inspected, which is what stops a head that arrives mid-run from
+merging on the previous head's decision.
+
+The container images in `versions.env` are outside all of this. No ecosystem reads them, and bumping
+one is a release to the node rather than a dependency update.
+
 ## Related
 
 - [infra-central](https://github.com/fil-forge/infra-central) — the services a node registers with,
