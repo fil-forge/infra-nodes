@@ -10,7 +10,10 @@
 # variables in nodes/*/platform/versions.env and nodes/*/apps/versions.env,
 # which no ecosystem reads: the docker ecosystem wants a Dockerfile and the
 # compose files here name `${PIRI_IMAGE}` rather than a registry reference.
-# Bumping one of those is a release to the node, and it stays a hand edit.
+#
+# Piri and Ingot need no ecosystem anyway. Each dispatches its new digest here
+# when it publishes, and .github/workflows/bump-deployed-image.yml opens the
+# pull request. The platform images stay on mutable tags and are a hand edit.
 version: 2
 
 updates:

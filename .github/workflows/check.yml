@@ -51,6 +51,11 @@ jobs:
           shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
           shellcheck nodes/*/apps/config/piri/entrypoint.sh
 
+          # The CI scripts source nothing, so they need neither flag. They run
+          # in a workflow that opens and merges pull requests, which is reason
+          # enough to check them.
+          shellcheck scripts/ci/*.sh
+
   compose:
     runs-on: ubuntu-latest
     steps:

@@ -64,6 +64,7 @@ nodes/
 scripts/
   host/                 run on the node: provision, deploy, reconcile, keygen, onboarding
   operator/             run from a laptop with AWS credentials for the node's account
+  ci/                   run by the workflows, and by a person at a terminal
 systemd/                the reconcile timer and the seal-token renewal timer
 docs/
   RUNBOOK.md            bringing a node up, and what to do when it will not
@@ -79,6 +80,12 @@ git.
 
 Merge it. `filone-reconcile.timer` fetches `origin/main` every five minutes, works out whether the
 new commits touch the platform project, the apps project or neither, and runs only those deploys.
+
+An image bump starts in the service repository rather than here. When piri or ingot publishes a new
+`:main` image, its publish workflow dispatches the digest to
+[`bump-deployed-image.yml`](.github/workflows/bump-deployed-image.yml), which rewrites the one line
+in `nodes/dev/apps/versions.env` and opens a pull request with auto-merge armed. The required checks
+still gate it. Merging queues the image; the node deploys it on its next pass.
 
 An apps deploy waits for `piri status upgrade-check` to report a safe window before restarting Piri,
 so an image bump never costs a proof. The gate runs in dev too — a mechanism that only runs in
@@ -157,7 +164,7 @@ away and so does the tmpfs.
 ```sh
 tofu fmt -recursive terraform/
 tofu -chdir=terraform/envs/dev init -backend=false && tofu -chdir=terraform/envs/dev validate
-shellcheck scripts/host/*.sh scripts/operator/*.sh
+shellcheck scripts/host/*.sh scripts/operator/*.sh scripts/ci/*.sh
 ```
 
 CI runs the same three, plus `docker compose config` on both projects.
@@ -182,8 +189,10 @@ branch that stops qualifying also loses the auto-merge it was given earlier. Eac
 bound to the head the workflow inspected, which is what stops a head that arrives mid-run from
 merging on the previous head's decision.
 
-The container images in `versions.env` are outside all of this. No ecosystem reads them, and bumping
-one is a release to the node rather than a dependency update.
+The container images are outside all of this, and no ecosystem reads them. Piri and Ingot have a
+mechanism of their own: each dispatches its new digest here when it publishes, which is
+[how a change reaches a node](#how-a-change-reaches-a-node) above. The platform images in
+`nodes/dev/platform/versions.env` stay on mutable tags and are a hand edit.
 
 ## Related
 
