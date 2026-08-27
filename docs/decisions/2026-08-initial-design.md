@@ -254,7 +254,10 @@ answers this directly: exit 0 is safe, exit 1 is proving or in an unproven chall
 is unable to tell.
 
 The gate fails closed. A node whose config carries no proof set has no proof to miss and skips the
-wait, and that is checked directly rather than inferred from `upgrade-check` declining to answer.
+wait, and that is checked directly rather than inferred from `upgrade-check` declining to answer. A
+node with no config at all skips the wait only when the snapshot `piri init` writes last is missing
+too: deleting a config releases nothing on chain, so on a node that has initialised once a missing
+config aborts the deploy.
 Past that point the node owes proofs, so exit 2 counts as unsafe: a Piri that will not report its
 proving state until the timeout runs out aborts the deploy. An operator who knows Piri is wedged
 stops the container and re-runs, because a Piri that is already down has no proof in flight.

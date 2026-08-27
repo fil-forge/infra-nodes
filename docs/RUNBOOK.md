@@ -315,13 +315,16 @@ itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually re
 
 **The proving gate never lets a deploy through.** `pdp-gate.sh` waits 45 minutes by default. If Piri
 reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it after
-the challenge window. If Piri never reports its state at all, the gate proceeds with a warning,
-which is expected before the node has a proof set and worth investigating afterwards.
+the challenge window. A Piri that owes proofs and will not report its state at all is treated the
+same way, most often because the chain RPC is unreachable.
 
-**The gate says it cannot read `piri-config.toml`.** The container is running but the file is not
-there yet, which is where a node sits while `piri init` is still working and where it stays if init
-died. The gate treats a missing config as "no proof set, nothing to wait for" and lets the deploy
-through; `docker logs filone-piri` says which of the two it is.
+**The gate says `piri-config.toml` is missing.** The container is running but the file is not there
+yet, which is where a node sits while `piri init` is still working and where it stays if init died.
+`docker logs filone-piri` says which of the two it is. The gate lets the deploy through only when
+`piri-base-config.applied.toml` is missing too, because init writes that file last and a node that
+has never got that far holds no proof set. A missing config next to a present snapshot aborts the
+deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
+`docker stop filone-piri` if the node is being decommissioned.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
