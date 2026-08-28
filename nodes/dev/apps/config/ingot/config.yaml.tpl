@@ -33,10 +33,14 @@ cors_allowed_origins:
 root_access: "${INGOT_ROOT_ACCESS_KEY}"
 root_secret: "${INGOT_ROOT_SECRET_KEY}"
 
-# Ingot signs as this key's did:key. It serves no did:web document, which is why
-# hilt's delegation to it can only be issued once the node exists.
+# Ingot signs as this did:web and serves the matching document at
+# /.well-known/did.json, over the same listener. The key below is what the
+# document publishes and what actually signs; the DID is the name hilt's
+# delegation is addressed to, so the two sides agree without central ever
+# seeing this key.
 identity:
   key_file: /keys/ingot.pem
+  service_id: ${INGOT_DID}
 
 # Segment metadata and the blob location registry, in the node's shared
 # Postgres. The password matches the one postgres-init set for this role.

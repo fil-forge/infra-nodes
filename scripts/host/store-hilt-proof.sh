@@ -38,7 +38,11 @@ proof="$(printf '%s' "$proof" | tr -d '[:space:]')"
 [ -n "$proof" ] || die "$SOURCE holds no delegation"
 
 echo "=== store hilt proof ($FILONE_NODE) ==="
-echo "  Ingot: $(bao_get ingot did)"
+# The delegation is addressed to the did:web, so print that one first. Nothing
+# here checks it against the pasted proof: the proof is a UCAN container and
+# ucantool v0.1.0 cannot decode one, so a delegation issued to the wrong
+# audience is caught only when Ingot's first /s3/* call is refused.
+echo "  Ingot: $INGOT_DID (key: $(bao_get ingot did))"
 
 # patch, so the Ingot's own key and DID at this path survive. The value goes in
 # over stdin: on the command line it would be in the container's argv.

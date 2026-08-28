@@ -146,8 +146,10 @@ all of which are rebuilt from this repository.
 - the **data volume** holds Piri's blobs and Ingot's spool
 - the **Elastic IP** is what the unseal token is bound to and what both hostnames resolve to
 
-Losing the control volume loses the node's identity, which means new DIDs and a full re-onboarding
-at central. Dev takes no backups, by decision.
+Losing the control volume loses the node's keys, which means a new Piri DID and a full
+re-onboarding at central. Ingot's identity is its hostname, a `did:web` served from the node, so a
+rebuilt node publishes a new key under the same DID and central's delegation to it survives. Dev
+takes no backups, by decision.
 
 ## Before production
 

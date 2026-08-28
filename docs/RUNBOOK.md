@@ -137,8 +137,11 @@ scripts/host/onboarding-request.sh
 
 It prints the node's Piri DID, its public URL and the delegation it signed with its own Piri key,
 in the form central's `make onboard-appliance` takes. Send that to whoever runs infra-central. The
-Ingot identity is not in it: central derives that from the region label, so there is nothing to
-mistype.
+Ingot identity is not in it: central derives the same did:web from the stage's domain, so there is
+nothing to mistype. The script prints it anyway, because the node has to be configured with the
+matching string — `INGOT_DID` in `nodes/<node>/node.env`, which `deploy-apps.sh` renders into
+Ingot's `identity.service_id`. Central's delegation is addressed to that DID, and a mismatch shows
+up only when Ingot's first S3 call is refused.
 
 While central works on that, fund the node's owner wallet. Piri registers itself in the provider
 registry on its first start, and that transaction sends 5 tFIL from this wallet, so send it at least
@@ -295,8 +298,10 @@ docker logs --tail 200 filone-piri
 
 ## Re-onboarding after identity loss
 
-Losing the control volume loses the node's keys, so the rebuilt node is a new node: new DIDs, and
-central still carries the old ones.
+Losing the control volume loses the node's keys, so the rebuilt node comes back with a new Piri
+DID and central still carries the old one. Ingot is unaffected: its DID is its hostname, so a
+rebuilt node publishes a new key at the same `did:web`, and hilt's delegation to it stays valid.
+Everything below is about Piri.
 
 **1. Rebuild.** Attach a fresh control volume (or replace the instance and let cloud-init mount
 one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
@@ -305,13 +310,13 @@ lives on the root volume and survives unless the instance was replaced too; if i
 for a new wrapping token.
 
 **2. Remove the old identity at central.** Ask whoever runs infra-central to drop the old Piri DID
-from the delegator's allow list and to deregister or zero-weight the old provider at sprue and hilt.
-Central's guide covers this: hilt in particular refuses to move a provider and raises the same
-"already registered" error whichever region holds the row, so a stale row has to be corrected in its
-database.
+from the delegator's allow list and to deregister or zero-weight the old provider at sprue. hilt's
+provider row is keyed by the Ingot DID, which the rebuild does not change, so it stays as it is.
 
-**3. Onboard the new DIDs.** [Step 5](#5-onboarding-then-the-apps) again, then `provision-apps.sh`
-and the timers.
+**3. Onboard the new Piri DID.** [Step 5](#5-onboarding-then-the-apps) again, then
+`provision-apps.sh` and the timers. hilt's delegation to Ingot is unchanged and central still holds
+it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and store it with
+`store-hilt-proof.sh`: the rebuilt OpenBao has no copy of it.
 
 The data volume still holds the old identity's blobs and spool. Dev data is disposable; wipe it and
 start clean rather than carry data the new identity cannot serve.

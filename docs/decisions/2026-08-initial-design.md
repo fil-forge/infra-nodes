@@ -161,8 +161,16 @@ Provisioning generates the node's Ed25519 identities (Piri, Ingot), the Piri own
 password directly into the local OpenBao. **No private key ever leaves the box**, and no private key
 is ever on an operator's laptop or in OpenTofu state.
 
-The accepted cost: the control-plane volume is the only copy of the node's identity. Lose it and the
-node is a new node — new DIDs, full re-onboarding at central.
+The two identities are named differently. Piri is its key: a `did:key` that central puts on the
+delegator's allow list, so a new key is a new Piri. Ingot is its hostname: a `did:web` on the name
+it already serves, set as `INGOT_DID` in `node.env` and rendered into `identity.service_id`, with
+the key published in the document Ingot serves at `/.well-known/did.json`. That lets hilt address
+its delegation to a name that exists before the node does, and lets the node rotate the key behind
+it without central reissuing anything.
+
+The accepted cost: the control-plane volume is the only copy of the node's keys. Lose it and Piri
+is a new provider — new DID, full re-onboarding at central. Ingot comes back under the same name
+with a new key.
 
 Tooling is three single-purpose binaries and no build toolchain on the host.
 
