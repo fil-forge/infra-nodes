@@ -418,6 +418,11 @@ in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, a
 
 **A `filone-alerts` message arrived.** It says which of two things happened.
 
+When the failing commit is an image bump, the message carries a further line naming the service
+commit that produced the image and who wrote it, read from the source commit link the bump left in
+the commit body. A lookup that fails drops the line and sends the alert anyway, and the run log names
+the repository and commit it could not read.
+
 *The dev node never reached this commit.* The commit merged and the node has not deployed it within
 an hour. `journalctl -u filone-reconcile.service -n 200` on the box shows which: a pass that never
 ran, a proving gate that has not opened, a deploy that failed, or a node pointed at another ref by
