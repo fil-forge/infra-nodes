@@ -49,6 +49,7 @@ bao_is_unsealed || die "OpenBao is sealed. Either the seal token is revoked or e
 # Also renewed on every reconcile pass, so this one is for the operator running
 # this script by hand on a node that has been quiet.
 renew_bao_token
+renew_ingot_regionkey_token
 
 POSTGRES_ADMIN_PASSWORD="$(bao_get postgres admin_password)"
 PIRI_POSTGRES_PASSWORD="$(bao_get postgres piri_password)"

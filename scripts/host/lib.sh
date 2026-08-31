@@ -20,6 +20,12 @@ FILONE_SEAL_TOKEN_FILE=/etc/filone/seal-token
 FILONE_BAO_TOKEN_FILE=/etc/filone/bao-token
 FILONE_BAO_CONTAINER=filone-openbao
 
+# The bind mount OpenBao's unix listener puts its API socket on, and Ingot
+# mounts to reach it. Created root-owned, like the secrets tmpfs: OpenBao's
+# entrypoint chowns it to the user the server drops to before that drop
+# happens, which is the same thing that makes the raft mount writable.
+FILONE_BAO_SOCKET_DIR=/run/filone/bao
+
 # Where this node's secrets live in the local OpenBao. One KV v2 mount, one
 # path per subject, so a policy can be written per subject later without moving
 # anything.
@@ -57,6 +63,16 @@ filone_init() {
 
   mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
   install -d -m 0700 -o root -g root "$FILONE_SECRETS_DIR"
+  # cloud-init creates this too, so on a fresh node it is already there. Here as
+  # well, so a node provisioned before the socket existed gets the directory on
+  # its next deploy rather than on a re-bootstrap.
+  install -d -m 0700 -o root -g root "$FILONE_BAO_SOCKET_DIR"
+
+  # Ingot's region KEK, in this node's own transit engine. Derived from the one
+  # statement of the region string rather than committed a second time, so a
+  # node that is renamed cannot end up wrapping under a key named for the old
+  # region while its config asks for the new one.
+  FILONE_REGIONKEY_NAME="region-$REGION_LABEL"
 
   # When this run started. wait_healthy uses it to tell a container that
   # crash-looped just now from one that restarted at some point in the past.
@@ -239,6 +255,93 @@ bao_is_unsealed() {
 renew_bao_token() {
   bao token renew >/dev/null ||
     die "could not renew the local OpenBao deploy token"
+}
+
+# Renew the token Ingot holds for the region wrap key. Periodic like the deploy
+# token, and renewed on the same schedule and for the same reason: Ingot's own
+# lifetime watcher is not shipped yet, so nothing inside the running process
+# keeps its lease alive.
+#
+# The read and the renewal use different tokens on purpose. bao() prefers
+# BAO_TOKEN over the deploy token file, so the assignment below makes `bao token
+# renew` act on the region token, while bao_get above it still runs under the
+# deploy token that is allowed to read the secret. Written as two statements
+# rather than one prefixed command: a die inside the substitution of a
+# `BAO_TOKEN="$(bao_get ...)" bao ...` prefix is swallowed, BAO_TOKEN lands
+# empty, and the renewal silently extends the deploy token instead.
+renew_ingot_regionkey_token() {
+  local token
+  bao_has ingot regionkey_token ||
+    die "OpenBao has no token for the region wrap key. Run
+       scripts/host/provision-regionkey.sh; without it Ingot cannot encrypt or
+       decrypt any object."
+  token="$(bao_get ingot regionkey_token)"
+
+  BAO_TOKEN="$token" bao token renew >/dev/null ||
+    die "could not renew Ingot's region-key token. If it has already lapsed,
+       scripts/host/provision-regionkey.sh mints a replacement."
+}
+
+# Create the transit engine, the region key, the policy that reaches it and the
+# token Ingot holds. Called by provision-platform.sh on a new node and by
+# provision-regionkey.sh on one that predates the key; both run it under the
+# root token, which is what enabling an engine and writing a policy need.
+provision_regionkey() {
+  bao secrets enable -path=transit transit >/dev/null 2>&1 ||
+    echo "  transit engine already enabled"
+
+  # aes256-gcm96 with derived keys: Ingot passes each object's own context to
+  # encrypt and decrypt, so one region key produces a distinct key per object
+  # and the ciphertexts cannot be moved between them.
+  if bao read "transit/keys/$FILONE_REGIONKEY_NAME" >/dev/null 2>&1; then
+    echo "  transit key $FILONE_REGIONKEY_NAME already exists"
+  else
+    bao write "transit/keys/$FILONE_REGIONKEY_NAME" type=aes256-gcm96 derived=true >/dev/null ||
+      die "could not create transit/keys/$FILONE_REGIONKEY_NAME"
+    echo "  transit key $FILONE_REGIONKEY_NAME created"
+  fi
+
+  # Wrap and unwrap under this one key, and nothing else. Reading the key
+  # material is not on the list, so a copy of the token lifted out of Ingot's
+  # config wraps and unwraps against this node's OpenBao while it is running and
+  # is worth nothing once the node is out of service.
+  bao policy write ingot-regionkey - <<POLICY >/dev/null
+path "transit/encrypt/$FILONE_REGIONKEY_NAME" {
+  capabilities = ["update"]
+}
+path "transit/decrypt/$FILONE_REGIONKEY_NAME" {
+  capabilities = ["update"]
+}
+POLICY
+
+  # No -no-default-policy: renew-self and lookup-self come from `default`, which
+  # is how the deploy token renews as well.
+  #
+  # Orphan, so revoking the root token later does not take Ingot's writes with
+  # it. Periodic, so it renews forever; every reconcile pass renews it, which is
+  # every five minutes, because nothing inside the running Ingot keeps its lease
+  # alive yet.
+  #
+  # Minted on every run, unlike everything above it. This script is the path
+  # back from a revoked or lapsed token, and a re-run that kept the dead one
+  # would report success and leave Ingot unable to write an object.
+  local token
+  token="$(bao token create -policy=ingot-regionkey -orphan -period=72h -field=token)" ||
+    die "could not create the ingot-regionkey token"
+
+  # patch where the path exists, so Ingot's key, DID and hilt proof survive; put
+  # where it does not, because patch fails on a missing path and on a new node
+  # this runs before keygen creates it. Over stdin either way: on the command
+  # line the token would be in the container's argv.
+  if bao_path_exists ingot; then
+    bao kv patch -mount="$FILONE_BAO_MOUNT" ingot regionkey_token=- <<<"$token" >/dev/null ||
+      die "could not write $FILONE_BAO_MOUNT/ingot#regionkey_token"
+  else
+    bao kv put -mount="$FILONE_BAO_MOUNT" ingot regionkey_token=- <<<"$token" >/dev/null ||
+      die "could not create $FILONE_BAO_MOUNT/ingot"
+  fi
+  unset token
+  echo "  ingot#regionkey_token written"
 }
 
 # Read one field. Missing paths and missing fields both fail loudly rather than

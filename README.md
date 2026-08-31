@@ -159,11 +159,13 @@ Two things this repository should have before a node carries anything that matte
 raft snapshots off the box, or scheduled `pg_dump` — and a restore that has actually been run,
 because the failure this protects against is the one where the node's identity is gone.
 
-**Piri and Ingot reading their secrets from OpenBao.** Both take configuration as files today,
-including the Postgres DSN, the root S3 credentials and their private keys, which is why the deploy
-scripts render secrets into a tmpfs at all. RFC 21 asks for nothing secret in a plain file; a tmpfs
-file is still a file. With both services able to fetch their own secrets, the rendering step goes
-away and so does the tmpfs.
+**Piri and Ingot reading their secrets from OpenBao.** Ingot already reads one thing from it
+directly: the region key every object is encrypted under stays inside OpenBao's transit engine, and
+Ingot reaches it over a unix socket. Everything else is still a file, including the Postgres DSN,
+the root S3 credentials and both private keys, which is why the deploy scripts render secrets into a
+tmpfs at all. RFC 21 asks for nothing secret in a plain file; a tmpfs file is still a file. With both
+services able to fetch the rest of their own secrets, the rendering step goes away and so does the
+tmpfs.
 
 ## Development
 
