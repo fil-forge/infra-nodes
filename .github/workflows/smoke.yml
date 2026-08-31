@@ -149,6 +149,60 @@ jobs:
             echo "next=The node has this commit and is not serving it. Suspect the image it pinned." >> "$GITHUB_OUTPUT"
           fi
 
+      # A bump commit says which service image changed and nothing about what
+      # changed inside it, so the alert names a digest nobody recognises. Bump
+      # deployed image writes the source commit into the body as a link, and
+      # that line is what this reads: matching it is the actual precondition for
+      # the lookup, stricter than checking the actor and the subject prefix.
+      #
+      # Every publisher repository is public, so GITHUB_TOKEN reads it and no
+      # app token has to be minted on the failure path.
+      #
+      # The whole step is best-effort. A rename, a deleted repository or a rate
+      # limit must not swallow the alert, so every failure leaves the output
+      # empty and the message below falls back to the infra-nodes commit alone.
+      - id: source
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          body=$(git log -1 --format=%B)
+          line=$(printf '%s\n' "$body" \
+            | grep -oE '^- Commit: https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/commit/[0-9a-f]{40}$' \
+            | head -1) || true
+          if [ -z "$line" ]; then
+            echo "no source commit link in the commit body"
+            exit 0
+          fi
+
+          line_url=${line#- Commit: }
+          path=${line_url#https://github.com/}
+          repo=${path%/commit/*}
+          sha=${path##*/commit/}
+
+          json=$(gh api "repos/$repo/commits/$sha") || {
+            echo "::warning::could not read $repo@${sha:0:7}"
+            exit 0
+          }
+
+          # First line only: GITHUB_OUTPUT reads a newline as the end of the
+          # value and the rest as further outputs.
+          subject=$(printf '%s' "$json" | jq -r '.commit.message | split("\n")[0]')
+          # login is null when the commit email belongs to no GitHub account, so
+          # the git author name stands in and links no profile.
+          login=$(printf '%s' "$json" | jq -r '.author.login // ""')
+          if [ -n "$login" ]; then
+            author="<https://github.com/$login|@$login>"
+          else
+            author=$(printf '%s' "$json" | jq -r '.commit.author.name // "an unknown author"')
+          fi
+
+          # The finished Slack line rather than its parts, so the payload below
+          # interpolates one value and needs no markup of its own.
+          echo "line=Service commit: \`$subject\` by $author (<$line_url|$repo@${sha:0:7}>)" \
+            >> "$GITHUB_OUTPUT"
+
       # Every interpolation goes through toJSON, because the payload is JSON and
       # a commit subject is free to contain a quote or a backslash.
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
@@ -158,7 +212,7 @@ jobs:
           payload: |
             {
               "channel": "filone-alerts",
-              "text": ${{ toJSON(format('{0}. Commit: {1} by @{2}. Details: {3}/{4}/actions/runs/{5}', steps.what.outputs.headline, steps.what.outputs.subject, github.actor, github.server_url, github.repository, github.run_id)) }},
+              "text": ${{ toJSON(format('{0}. Commit: {1} by @{2}. {3}Details: {4}/{5}/actions/runs/{6}', steps.what.outputs.headline, steps.what.outputs.subject, github.actor, steps.source.outputs.line && format('{0}. ', steps.source.outputs.line) || '', github.server_url, github.repository, github.run_id)) }},
               "blocks": [
                 {
                   "type": "section",
@@ -174,6 +228,7 @@ jobs:
                     "text": ${{ toJSON(format('Commit: `{0}` by <https://github.com/{1}|@{1}>', steps.what.outputs.subject, github.actor)) }}
                   }
                 },
+                ${{ steps.source.outputs.line && format('{{"type":"section","text":{{"type":"mrkdwn","text":{0}}}}},', toJSON(steps.source.outputs.line)) || '' }}
                 {
                   "type": "section",
                   "text": {
