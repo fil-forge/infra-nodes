@@ -116,9 +116,21 @@ and prints **one recovery key and one root token**.
 Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
 neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
 
-It then asks for the root token back, to create the deploy token and the KV mount; installs the
-identity tooling (ucantool and cast, pinned in `nodes/dev/node.env`); generates the node's keys;
-asks for the chain.love and Grafana Cloud tokens; and starts Postgres, Caddy and Alloy.
+It then asks for the root token back twice, to create the deploy token and the KV mount and then the
+region key Ingot encrypts objects under; installs the identity tooling (ucantool and cast, pinned in
+`nodes/dev/node.env`); generates the node's keys; asks for the chain.love and Grafana Cloud tokens;
+and starts Postgres, Caddy and Alloy.
+
+A node provisioned before the region key existed gets it from a separate run of the same steps:
+
+```sh
+scripts/host/provision-regionkey.sh
+```
+
+It asks for the root token, enables the transit engine, creates `region-us-east-9`, writes the
+`ingot-regionkey` policy and mints the token Ingot holds. Re-running it is also how a revoked or
+lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
+overwrites the old one.
 
 The Grafana Cloud token is an access policy token scoped to the stack with `logs:write` and
 `metrics:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
@@ -280,6 +292,15 @@ docker exec -it filone-platform-postgres-1 psql -U admin -d admin \
 The per-service roles have no such problem: `postgres-init` runs `ALTER ROLE` on every deploy, so
 rotating those is a write to OpenBao and a deploy.
 
+**Rotate Ingot's region-key token.** Run `provision-regionkey.sh` and then `deploy-apps.sh`. The old
+token is left valid until it lapses; revoke it at `bao token revoke -accessor <accessor>` if it was
+taken rather than merely aged.
+
+The region KEK itself is a different matter. Rotating `transit/keys/region-us-east-9` leaves every
+stored wrap on the old version, which transit still decrypts, so a rotation is safe and a
+`min_decryption_version` bump is not: it makes every object written before it unreadable. There is
+no rewrap campaign in this repository yet, and Ingot's token cannot run one.
+
 **Take a node out of service.** Revoke its unseal token at central and restart its OpenBao. It comes
 back sealed, and every deploy on it fails at the first step.
 
@@ -335,6 +356,27 @@ token.
 
 **`deploy-apps.sh` says OpenBao has no hilt-to-ingot delegation.** Onboarding has not finished. Run
 `onboarding-request.sh` and install what central returns with `store-hilt-proof.sh`.
+
+**`deploy-apps.sh` or a reconcile pass says OpenBao has no token for the region wrap key.** The node
+predates the region key, or its token was revoked. Run `provision-regionkey.sh`. Until it runs,
+every reconcile pass stops at the renewal and every deploy stops at the token read, including
+deploys of unrelated changes.
+
+**Ingot starts and answers `/health`, and every object write fails.** Ingot checks neither the
+socket path nor the token at startup, so a wrong one reaches the S3 layer as an unclassified error
+on the first PutObject or GetObject. Three causes, in the order worth checking:
+
+- The token has lapsed. `bao token lookup` under it says so; `provision-regionkey.sh` replaces it.
+- OpenBao is sealed and answers 503 on the socket. No renewal covers this, because a reseal is the
+  kill lever central pulls; the node is out of service until it unseals.
+- The socket is not there. `docker exec filone-openbao ls -l /openbao/logs/api.sock` shows it, and
+  `docker exec filone-ingot ls -l /run/openbao/api.sock` shows the same file from Ingot's side. A
+  platform deploy that predates the unix listener leaves the first missing.
+
+**A write fails for one tenant and works for others.** That tenant's `did:plc` document carries no
+`#wrap` verification method, so there is no key to encrypt to. The region wrap is unaffected and the
+rest of the region keeps working. `curl https://plc.dev.forge-sandbox.fil.one/<did>` shows the
+document Ingot resolved.
 
 **`deploy-apps.sh` says PAYER_ADDRESS is still the placeholder.** Ask whoever runs infra-central for
 the address the stage's signing service pays from, and commit it to `nodes/dev/node.env`.

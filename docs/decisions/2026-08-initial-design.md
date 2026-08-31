@@ -140,6 +140,31 @@ script says so and points at the reissue that revokes it.
 AWS IAM auth would remove the shared secret entirely, but it binds the node's identity to an AWS
 instance profile — a poor fit for appliances that will eventually run outside AWS.
 
+### The node's OpenBao also holds the region key
+
+Ingot encrypts every object under a content-encryption key of its own, and wraps that key under a
+region KEK before storing it. The wrap runs in a transit engine on the node's own OpenBao, so the
+KEK never enters Ingot's process and an operator who reads Ingot's config gets a token that wraps
+and unwraps while this node runs and nothing more. Bucket encryption is not optional: Ingot refuses
+to start without a region key provider.
+
+That gives OpenBao a second listener, a unix socket on a bind mount Ingot shares. The API still
+publishes no port and still joins no Docker network, so the earlier decision holds in the form that
+matters: reaching this API means being handed the directory the socket sits in, and the only two
+things holding it are OpenBao and Ingot. The socket lives under `/openbao/logs` inside the OpenBao
+container, which is one of the three paths the image's entrypoint chowns before it drops privileges,
+so nothing here pins a uid the image allocates implicitly.
+
+Ingot's token is orphan and periodic like the deploy token, and renewed by the same reconcile pass,
+because nothing inside the running Ingot keeps its lease alive yet. The policy behind it grants
+`update` on `transit/encrypt/region-us-east-9` and `transit/decrypt/region-us-east-9` and nothing
+else.
+
+The second half of an object's encryption is the tenant's. Ingot resolves the tenant's `did:plc`
+document from the directory central publishes for the stage and wraps to the `#wrap` key it finds
+there, so a tenant with no such key in their document cannot be written to. That resolution is an
+HTTPS call to central and is independent of the region wrap.
+
 ### Secrets reach Piri and Ingot as rendered files
 
 Piri and Ingot read their configuration from files, including the secrets in it: Ingot's YAML embeds
@@ -248,10 +273,13 @@ successful pass stamps `deploy_last_success_timestamp`, which Alloy ships to Gra
 deadman alert fires when the node stops reporting at all — the failure mode a per-deploy alert
 cannot see.
 
-Every pass renews the node's local OpenBao token, whether or not it deploys anything. That token is
-periodic, which renews it forever only for as long as something keeps renewing it, and a node can go
-days without a platform commit; let the period lapse and the next deploy stops at its first secret
-read. Every pass also takes a lock that the deploy scripts take when an operator runs them by hand, so the
+Every pass renews the node's local OpenBao tokens, whether or not it deploys anything: the deploy
+token, and Ingot's region-key token. Both are periodic, which renews them forever only for as long
+as something keeps renewing them, and a node can go days without a platform commit. Let the deploy
+token's period lapse and the next deploy stops at its first secret read; let Ingot's lapse and object
+reads and writes both fail at the wrap, on a gateway that still answers `/health`.
+
+Every pass also takes a lock that the deploy scripts take when an operator runs them by hand, so the
 five-minute `git reset` cannot replace the scripts and rendered configuration a manual deploy is
 part-way through reading.
 

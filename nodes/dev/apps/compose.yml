@@ -75,6 +75,11 @@ services:
       # in its own right and lives on the tmpfs with the rest.
       - /run/filone/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
       - /run/filone/secrets/hilt-ingot-proof.txt:/proofs/hilt-ingot-proof.txt:ro
+      # The node's OpenBao, over the unix socket its listener creates here.
+      # Every object's content-encryption key is wrapped under the region KEK in
+      # that OpenBao's transit engine, so this mount is what makes a write
+      # possible at all. Read-write for the same reason the OpenBao side is.
+      - /run/filone/bao:/run/openbao
       - /mnt/filone/data/ingot:/data
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]

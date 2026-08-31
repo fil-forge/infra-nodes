@@ -114,6 +114,12 @@ if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_
 # period is shorter than that.
 renew_bao_token
 
+# After the deploy token, so a node that has no region token yet still keeps its
+# deploy token alive. Every five minutes against a 72h period, which leaves
+# plenty of room: a reconcile stalled for three days is already alarmed through
+# deploy_last_success_timestamp.
+renew_ingot_regionkey_token
+
 # --- 5. Deploy --------------------------------------------------------------
 
 # From the checkout, not from the copy this script re-exec'd out of. A commit

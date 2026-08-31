@@ -79,7 +79,12 @@ mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/ingot.pem" "$INGOT_IDE
 INGOT_POSTGRES_PASSWORD="$(bao_get postgres ingot_password)"
 INGOT_ROOT_ACCESS_KEY="$(bao_get ingot root_access_key)"
 INGOT_ROOT_SECRET_KEY="$(bao_get ingot root_secret_key)"
+# The token Ingot wraps object keys with, minted by provision-regionkey.sh.
+# bao_get dies when it is absent, which is the right answer: Ingot rendered
+# without it starts, answers /health and fails on the first object write.
+INGOT_REGIONKEY_TOKEN="$(bao_get ingot regionkey_token)"
 export INGOT_POSTGRES_PASSWORD INGOT_ROOT_ACCESS_KEY INGOT_ROOT_SECRET_KEY
+export INGOT_REGIONKEY_TOKEN FILONE_REGIONKEY_NAME
 mark ingot_changed render_template \
   "$FILONE_NODE_DIR/apps/config/ingot/config.yaml.tpl" \
   "$FILONE_SECRETS_DIR/ingot-config.yaml"

@@ -12,7 +12,8 @@
 #     --env-file /run/filone/secrets/platform.env up -d
 #
 # Only Caddy publishes a port. Postgres is reachable on the filone network and
-# nowhere else, and OpenBao is not on that network at all.
+# nowhere else, and OpenBao is not on that network at all: the one thing that
+# reaches its API is Ingot, over a unix socket on a shared bind mount.
 name: filone-platform
 
 services:
@@ -41,9 +42,22 @@ services:
     volumes:
       - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
       - /mnt/filone/control/openbao:/openbao/file
-    # No ports and no filone network. The listener is on the container's
-    # loopback, so the only way to reach this API is `docker exec`, which is
-    # root on the host.
+      # Where the unix listener in bao.hcl puts its socket. Ingot mounts the
+      # same host directory and dials the socket for every object key it wraps
+      # or unwraps.
+      #
+      # /openbao/logs rather than a path of our own, for the same reason the
+      # raft mount is /openbao/file: those are the paths the entrypoint chowns
+      # before it drops privileges, so the server can create its socket there.
+      #
+      # Read-write, and so is Ingot's side: connecting to a socket on a
+      # read-only bind mount is not dependably permitted, and the whole content
+      # of this mount is one socket.
+      - /run/filone/bao:/openbao/logs
+    # No ports and no filone network. The TCP listener is on the container's
+    # loopback, so the only way to reach this API from the host is `docker
+    # exec`, which is root, and the only way in from another container is the
+    # socket above.
     healthcheck:
       # `bao status` exits 0 unsealed, 2 sealed, 1 unreachable. Sealed is not
       # healthy: a sealed OpenBao serves nothing, and a deploy that proceeded

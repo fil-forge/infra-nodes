@@ -7,6 +7,10 @@
 #
 # Safe to re-run: OpenBao is initialised only if it is not already, and every
 # secret is written only if absent, so a run that fails halfway can be repeated.
+# The one exception is Ingot's region-key token in step 4, which is minted on
+# every run because that step is also the rotation path. A re-run therefore ends
+# with a token the running Ingot does not hold yet; the next apps deploy renders
+# it, and the old one stays valid until its period lapses.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -31,7 +35,7 @@ echo "=== provision platform ($FILONE_NODE) ==="
 # token central mints is bound to that address.
 if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
   central="$(central_seal_addr)"
-  echo "[1/7] Claiming the seal token from $central"
+  echo "[1/8] Claiming the seal token from $central"
   echo
   echo "  Central runs 'make mint-appliance-token' in infra-central and hands back a"
   echo "  wrapping token. Paste it here; it is not echoed. Exchanging it spends it, and"
@@ -103,12 +107,12 @@ print(token)
   unset seal_token
   echo "  stored in $FILONE_SEAL_TOKEN_FILE"
 else
-  echo "[1/7] Seal token already present"
+  echo "[1/8] Seal token already present"
 fi
 
 # --- 2. OpenBao -------------------------------------------------------------
 
-echo "[2/7] Starting OpenBao"
+echo "[2/8] Starting OpenBao"
 write_openbao_env
 compose_platform up -d openbao
 
@@ -161,7 +165,7 @@ bao_is_unsealed || die "OpenBao is sealed. The transit key named in platform/con
 # else, so a copy of it lifted off the box is worth exactly this node's
 # secrets — which are already on the box.
 if [ ! -r "$FILONE_BAO_TOKEN_FILE" ]; then
-  echo "[3/7] Creating the deploy token"
+  echo "[3/8] Creating the deploy token"
   echo "  paste the root token printed above (not echoed):"
   read -rsp "root token: " root_token
   echo
@@ -194,27 +198,45 @@ POLICY
   echo "  Store the root token in 1Password and clear it from your shell history."
   echo "  Nothing on this node holds it."
 else
-  echo "[3/7] Deploy token already present"
+  echo "[3/8] Deploy token already present"
 fi
 
-# --- 4. Identity tooling ----------------------------------------------------
+# --- 4. The region key ------------------------------------------------------
+
+# Ingot wraps every object's content-encryption key under this one, in this
+# node's own transit engine, and refuses to start without it. Directly after the
+# deploy token because it needs the same root token: enabling a secrets engine
+# and writing a policy are both outside what the deploy token is granted.
+echo "[4/8] Creating the region key"
+echo "  paste the root token again (not echoed):"
+read -rsp "root token: " root_token
+echo
+[ -n "$root_token" ] || die "no root token given"
+BAO_TOKEN="$root_token"
+export BAO_TOKEN
+unset root_token
+
+provision_regionkey
+unset BAO_TOKEN
+
+# --- 5. Identity tooling ----------------------------------------------------
 
 # ucantool and cast, pinned in the node's node.env. keygen.sh below is the only
 # consumer; installing here rather than at first boot means a version bump is a
 # commit and a re-run of install-tools.sh, not a replaced instance.
-echo "[4/7] Installing identity tooling"
+echo "[5/8] Installing identity tooling"
 "$SCRIPT_DIR/install-tools.sh"
 
-# --- 5. Keys and passwords --------------------------------------------------
+# --- 6. Keys and passwords --------------------------------------------------
 
-echo "[5/7] Generating keys and passwords"
+echo "[6/8] Generating keys and passwords"
 [ -x "$SCRIPT_DIR/keygen.sh" ] ||
   die "scripts/host/keygen.sh is missing or not executable in $FILONE_CHECKOUT"
 "$SCRIPT_DIR/keygen.sh"
 
-# --- 6. Operator-supplied secrets -------------------------------------------
+# --- 7. Operator-supplied secrets -------------------------------------------
 
-echo "[6/7] Operator-supplied secrets"
+echo "[7/8] Operator-supplied secrets"
 prompt_secret() {
   local path="$1" field="$2" description="$3" value
   if bao_has "$path" "$field"; then
@@ -230,9 +252,9 @@ prompt_secret() {
 prompt_secret external chain_rpc_token "chain.love access token"
 prompt_secret external grafana_push_token "Grafana Cloud push token"
 
-# --- 7. The rest of the platform --------------------------------------------
+# --- 8. The rest of the platform --------------------------------------------
 
-echo "[7/7] Starting Postgres, Caddy and Alloy"
+echo "[8/8] Starting Postgres, Caddy and Alloy"
 "$SCRIPT_DIR/deploy-platform.sh"
 
 echo

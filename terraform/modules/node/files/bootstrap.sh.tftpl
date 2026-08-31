@@ -99,11 +99,16 @@ echo "[4/7] Creating the secrets tmpfs"
 # Rendered secrets live in RAM and never touch a disk that survives a reboot.
 # /run is already a tmpfs, so this is a directory in it that systemd recreates
 # with the same mode after every boot.
+#
+# bao/ holds no secret: it is where OpenBao's unix listener creates the API
+# socket Ingot dials. Root-owned, because OpenBao's entrypoint chowns it to the
+# user the server drops to when the container starts.
 mkdir -p /etc/filone
-install -d -m 0700 -o root -g root /run/filone /run/filone/secrets
+install -d -m 0700 -o root -g root /run/filone /run/filone/secrets /run/filone/bao
 cat > /etc/tmpfiles.d/filone.conf <<'TMPFILES'
 d /run/filone 0700 root root -
 d /run/filone/secrets 0700 root root -
+d /run/filone/bao 0700 root root -
 TMPFILES
 
 echo "[5/7] Creating the shared docker network"
