@@ -8,10 +8,12 @@
 # it prints and returns hilt's delegation to this node's Ingot, which
 # store-hilt-proof.sh installs.
 #
-# The Ingot identity is not in here. Central derives it from the region label as
-# a did:web under the stage's domain, so there is nothing to send and nothing to
-# mistype, and the DID document publishes whichever key the node currently
-# holds. infra-central's docs/appliance-onboarding.md is where that is decided.
+# The Ingot identity is not sent, only shown. Central derives the same did:web
+# from the stage's domain, so there is nothing to mistype, and the DID document
+# this node serves publishes whichever key it currently holds. It is printed
+# below because it is the one string both sides have to agree on, and a
+# mismatch is invisible until Ingot's first S3 call is refused.
+# infra-central's docs/appliance-onboarding.md is where that is decided.
 #
 # Runs after keygen.sh, which creates the identity printed here, and before
 # provision-apps.sh: Piri's first `piri init` asks the delegator for approval and
@@ -48,6 +50,11 @@ piri-proof.txt is the delegation below, one line, no trailing newline. It is not
 a secret: a delegation names its audience, and using this one means holding
 this node's Piri key.
 
+Central derives this node's Ingot identity rather than taking it as an argument.
+It should come out as the DID this node is configured with:
+
+  $INGOT_DID
+
 INFO
 
 bao_get piri sprue_proof
@@ -66,9 +73,9 @@ both fit; an unfunded wallet makes Piri crash-loop on "wallet balance is too
 low". This is the only thing the node ever pays for. Proofs are paid by the
 central signing service from PAYER_ADDRESS.
 
-Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot. The
-file lands on your own machine, so paste the delegation into store-hilt-proof.sh
-over stdin, then start the apps:
+Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot,
+addressed to the DID above. The file lands on your own machine, so paste the
+delegation into store-hilt-proof.sh over stdin, then start the apps:
 
   scripts/host/store-hilt-proof.sh -
   scripts/host/provision-apps.sh

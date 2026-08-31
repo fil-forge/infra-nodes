@@ -33,6 +33,10 @@ command -v cast >/dev/null || die "cast is not on PATH; run scripts/host/install
 
 # --- Identities -------------------------------------------------------------
 
+# Both DIDs printed here are did:keys, and Piri's is the one it uses. Ingot
+# signs as the did:web in node.env instead, and this key is what its DID
+# document publishes; the other host scripts print the pair.
+#
 # ucantool prints the PEM on stdout and the DID on stderr. The DID goes into
 # OpenBao in the same write as the key, and every later run reads it rather than
 # deriving it. ucantool v0.1.0 gained `identity inspect`, which

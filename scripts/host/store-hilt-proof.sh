@@ -38,7 +38,13 @@ proof="$(printf '%s' "$proof" | tr -d '[:space:]')"
 [ -n "$proof" ] || die "$SOURCE holds no delegation"
 
 echo "=== store hilt proof ($FILONE_NODE) ==="
-echo "  Ingot: $(bao_get ingot did)"
+# The delegation is addressed to the did:web, so print that one first. Nothing
+# here checks it against the pasted proof yet, so a delegation issued to the
+# wrong audience is caught only when Ingot's first /s3/* call is refused.
+# `ucantool view -i <n> -j` does decode one entry of the container into fields,
+# so the check is possible; it needs an index per entry and a jq path through
+# the spec version, which is the ergonomics ucantool is being asked to fix.
+echo "  Ingot: $INGOT_DID (key: $(bao_get ingot did))"
 
 # patch, so the Ingot's own key and DID at this path survive. The value goes in
 # over stdin: on the command line it would be in the container's argv.
