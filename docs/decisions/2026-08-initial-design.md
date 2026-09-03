@@ -108,6 +108,9 @@ without which OpenBao cannot start, and the certificate keys Caddy manages itsel
 central can revoke a node's ability to unseal, and the next restart of that node comes back sealed
 and useless.
 
+This hostname has since moved to the name RFC 16 gives central's OpenBao; see
+[Names follow RFC 16](#names-follow-rfc-16) below.
+
 ### Storage is raft on the control volume
 
 OpenBao stores in raft on the control-plane volume. The alternative — the Postgres backend, matching
