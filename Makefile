@@ -45,7 +45,7 @@ check-shell:
 .PHONY: check-compose
 check-compose:
 	@set -euo pipefail; \
-	secrets="$$(mktemp)"; \
+	secrets="$$(mktemp "$${TMPDIR:-/tmp}/filone-check-compose.XXXXXX")"; \
 	trap 'rm -f "$$secrets"' EXIT; \
 	printf '%s\n' \
 	  SEAL_TOKEN=x \
