@@ -27,14 +27,21 @@ One node so far: `dev`, in us-east-2, paired with infra-central's dev stage.
                     Caddy  (80/443, ACME)
                       │
         ┌─────────────┴─────────────┐
-   piri.<suffix>              ingot.<suffix>
+ piri-0.<forge>            s3.<region>.<content>
         │                           │
       Piri ──────────────────────► Ingot
         │                           │
         ├──────── Postgres ─────────┘
         │              │
-   chain.love      OpenBao ──── unseals against ssm.<suffix> (infra-central)
+   chain.love      OpenBao ──── unseals against ssm.<forge> (infra-central)
 ```
+
+On the dev node `<forge>` is `latest.dev.fil-forge.com` and `<content>` is
+`latest.dev.filonecontent.com`. Piri and the central services answer on the Forge domain; Ingot
+answers on the content one, and that hostname with `did:web:` in front is the identity central
+addresses its delegation to. Both names come from [RFC 16][rfc-16].
+
+[rfc-16]: https://github.com/fil-one/RFC/blob/main/rfcs/2026-07-forge-service-identities.md
 
 Two Compose projects. **platform** is OpenBao, Postgres, Caddy and Alloy; **apps** is Piri and
 Ingot. They are separate because they restart on different terms: an apps deploy waits for Piri's
@@ -49,7 +56,7 @@ is not even on it.
 ```
 terraform/
   modules/
-    shared/constants/   account ids, the Route53 zone, the state bucket name
+    shared/constants/   account ids, the Route53 zones, the state bucket name
     tfstate/            the state bucket, created by the bootstrap root
     node/               a node: EC2, two EBS volumes, an Elastic IP, a security
                         group, DNS, IAM, and the cloud-init that prepares the box
@@ -147,9 +154,9 @@ all of which are rebuilt from this repository.
 - the **Elastic IP** is what the unseal token is bound to and what both hostnames resolve to
 
 Losing the control volume loses the node's keys, which means a new Piri DID and a full
-re-onboarding at central. Ingot's identity is its hostname, a `did:web` served from the node, so a
-rebuilt node publishes a new key under the same DID and central's delegation to it survives. Dev
-takes no backups, by decision.
+re-onboarding at central. Ingot's `did:web` is derived from the region label and the content domain,
+both of which central holds, so a rebuilt node publishes a new key under the same DID and central's
+delegation to it survives. Dev takes no backups, by decision.
 
 ## Before production
 
@@ -172,12 +179,12 @@ tmpfs.
 `tofu`, `docker`, `shellcheck`. There is nothing to build.
 
 ```sh
-tofu fmt -recursive terraform/
-tofu -chdir=terraform/envs/dev init -backend=false && tofu -chdir=terraform/envs/dev validate
-shellcheck scripts/host/*.sh scripts/operator/*.sh scripts/ci/*.sh
+make check
 ```
 
-CI runs the same three, plus `docker compose config` on both projects.
+That is `check-tofu`, `check-shell` and `check-compose`, which are the three jobs in
+[`check.yml`](.github/workflows/check.yml); each job runs one target, so CI checks what a laptop
+does.
 
 Every OpenTofu root is OpenTofu-only, enforced by a `versions.tf` that no Terraform release
 satisfies. Running `terraform` in one of these directories stops at that constraint rather than

@@ -38,6 +38,14 @@ variable "hostname_suffix" {
   type = string
 }
 
+variable "ingot_hostname_suffix" {
+  type = string
+}
+
+variable "piri_index" {
+  type = number
+}
+
 variable "region_label" {
   type = string
 }
@@ -61,10 +69,15 @@ module "node" {
   region_label      = var.region_label
   availability_zone = var.availability_zone
 
-  # The same Route53 zone infra-central's non-prod stages write into, so the
-  # node's hostnames sit next to the services it talks to.
-  zone_name       = module.constants.nonprod_zone_name
+  # Piri sits in the same Route53 zone infra-central's dev stage writes into, so
+  # its hostname is next to the services it talks to. Ingot answers on the
+  # content domain instead, which is a zone of its own.
+  zone_name       = module.constants.dev_forge_zone_name
   hostname_suffix = var.hostname_suffix
+  piri_index      = var.piri_index
+
+  ingot_zone_name       = module.constants.dev_content_zone_name
+  ingot_hostname_suffix = var.ingot_hostname_suffix
 
   instance_type       = var.instance_type
   control_volume_size = var.control_volume_size

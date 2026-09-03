@@ -5,10 +5,14 @@
 # Everything that cannot be rebuilt from this repository — the node's identity
 # keys, its Postgres databases, its issued certificates, its Elastic IP — lives
 # on a resource with prevent_destroy. Replacing the VM is an ordinary operation.
+#
+# The two hostnames sit in different zones, one per public domain, and
+# region_label is part of Ingot's: central derives the appliance's did:web from
+# the same two strings, so a change to either is a change of identity.
 
 locals {
-  piri_hostname  = "piri.${var.hostname_suffix}"
-  ingot_hostname = "ingot.${var.hostname_suffix}"
+  piri_hostname  = "piri-${var.piri_index}.${var.hostname_suffix}"
+  ingot_hostname = "s3.${var.region_label}.${var.ingot_hostname_suffix}"
 }
 
 # Ubuntu Server LTS for arm64, published by Canonical (099720109477). Looked up
@@ -47,6 +51,11 @@ data "aws_subnet" "node" {
 
 data "aws_route53_zone" "this" {
   name         = "${var.zone_name}."
+  private_zone = false
+}
+
+data "aws_route53_zone" "ingot" {
+  name         = "${var.ingot_zone_name}."
   private_zone = false
 }
 
@@ -275,7 +284,7 @@ resource "aws_route53_record" "piri" {
 }
 
 resource "aws_route53_record" "ingot" {
-  zone_id = data.aws_route53_zone.this.zone_id
+  zone_id = data.aws_route53_zone.ingot.zone_id
   name    = local.ingot_hostname
   type    = "A"
   ttl     = 300

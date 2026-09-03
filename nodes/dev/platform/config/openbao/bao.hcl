@@ -71,7 +71,7 @@ listener "unix" {
 # Mounts cannot nest, so per-node separation is in the key name rather than a
 # sub-path, and the node's policy grants encrypt and decrypt on this key alone.
 seal "transit" {
-  address    = "https://ssm.dev.forge-sandbox.fil.one"
+  address    = "https://ssm.latest.dev.fil-forge.com"
   mount_path = "transit"
   key_name   = "appliance-unseal-us-east-9"
 }

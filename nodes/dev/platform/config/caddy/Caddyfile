@@ -30,8 +30,8 @@ https://{$PIRI_HOSTNAME} {
 }
 
 # Ingot. Addressed path-style: there is no wildcard certificate for
-# <bucket>.ingot.<suffix>, so a client using virtual-host addressing fails TLS
-# before it reaches anything here.
+# <bucket>.s3.<region>.<suffix>, so a client using virtual-host addressing
+# fails TLS before it reaches anything here.
 https://{$INGOT_HOSTNAME} {
 	reverse_proxy ingot:9000
 }
