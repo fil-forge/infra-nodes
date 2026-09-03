@@ -245,7 +245,7 @@ sees it:
 
 ```sh
 scripts/ci/smoke-test.sh dev
-curl -s https://piri.dev.forge-sandbox.fil.one/.well-known/filone-node-status.json | jq
+curl -s https://piri-0.latest.dev.fil-forge.com/.well-known/filone-node-status.json | jq
 ```
 
 The document carries a revision per stamp. `reconcile` is the commit the node has reached, advanced
@@ -320,9 +320,11 @@ docker logs --tail 200 filone-piri
 ## Re-onboarding after identity loss
 
 Losing the control volume loses the node's keys, so the rebuilt node comes back with a new Piri
-DID and central still carries the old one. Ingot is unaffected: its DID is its hostname, so a
-rebuilt node publishes a new key at the same `did:web`, and hilt's delegation to it stays valid.
-Everything below is about Piri.
+DID and central still carries the old one. Ingot is unaffected as long as its hostname holds: the
+`did:web` is derived from the region label and the content domain, both of which central also holds,
+so a rebuilt node publishes a new key at the same DID and hilt's delegation to it stays valid.
+Everything below is about Piri. A node whose Ingot hostname *does* change is a different case, at
+the end of this section.
 
 **1. Rebuild.** Attach a fresh control volume (or replace the instance and let cloud-init mount
 one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
@@ -341,6 +343,28 @@ it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and
 
 The data volume still holds the old identity's blobs and spool. Dev data is disposable; wipe it and
 start clean rather than carry data the new identity cannot serve.
+
+**When the Ingot DID changes too**, because the region label or the content domain moved, central
+carries two pieces of state addressed to an identity that no longer exists: hilt's `provider` row,
+keyed by the DID, and the delegation stored at
+`/forge-central/<stage>/appliance/<region>/hilt-ingot-s3-proof`, keyed by the region. Ask whoever
+runs infra-central to clear both before you onboard:
+
+```sh
+make retire-region STAGE=dev REGION=us-east-9
+```
+
+It prints what it found, asks for confirmation, then deletes the row and the parameter. Run it
+before onboarding. Neither problem it fixes shows up in the onboarding dry run: that reads hilt by
+the *new* DID, finds nothing and reports a clean registration, so the UNIQUE conflict on the
+provider row only surfaces once `Apply` has written the allow-list and sprue entries. The stale
+delegation raises no error at central at all; it shows up as a 403 on Ingot's first S3 call.
+Onboarding's log line has to read "issued hilt's S3 delegation to the appliance" with the new Ingot
+DID as the audience. "Returning the delegation issued earlier" means the retire did not take.
+
+`retire-region` leaves `unseal-token.accessor` alone, which is what the onboard phase checks before
+it will admit a region at all. It does not touch sprue's registration for the old Piri DID either,
+which is the same tidying step 2 above describes.
 
 ## When something is wrong
 
@@ -375,7 +399,7 @@ on the first PutObject or GetObject. Three causes, in the order worth checking:
 
 **A write fails for one tenant and works for others.** That tenant's `did:plc` document carries no
 `#wrap` verification method, so there is no key to encrypt to. The region wrap is unaffected and the
-rest of the region keeps working. `curl https://plc.dev.forge-sandbox.fil.one/<did>` shows the
+rest of the region keeps working. `curl https://plc.latest.dev.fil-forge.com/<did>` shows the
 document Ingot resolved.
 
 **`deploy-apps.sh` says PAYER_ADDRESS is still the placeholder.** Ask whoever runs infra-central for

@@ -14,7 +14,7 @@ output "piri_url" {
 }
 
 output "ingot_url" {
-  description = "Ingot's public URL. S3 clients address it path-style: there is no wildcard certificate for bucket subdomains."
+  description = "Ingot's public URL, and the did:web identity it signs with once did:web: replaces the scheme. S3 clients address it path-style: there is no wildcard certificate for <bucket>.<hostname>."
   value       = "https://${local.ingot_hostname}"
 }
 

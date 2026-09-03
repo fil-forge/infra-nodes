@@ -8,9 +8,9 @@
 # host reaches this port.
 #
 # PATH-STYLE ONLY. There is no wildcard certificate for
-# <bucket>.ingot.dev.forge-sandbox.fil.one, so a client using virtual-host
-# addressing fails TLS before it gets here. Clients set force_path_style or
-# addressing_style=path.
+# <bucket>.s3.us-east-9.latest.dev.filonecontent.com, so a client using
+# virtual-host addressing fails TLS before it gets here. Clients set
+# force_path_style or addressing_style=path.
 addr: "0.0.0.0:9000"
 
 # The virtual region this node presents. hilt registers this Ingot under the

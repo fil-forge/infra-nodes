@@ -6,10 +6,16 @@
 # building a new node rather than moving this one.
 availability_zone = "us-east-2a"
 
-# Piri answers at piri.dev.forge-sandbox.fil.one, Ingot at
-# ingot.dev.forge-sandbox.fil.one. The stage label lives inside the zone, which
-# is what lets one delegation serve dev and any later stage.
-hostname_suffix = "dev.forge-sandbox.fil.one"
+# Piri answers at piri-0.latest.dev.fil-forge.com and Ingot at
+# s3.us-east-9.latest.dev.filonecontent.com, the names RFC 16 gives Forge
+# services. `latest` is this long-lived dev environment's label; staging uses
+# `staging` and production carries none, so the suffixes are stated here rather
+# than composed from a stage.
+hostname_suffix       = "latest.dev.fil-forge.com"
+ingot_hostname_suffix = "latest.dev.filonecontent.com"
+
+# There is one Piri on this node, and no second appliance shares the suffix.
+piri_index = 0
 
 # The virtual S3 region this node presents. Deliberately not a real AWS region:
 # an S3 client that guesses a real one should fail loudly rather than half-work.

@@ -85,6 +85,9 @@ There is one Piri per region. The service is called `piri`, its key is `piri.pem
 the piri proof. smelt's `piri-0` suffix, which anticipated several nodes per box, is not carried
 over into the dev instance. We can explore multi-piri setup in the future.
 
+Both hostnames have since moved to the names RFC 16 gives Forge services; see
+[Names follow RFC 16](#names-follow-rfc-16) below.
+
 ### The region label is `us-east-9`
 
 Ingot presents an S3 API, and S3 clients sign requests with a region. The production naming scheme
@@ -403,5 +406,28 @@ The `fil-forge/infra-nodes` repository and the `ghcr.io/fil-forge/piri` and `ghc
 images are all readable anonymously, verified without credentials. So the node clones and pulls with
 no git or registry secret at all, which is one less credential to deliver, rotate and revoke. If
 either becomes private, a read-only credential lands in the local OpenBao like every other secret.
+
+## Names follow RFC 16
+
+[RFC 16](https://github.com/fil-one/RFC/blob/main/rfcs/2026-07-forge-service-identities.md) settles
+the domain names Forge services answer at, and infra-central adopts them for its dev stage. The dev
+node follows: Piri answers at **`piri-0.latest.dev.fil-forge.com`**, Ingot at
+**`s3.us-east-9.latest.dev.filonecontent.com`**, and central's OpenBao at
+`ssm.latest.dev.fil-forge.com`. `latest` is the RFC's label for this long-lived dev environment;
+staging uses `staging` and production carries none, so `node.env` states each hostname literally
+rather than composing it from `STAGE`, which keeps its own name and value.
+
+The `piri-0` suffix comes back with this, because the RFC numbers Piri instances within a hostname
+suffix rather than per box.
+
+Two public domains means two Route53 zones. Piri's record goes into `dev.fil-forge.com` and Ingot's
+into `dev.filonecontent.com`, both delegated to this account by
+[fil-one/infrastructure](https://github.com/fil-one/infrastructure), so the node's root module still
+looks up zones that exist in its own account.
+
+Ingot's identity moves with its hostname. Central derives `did:web:s3.<region>.<content suffix>` from
+the region label and the content domain, so the region label is now part of an address rather than
+only a tag, and a change to either end is a change of identity: hilt's provider row and the stored
+S3 delegation both have to be retired and reissued.
 
 [RFC 21]: https://github.com/fil-one/RFC/pull/21

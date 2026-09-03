@@ -14,9 +14,14 @@ output "prod_account_id" {
   value       = "811430801166"
 }
 
-output "nonprod_zone_name" {
-  description = "Route53 hosted zone every non-prod node writes its A records into. fil.one itself is served by Cloudflare, so this is the delegated subdomain that actually exists in Route53, and it is the same zone infra-central's non-prod stages use."
-  value       = "forge-sandbox.fil.one"
+output "dev_forge_zone_name" {
+  description = "Route53 hosted zone holding the dev node's Piri record, and the zone infra-central's dev stage writes its own service names into. Delegated to this account by fil-one/infrastructure, which is what makes it a zone that exists in Route53 rather than a name served by Cloudflare."
+  value       = "dev.fil-forge.com"
+}
+
+output "dev_content_zone_name" {
+  description = "Route53 hosted zone holding the dev node's Ingot record. Content is served from its own domain, so an appliance's S3 name and its did:web live here rather than beside the Forge services. Delegated to this account by fil-one/infrastructure."
+  value       = "dev.filonecontent.com"
 }
 
 output "state_bucket_name_prefix" {
