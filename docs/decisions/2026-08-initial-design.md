@@ -82,11 +82,11 @@ zone, pointed at the node's Elastic IP. The zone is in the same account, so the 
 resources in the node's own root module.
 
 There is one Piri per region. The service is called `piri`, its key is `piri.pem`, its delegation is
-the piri proof. smelt's `piri-0` suffix, which anticipated several nodes per box, is not carried
-over into the dev instance. We can explore multi-piri setup in the future.
+the piri proof. smelt's `piri-0` suffix, which anticipated several nodes per box, was not part of
+this initial hostname. We can explore multi-piri setup in the future.
 
-Both hostnames have since moved to the names RFC 16 gives Forge services; see
-[Names follow RFC 16](#names-follow-rfc-16) below.
+Both hostnames, and the `piri-0` suffix itself, have since moved to the names RFC 16 gives Forge
+services; see [Names follow RFC 16](#names-follow-rfc-16) below.
 
 ### The region label is `us-east-9`
 
