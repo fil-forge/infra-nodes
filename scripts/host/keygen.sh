@@ -77,10 +77,26 @@ generate_identity ingot
 # Signed by Piri's own key, so central cannot issue it: this is the half of
 # onboarding that has to originate on the node. Onboarding hands it to sprue as
 # the third argument of `provider register`.
+#
+# The audience travels with the proof. A delegation's audience is fixed at
+# issue time, so a node.env change to SPRUE_DID does not reach a proof already
+# sitting in OpenBao; without a recorded audience to compare against, a stale
+# proof would look "already issued" forever while every call it backs is
+# addressed to a DID sprue no longer answers to.
 echo "[2/4] Piri delegation to sprue"
-if bao_has piri sprue_proof; then
+sprue_proof_current=false
+if bao_has piri sprue_proof && bao_has piri sprue_proof_audience &&
+  [ "$(bao_get piri sprue_proof_audience)" = "$SPRUE_DID" ]; then
+  sprue_proof_current=true
+fi
+
+if "$sprue_proof_current"; then
   echo "  already issued"
 else
+  if bao_has piri sprue_proof; then
+    echo "  stored delegation predates SPRUE_DID=$SPRUE_DID; reissuing"
+  fi
+
   pem="$WORK_DIR/piri-signing.pem"
   install -m 0600 /dev/null "$pem"
   # The trailing newline matters: a PEM whose END line runs into EOF is not
@@ -100,7 +116,7 @@ else
     --container=base64+gzip)"
 
   rm -f "$pem"
-  bao_put_if_absent piri sprue_proof "$proof"
+  bao_replace_fields piri sprue_proof "$proof" sprue_proof_audience "$SPRUE_DID"
   echo "  issued"
 fi
 

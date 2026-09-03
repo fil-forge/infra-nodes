@@ -301,6 +301,12 @@ stored wrap on the old version, which transit still decrypts, so a rotation is s
 `min_decryption_version` bump is not: it makes every object written before it unreadable. There is
 no rewrap campaign in this repository yet, and Ingot's token cannot run one.
 
+**Reissue Piri's delegation to sprue after SPRUE_DID changes.** Run `keygen.sh` again. It compares
+the delegation's stored audience against the current `SPRUE_DID` and reissues automatically when
+they differ, so this is the same command as the first run. sprue needs nothing from this beyond the
+new proof reaching Piri on the next `deploy-apps.sh`; the old delegation just becomes one addressed
+to a DID sprue no longer answers to.
+
 **Take a node out of service.** Revoke its unseal token at central and restart its OpenBao. It comes
 back sealed, and every deploy on it fails at the first step.
 

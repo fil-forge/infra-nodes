@@ -374,7 +374,7 @@ bao_path_exists() {
 # from. The first field is the one that is looked up, so pass the key itself
 # first and its metadata after it.
 bao_put_if_absent() {
-  local path="$1" field="$2" fields json
+  local path="$1" field="$2"
   shift
   if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
     die "bao_put_if_absent $path: expected field/value pairs, got $# arguments"
@@ -384,6 +384,29 @@ bao_put_if_absent() {
     echo "  $path#$field already set, keeping it"
     return 0
   fi
+
+  bao_write_fields "$path" "$@"
+}
+
+# Write one or more field/value pairs unconditionally, overwriting any that are
+# already there. For rotating a value bao_put_if_absent would otherwise leave
+# alone, such as a delegation whose audience has changed underneath it.
+bao_replace_fields() {
+  local path="$1"
+  shift
+  if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
+    die "bao_replace_fields $path: expected field/value pairs, got $# arguments"
+  fi
+
+  bao_write_fields "$path" "$@"
+}
+
+# The write both functions above share, in a single OpenBao write. The whole
+# group lands or none of it does, because a value and the metadata that names
+# it are useless apart.
+bao_write_fields() {
+  local path="$1" fields json
+  shift
 
   json="$(bao_fields_json "$@")" || die "could not encode the fields for $FILONE_BAO_MOUNT/$path"
 
