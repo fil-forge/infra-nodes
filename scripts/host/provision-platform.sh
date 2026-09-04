@@ -254,13 +254,25 @@ if [ "${LOTUS_RPC_AUTH_REQUIRED:-true}" = true ]; then
 else
   echo "  local Lotus RPC is unauthenticated"
 fi
+
+if node_ships_telemetry; then
+  prompt_secret external grafana_push_token "Grafana Cloud push token"
+else
+  echo "  node.env names no Grafana endpoints, so no push token is needed"
+fi
+
 # --- 8. The rest of the platform --------------------------------------------
 
-if [ "${FILONE_HOST_CADDY:-false}" = true ]; then
-  echo "[8/8] Starting Postgres"
-else
-  echo "[8/8] Starting Postgres and Caddy"
+# Which of them this node runs. The staging appliance has the host's Caddy and
+# the host's Alloy, so there it is Postgres alone.
+starting="Postgres"
+if [ "${FILONE_HOST_CADDY:-false}" != true ]; then
+  starting="$starting, Caddy"
 fi
+if node_ships_telemetry; then
+  starting="$starting and Alloy"
+fi
+echo "[8/8] Starting $starting"
 "$SCRIPT_DIR/deploy-platform.sh"
 
 echo

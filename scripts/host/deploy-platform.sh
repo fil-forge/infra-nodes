@@ -28,6 +28,11 @@ take_deploy_lock
 
 echo "=== deploy platform ($FILONE_NODE) ==="
 
+if node_ships_telemetry; then
+  require_configured GRAFANA_LOGS_USER 000000
+  require_configured GRAFANA_METRICS_USER 000000
+fi
+
 echo "[1/7] Reading secrets"
 write_openbao_env
 
@@ -52,6 +57,13 @@ POSTGRES_ADMIN_PASSWORD="$(bao_get postgres admin_password)"
 PIRI_POSTGRES_PASSWORD="$(bao_get postgres piri_password)"
 INGOT_POSTGRES_PASSWORD="$(bao_get postgres ingot_password)"
 export POSTGRES_ADMIN_PASSWORD PIRI_POSTGRES_PASSWORD INGOT_POSTGRES_PASSWORD
+
+# Only where Alloy runs in this project. A node whose host ships its telemetry
+# has no such secret and no template asking for one.
+if node_ships_telemetry; then
+  GRAFANA_PUSH_TOKEN="$(bao_get external grafana_push_token)"
+  export GRAFANA_PUSH_TOKEN
+fi
 
 platform_changed=0
 

@@ -95,6 +95,32 @@ require_configured() {
     die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
 }
 
+# Whether this node ships its own telemetry, from whether its node.env carries
+# the Grafana Cloud endpoints. A node whose host owns Alloy leaves all four out
+# and needs no push token; a node that runs Alloy in the platform project has
+# all four and does.
+#
+# All four or none. A node.env missing one of them would otherwise deploy as if
+# it shipped nothing, and the operator's first sign of it would be a template
+# complaining about GRAFANA_PUSH_TOKEN several steps later.
+node_ships_telemetry() {
+  local name set_names="" unset_names=""
+  for name in GRAFANA_LOGS_URL GRAFANA_LOGS_USER GRAFANA_METRICS_URL GRAFANA_METRICS_USER; do
+    if [ -n "${!name:-}" ]; then
+      set_names+=" $name"
+    else
+      unset_names+=" $name"
+    fi
+  done
+
+  [ -n "$set_names" ] || return 1
+  [ -n "$unset_names" ] &&
+    die "$FILONE_NODE_DIR/node.env sets$set_names but not$unset_names.
+       Alloy needs all four to push, or none of them for a node whose host ships
+       its telemetry instead."
+  return 0
+}
+
 # --- systemd ---------------------------------------------------------------
 
 # The service unit this process is running inside, or nothing when it was
