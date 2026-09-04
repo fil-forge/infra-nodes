@@ -1,4 +1,4 @@
-# Checks that the dev node is serving what main pins.
+# Checks that the dev and staging nodes are serving what main pins.
 #
 # A merge queues an image rather than deploying it: the node picks it up on its
 # next reconcile pass and can spend 45 minutes in the proving gate before Piri
@@ -22,7 +22,7 @@ on:
 # previous image, pass, and alert nothing, which is the gap this workflow exists
 # to close.
 concurrency:
-  group: smoke-dev-${{ github.event_name }}
+  group: smoke-nodes-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -34,6 +34,10 @@ jobs:
   wait:
     name: Wait for the node to reach this commit
     if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [dev, staging]
     runs-on: ubuntu-latest
     # The budget below plus room for the checkout and a slow first poll.
     timeout-minutes: 75
@@ -47,17 +51,14 @@ jobs:
       - name: Poll the node's status document
         env:
           COMMIT: ${{ github.sha }}
+          NODE: ${{ matrix.node }}
         run: |
           set -euo pipefail
-          host=$(sed -nE 's/^PIRI_HOSTNAME=(.*)$/\1/p' nodes/dev/node.env | tail -1)
-          [ -n "$host" ] || { echo "::error::no PIRI_HOSTNAME in nodes/dev/node.env"; exit 1; }
+          host=$(sed -nE 's/^PIRI_HOSTNAME=(.*)$/\1/p' "nodes/$NODE/node.env" | tail -1)
+          [ -n "$host" ] || { echo "::error::no PIRI_HOSTNAME in nodes/$NODE/node.env"; exit 1; }
           url="https://$host/.well-known/filone-node-status.json"
-
-          # Five minutes of reconcile interval, plus the 45-minute proving gate,
-          # plus the deploy and the health gate behind it.
           deadline=$(( $(date +%s) + 60 * 60 ))
-          echo "waiting for $url to report ${COMMIT:0:7} or a descendant"
-
+          echo "waiting for $NODE at $url to report ${COMMIT:0:7} or a descendant"
           while :; do
             # reconcile, not apps: it is stamped on every pass, so a commit
             # that deployed neither project still advances it. apps would sit
@@ -71,13 +72,13 @@ jobs:
               echo "  reports $reported, which is not in this checkout"
             elif git merge-base --is-ancestor "$COMMIT" "$reported"; then
               echo "  the node is on ${reported:0:7}"
-              exit 0
+              break
             else
               echo "  still on ${reported:0:7}"
             fi
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::the node did not reach ${COMMIT:0:7} within 60 minutes"
+              echo "::error::$NODE did not reach ${COMMIT:0:7} within 60 minutes"
               exit 1
             fi
             sleep 60
@@ -90,6 +91,10 @@ jobs:
     # a success. A failed wait skips this: the node never got the commit, so
     # testing it would report on the previous one.
     if: ${{ !cancelled() && (needs.wait.result == 'success' || needs.wait.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [dev, staging]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -106,22 +111,23 @@ jobs:
           # Only on a push: a schedule and a manual run check the node as it
           # stands, against whatever revision it reports.
           REVISION: ${{ github.event_name == 'push' && github.sha || '' }}
+          NODE: ${{ matrix.node }}
         run: |
           set -uo pipefail
-          args=(dev)
+          args=($NODE)
           [ -z "$REVISION" ] || args+=(--revision "$REVISION")
-
+          passed=false
           for attempt in 1 2 3 4 5; do
-            echo "::group::attempt $attempt"
+            echo "::group::$NODE attempt $attempt"
             if scripts/ci/smoke-test.sh "${args[@]}"; then
               echo "::endgroup::"
-              exit 0
+              passed=true
+              break
             fi
             echo "::endgroup::"
             [ "$attempt" -eq 5 ] || sleep 30
           done
-          echo "::error::the dev node did not pass: 5 attempts over 2 minutes"
-          exit 1
+          "$passed" || { echo "::error::$NODE did not pass: 5 attempts over 2 minutes"; exit 1; }
 
   # One job for both failures. They need different responses, so the message
   # says which one happened: the node never reached the commit, or it reached it
@@ -142,10 +148,10 @@ jobs:
           set -euo pipefail
           echo "subject=$(git log -1 --format=%s)" >> "$GITHUB_OUTPUT"
           if [ "$WAIT_RESULT" = failure ]; then
-            echo "headline=The dev node never reached this commit" >> "$GITHUB_OUTPUT"
+            echo "headline=A node never reached this commit" >> "$GITHUB_OUTPUT"
             echo "next=Check reconcile on the node: the proving gate, a failing deploy, or a node tracking another ref." >> "$GITHUB_OUTPUT"
           else
-            echo "headline=The dev node failed its smoke test" >> "$GITHUB_OUTPUT"
+            echo "headline=A node failed its smoke test" >> "$GITHUB_OUTPUT"
             echo "next=The node has this commit and is not serving it. Suspect the image it pinned." >> "$GITHUB_OUTPUT"
           fi
 

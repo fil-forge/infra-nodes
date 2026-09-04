@@ -249,12 +249,20 @@ prompt_secret() {
   bao_put_if_absent "$path" "$field" "$value"
 }
 
-prompt_secret external chain_rpc_token "chain.love access token"
+if [ "${LOTUS_RPC_AUTH_REQUIRED:-true}" = true ]; then
+  prompt_secret external chain_rpc_token "chain.love access token"
+else
+  echo "  local Lotus RPC is unauthenticated"
+fi
 prompt_secret external grafana_push_token "Grafana Cloud push token"
 
 # --- 8. The rest of the platform --------------------------------------------
 
-echo "[8/8] Starting Postgres, Caddy and Alloy"
+if [ "${FILONE_HOST_CADDY:-false}" = true ]; then
+  echo "[8/8] Starting Postgres and Alloy"
+else
+  echo "[8/8] Starting Postgres, Caddy and Alloy"
+fi
 "$SCRIPT_DIR/deploy-platform.sh"
 
 echo

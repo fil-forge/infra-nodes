@@ -1,0 +1,18 @@
+# Staging runs as a bare-metal appliance
+
+Staging runs on the Servers.com host at `23.83.66.244` in `eu-central-3`. The appliance serves
+Piri at `piri-0.staging.fil-forge.com` and Ingot at
+`s3.eu-central-3.staging.filonecontent.com`.
+
+The host owns Caddy, Lotus and its unrelated workloads. FilOne imports one Caddy snippet directly
+from `/root/fil-one/infra-nodes`, validates the combined configuration and reloads `caddy-guppy`.
+Piri and Ingot bind only to loopback. A UFW rule permits the Docker bridge range to reach the host's
+TCP 443 listener.
+
+The OpenTofu staging root owns only the two Route53 A records. It creates no server, volume, IAM
+role or other AWS host resource. Appliance control state and data live in separate directories:
+`/mnt/data/filone/control` and `/mnt/data/filone/data`.
+
+Piri reaches the host's Lotus RPC through `host.docker.internal:1234` without an authorization
+token. Staging has no Indexer/IPNI configuration. Indexer and Swarf identities remain registered
+centrally and are not appliance dependencies.

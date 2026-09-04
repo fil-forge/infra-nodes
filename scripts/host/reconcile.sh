@@ -67,6 +67,15 @@ fi
 
 sync_systemd_units
 
+# The staging appliance uses the host's Caddy. Its snippet is imported directly
+# from this checkout, so a changed snippet takes effect only after the combined
+# host configuration validates and caddy-guppy reloads.
+if [ "${FILONE_HOST_CADDY:-false}" = true ] && [ "$before" != "$after" ] &&
+  git -C "$FILONE_CHECKOUT" diff --name-only "$before" "$after" |
+    grep -qx "nodes/$FILONE_NODE/platform/config/caddy/host-caddy.caddy"; then
+  "$FILONE_CHECKOUT/scripts/host/reload-host-caddy.sh"
+fi
+
 # --- 3. Work out what changed ----------------------------------------------
 
 # Per project, against the revision that project was last deployed from rather

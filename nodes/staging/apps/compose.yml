@@ -1,0 +1,61 @@
+name: filone-apps
+
+services:
+  piri:
+    image: ${PIRI_IMAGE}
+    container_name: filone-piri
+    user: "0:0"
+    entrypoint: ["/entrypoint.sh"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["127.0.0.1:3000:3000"]
+    environment:
+      LOTUS_ENDPOINT: ${LOTUS_RPC_URL}
+      PUBLIC_URL: ${PIRI_PUBLIC_URL}
+      PORT: 3000
+      HOST: 0.0.0.0
+      REGISTRAR_URL: ${REGISTRAR_URL}
+      OPERATOR_EMAIL: ${OPERATOR_EMAIL}
+      PIRI_DB_BACKEND: postgres
+      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri?sslmode=disable
+      PIRI_BLOB_BACKEND: filesystem
+    volumes:
+      - /run/filone/secrets/piri.pem:/keys/piri.pem:ro
+      - /run/filone/secrets/piri-owner-wallet.hex:/keys/owner-wallet.hex:ro
+      - /run/filone/secrets/piri-base-config.toml:/config/piri-base-config.toml:ro
+      - ./config/piri/entrypoint.sh:/entrypoint.sh:ro
+      - /mnt/data/filone/data/piri:/data/piri
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/readyz | grep -qE '\"status\":[[:space:]]*\"ok\"'"]
+      start_interval: 2s
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
+    restart: unless-stopped
+    networks: [filone]
+
+  ingot:
+    image: ${INGOT_IMAGE}
+    container_name: filone-ingot
+    user: "0:0"
+    command: ["serve", "--config", "/etc/ingot/config.yaml"]
+    ports: ["127.0.0.1:9000:9000"]
+    volumes:
+      - /run/filone/secrets/ingot.pem:/keys/ingot.pem:ro
+      - /run/filone/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
+      - /run/filone/secrets/hilt-ingot-proof.txt:/proofs/hilt-ingot-proof.txt:ro
+      - /run/filone/bao:/run/openbao
+      - /mnt/data/filone/data/ingot:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
+      start_interval: 1s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks: [filone]
+
+networks:
+  filone:
+    external: true

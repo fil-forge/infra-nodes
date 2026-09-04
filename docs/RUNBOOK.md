@@ -23,7 +23,56 @@ that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-`nodes/dev/node.env` describes the dev node and the accounts it talks to, and the values below name
+### Staging on Servers.com
+
+The staging appliance is not an EC2 node. Its host owns Lotus and Caddy, and
+FilOne must leave both intact. Its checkout is `/root/fil-one/infra-nodes`; its
+control and data directories are `/mnt/data/filone/control` and
+`/mnt/data/filone/data`.
+
+Apply the DNS-only root and confirm both names resolve to `23.83.66.244`:
+
+```sh
+tofu -chdir=terraform/envs/staging init
+tofu -chdir=terraform/envs/staging apply
+dig +short piri-0.staging.fil-forge.com
+dig +short s3.eu-central-3.staging.filonecontent.com
+```
+
+Check out this repository at `/root/fil-one/infra-nodes`, then run:
+
+```sh
+cd /root/fil-one/infra-nodes
+scripts/host/bootstrap-staging.sh
+docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl \
+  ws://host.docker.internal:1234/rpc/v1
+```
+
+Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
+network, node config, systemd units, the Caddy import and the FilOne UFW rule.
+It validates the combined host Caddy configuration before reloading
+`caddy-guppy`.
+
+At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
+staging `wallet_addresses` payer address and commit it to `nodes/staging/node.env`.
+Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
+`NODE_IP=23.83.66.244`. On the host run `provision-platform.sh`, saving the
+OpenBao recovery key and root token, then provide the wrapping token and
+Grafana token. Staging uses its local unauthenticated Lotus RPC and therefore
+does not ask for a Chain.Love token.
+
+Run `onboarding-request.sh`, fund its printed Piri owner wallet with
+Calibration testnet FIL, and send its DID, URL and proof to infra-central. Run
+`onboard-appliance` there for `staging/eu-central-3`, install its returned
+Ingot proof with `store-hilt-proof.sh`, then run `provision-apps.sh`. Enable
+both FilOne timers and check public Piri, Ingot, the status document and an
+OpenBao restart/unseal. Finish with:
+
+```sh
+scripts/ci/smoke-test.sh staging
+```
+
+`nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
 those accounts rather than anything in this repository. They are set for dev. A node added later
 needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
 placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
