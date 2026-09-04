@@ -57,28 +57,30 @@ scripts/host/bootstrap-staging.sh
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
-network, node config, systemd units, the Caddy import and the Docker-to-Caddy
-UFW rule. It validates the combined host Caddy configuration before reloading
-`caddy-guppy`. Ensure both Docker-only rules are present after bootstrap; UFW
-leaves the existing Caddy rule unchanged:
+network, node config, systemd units, the Caddy import and the two FilOne UFW
+rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
+stops if an existing network with that name uses another subnet. It validates
+the combined host Caddy configuration before reloading `caddy-guppy`.
+
+Confirm both source-subnet rules are present after bootstrap:
 
 ```sh
-ufw allow in on docker0 from 172.16.0.0/12 to any port 443 proto tcp \
+ufw allow from 172.18.0.0/16 to any port 443 proto tcp \
   comment 'FilOne Docker to host Caddy'
-ufw allow in on docker0 from 172.16.0.0/12 to any port 1234 proto tcp \
+ufw allow from 172.18.0.0/16 to any port 1234 proto tcp \
   comment 'FilOne Docker to host Lotus RPC'
 ufw status numbered
 ```
 
 The two rules let Piri call its public Ingot URL and the host-owned Lotus RPC.
-Do not allow TCP 1234 from the public internet. If an old deployment has a
-broader Docker-source rule for TCP 1234, add the Docker-interface rule first,
-then remove the old rule by its number from `ufw status numbered`.
+Do not allow TCP 1234 from the public internet. Remove old FilOne rules tied to
+`docker0` or another Docker bridge after confirming these source-subnet rules.
 
 Confirm that a container can call Lotus with a one-shot JSON-RPC request:
 
 ```sh
-docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl \
+docker run --rm --network filone \
+  --add-host host.docker.internal:host-gateway curlimages/curl \
   --fail --show-error --max-time 10 \
   -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","method":"Filecoin.Version","params":[],"id":1}' \
@@ -88,6 +90,16 @@ docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl \
 The response contains the Lotus version. Do not use `curl ws://…` for this
 check: a WebSocket stays open after connecting, so curl waits for the server to
 close it.
+
+Confirm the same network can reach the host-owned Caddy listener:
+
+```sh
+docker run --rm --network filone \
+  --add-host host.docker.internal:host-gateway curlimages/curl \
+  --fail --show-error --max-time 10 \
+  --connect-to s3.eu-central-3.staging.filonecontent.com:443:host.docker.internal:443 \
+  https://s3.eu-central-3.staging.filonecontent.com/health
+```
 
 At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
 staging `wallet_addresses` payer address and commit it to `nodes/staging/node.env`.

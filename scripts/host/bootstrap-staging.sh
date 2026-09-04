@@ -12,6 +12,7 @@ CHECKOUT=/root/fil-one/infra-nodes
 CADDYFILE=/root/storacha/caddy/Caddyfile
 SNIPPET="$CHECKOUT/nodes/staging/platform/config/caddy/host-caddy.caddy"
 IMPORT="import $SNIPPET"
+FILONE_SUBNET=172.18.0.0/16
 
 [ -d "$CHECKOUT/.git" ] || { echo "ERROR: expected checkout at $CHECKOUT" >&2; exit 1; }
 [ -r "$SNIPPET" ] || { echo "ERROR: staging Caddy snippet is missing: $SNIPPET" >&2; exit 1; }
@@ -33,7 +34,15 @@ d /run/filone/secrets 0700 root root -
 d /run/filone/bao 0700 root root -
 TMPFILES
 
-docker network inspect filone >/dev/null 2>&1 || docker network create filone
+if docker network inspect filone >/dev/null 2>&1; then
+  actual_subnet="$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' filone)"
+  [ "$actual_subnet" = "$FILONE_SUBNET" ] || {
+    echo "ERROR: filone network uses $actual_subnet, expected $FILONE_SUBNET" >&2
+    exit 1
+  }
+else
+  docker network create --subnet "$FILONE_SUBNET" filone
+fi
 
 cat >/etc/filone/node.conf <<'CONF'
 FILONE_NODE=staging
@@ -49,13 +58,8 @@ if ! grep -qxF "$IMPORT" "$CADDYFILE"; then
   printf '\n# FilOne staging appliance. The snippet stays in the checked-out repository.\n%s\n' "$IMPORT" >>"$CADDYFILE"
 fi
 
-if ! ufw status | grep -Fq 'FilOne Docker to host Caddy'; then
-  ufw allow in on docker0 from 172.16.0.0/12 to any port 443 proto tcp comment 'FilOne Docker to host Caddy'
-fi
-ufw status | grep -Fq 'FilOne Docker to host Caddy' || {
-  echo "ERROR: FilOne Docker-to-Caddy UFW rule is missing" >&2
-  exit 1
-}
+ufw allow from "$FILONE_SUBNET" to any port 443 proto tcp comment 'FilOne Docker to host Caddy'
+ufw allow from "$FILONE_SUBNET" to any port 1234 proto tcp comment 'FilOne Docker to host Lotus RPC'
 
 "$CHECKOUT/scripts/host/reload-host-caddy.sh"
 date -Is >/etc/filone/bootstrap-complete
