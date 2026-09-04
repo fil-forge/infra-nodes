@@ -5,6 +5,7 @@ log_level: info
 cors_allowed_origins:
   - "https://staging.fil.one"
   - "https://staging.filone.ai"
+  - "https://*.dev.fil.one"
 root_access: "${INGOT_ROOT_ACCESS_KEY}"
 root_secret: "${INGOT_ROOT_SECRET_KEY}"
 identity:
