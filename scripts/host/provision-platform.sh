@@ -254,14 +254,12 @@ if [ "${LOTUS_RPC_AUTH_REQUIRED:-true}" = true ]; then
 else
   echo "  local Lotus RPC is unauthenticated"
 fi
-prompt_secret external grafana_push_token "Grafana Cloud push token"
-
 # --- 8. The rest of the platform --------------------------------------------
 
 if [ "${FILONE_HOST_CADDY:-false}" = true ]; then
-  echo "[8/8] Starting Postgres and Alloy"
+  echo "[8/8] Starting Postgres"
 else
-  echo "[8/8] Starting Postgres, Caddy and Alloy"
+  echo "[8/8] Starting Postgres and Caddy"
 fi
 "$SCRIPT_DIR/deploy-platform.sh"
 

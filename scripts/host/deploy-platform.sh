@@ -28,9 +28,6 @@ take_deploy_lock
 
 echo "=== deploy platform ($FILONE_NODE) ==="
 
-require_configured GRAFANA_LOGS_USER 000000
-require_configured GRAFANA_METRICS_USER 000000
-
 echo "[1/7] Reading secrets"
 write_openbao_env
 
@@ -54,9 +51,7 @@ renew_ingot_regionkey_token
 POSTGRES_ADMIN_PASSWORD="$(bao_get postgres admin_password)"
 PIRI_POSTGRES_PASSWORD="$(bao_get postgres piri_password)"
 INGOT_POSTGRES_PASSWORD="$(bao_get postgres ingot_password)"
-GRAFANA_PUSH_TOKEN="$(bao_get external grafana_push_token)"
 export POSTGRES_ADMIN_PASSWORD PIRI_POSTGRES_PASSWORD INGOT_POSTGRES_PASSWORD
-export GRAFANA_PUSH_TOKEN
 
 platform_changed=0
 

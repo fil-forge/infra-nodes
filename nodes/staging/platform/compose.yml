@@ -55,28 +55,6 @@ services:
     restart: "no"
     networks: [filone]
 
-  alloy:
-    image: ${ALLOY_IMAGE}
-    command: ["run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
-    environment:
-      GRAFANA_LOGS_URL: ${GRAFANA_LOGS_URL}
-      GRAFANA_LOGS_USER: ${GRAFANA_LOGS_USER}
-      GRAFANA_METRICS_URL: ${GRAFANA_METRICS_URL}
-      GRAFANA_METRICS_USER: ${GRAFANA_METRICS_USER}
-      GRAFANA_PUSH_TOKEN: ${GRAFANA_PUSH_TOKEN}
-      FILONE_NODE: ${FILONE_NODE}
-      REGION_LABEL: ${REGION_LABEL}
-    volumes:
-      - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /mnt/data/filone/control/state/metrics:/metrics:ro
-      - /mnt/data/filone/control/alloy:/var/lib/alloy/data
-      - /:/host/root:ro,rslave
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-    restart: unless-stopped
-    networks: [filone]
-
 networks:
   filone:
     external: true

@@ -23,7 +23,6 @@ install -d -m 0755 \
   /mnt/data/filone/control/openbao \
   /mnt/data/filone/control/postgres \
   /mnt/data/filone/control/state/metrics \
-  /mnt/data/filone/control/alloy \
   /mnt/data/filone/data/piri \
   /mnt/data/filone/data/ingot
 install -d -m 0700 /run/filone /run/filone/secrets /run/filone/bao

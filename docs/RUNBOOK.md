@@ -25,8 +25,8 @@ that, and nothing in that one can read this node's keys.
 
 ### Staging on Servers.com
 
-The staging appliance is not an EC2 node. Its host owns Lotus and Caddy, and
-FilOne must leave both intact. Its checkout is `/root/fil-one/infra-nodes`; its
+The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
+and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
 control and data directories are `/mnt/data/filone/control` and
 `/mnt/data/filone/data`.
 
@@ -57,9 +57,9 @@ At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
 staging `wallet_addresses` payer address and commit it to `nodes/staging/node.env`.
 Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
 `NODE_IP=23.83.66.244`. On the host run `provision-platform.sh`, saving the
-OpenBao recovery key and root token, then provide the wrapping token and
-Grafana token. Staging uses its local unauthenticated Lotus RPC and therefore
-does not ask for a Chain.Love token.
+OpenBao recovery key and root token, then provide the wrapping token. Staging
+uses its local unauthenticated Lotus RPC and the host-owned Alloy service, so it
+does not ask for a Chain.Love or Grafana token.
 
 Run `onboarding-request.sh`, fund its printed Piri owner wallet with
 Calibration testnet FIL, and send its DID, URL and proof to infra-central. Run
@@ -77,12 +77,6 @@ those accounts rather than anything in this repository. They are set for dev. A 
 needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
 placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
 `origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
-
-`GRAFANA_LOGS_USER` and `GRAFANA_METRICS_USER` are the Loki and Prometheus instance ids of the
-Grafana Cloud stack the node ships to. Both are on the stack's details page in the Grafana Cloud
-portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
-tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
-the cluster its stack sits on, so another stack pushes elsewhere.
 
 `PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
 Only the central account can read it, so ask whoever runs infra-central; their runbook says where

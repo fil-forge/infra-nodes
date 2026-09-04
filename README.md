@@ -3,7 +3,8 @@
 Deployment configuration for FilOne Appliance nodes: the regional half of the Forge network.
 
 An appliance is one Piri storage node and one Ingot S3 gateway, running under Docker Compose on a
-single host, with the local OpenBao, Postgres and Grafana Alloy they need. Central services
+single host, with the local OpenBao and Postgres they need. Dev runs Grafana Alloy in the platform
+project; staging uses the host-owned Alloy service. Central services
 live in [infra-central](https://github.com/fil-forge/infra-central); a node talks to them over public
 HTTPS and unseals its OpenBao against theirs.
 
@@ -44,10 +45,10 @@ addresses its delegation to. Both names come from [RFC 16][rfc-16].
 
 [rfc-16]: https://github.com/fil-one/RFC/blob/main/rfcs/2026-07-forge-service-identities.md
 
-Two Compose projects. **platform** is OpenBao, Postgres and Alloy; dev also runs Caddy there,
-while staging imports its Caddy configuration into the host-owned service. **apps** is Piri and
-Ingot. They are separate because they restart on different terms: an apps deploy waits for Piri's
-proving window, and a platform deploy never has to.
+Two Compose projects. **platform** is OpenBao and Postgres; dev also runs Caddy and Alloy there,
+while staging imports its Caddy configuration into the host-owned service and uses its host-owned
+Alloy. **apps** is Piri and Ingot. They are separate because they restart on different terms: an
+apps deploy waits for Piri's proving window, and a platform deploy never has to.
 
 Piri, Ingot, Postgres and OpenBao publish no public ports. Dev Caddy reaches the apps on the shared
 `filone` Docker network. On staging, Piri and Ingot bind only to host loopback and the host-owned
