@@ -61,6 +61,6 @@ fi
 ufw allow from "$FILONE_SUBNET" to any port 443 proto tcp comment 'FilOne Docker to host Caddy'
 ufw allow from "$FILONE_SUBNET" to any port 1234 proto tcp comment 'FilOne Docker to host Lotus RPC'
 
-"$CHECKOUT/scripts/host/reload-host-caddy.sh"
+"$CHECKOUT/scripts/host/reload-staging-host-caddy.sh"
 date -Is >/etc/fil-one/bootstrap-complete
 echo "staging bootstrap complete"

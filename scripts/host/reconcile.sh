@@ -77,7 +77,7 @@ sync_systemd_units
 if [ "${FILONE_HOST_CADDY:-false}" = true ] && [ "$before" != "$after" ] &&
   git -C "$FILONE_CHECKOUT" diff --name-only "$before" "$after" |
     grep -qx "nodes/$FILONE_NODE/platform/config/caddy/host-caddy.caddy"; then
-  "$FILONE_CHECKOUT/scripts/host/reload-host-caddy.sh"
+  "$FILONE_CHECKOUT/scripts/host/reload-staging-host-caddy.sh"
 fi
 
 # --- 3. Work out what changed ----------------------------------------------
