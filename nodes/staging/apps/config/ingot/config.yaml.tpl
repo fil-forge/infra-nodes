@@ -3,8 +3,8 @@ region: ${REGION_LABEL}
 data_dir: /data
 log_level: info
 cors_allowed_origins:
-  - "https://app.fil.one"
-  - "https://app.filone.ai"
+  - "https://staging.fil.one"
+  - "https://staging.filone.ai"
 root_access: "${INGOT_ROOT_ACCESS_KEY}"
 root_secret: "${INGOT_ROOT_SECRET_KEY}"
 identity:
