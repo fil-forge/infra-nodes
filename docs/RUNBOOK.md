@@ -126,6 +126,18 @@ needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while
 placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
 `origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
 
+`GRAFANA_LOGS_USER` and `GRAFANA_METRICS_USER` are the Loki and Prometheus instance ids of the
+Grafana Cloud stack the node ships to. Both are on the stack's details page in the Grafana Cloud
+portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
+tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
+the cluster its stack sits on, so another stack pushes elsewhere.
+
+Those four lines are per node, and a node whose host already runs Alloy leaves all four out. The
+staging appliance is such a node: `nodes/staging/node.env` has no telemetry block, and the host
+scripts then neither ask for a Grafana push token nor render an Alloy config. It is all four or
+none. A node.env that sets some of them stops the deploy, because a node missing one id would
+otherwise deploy green and ship nothing.
+
 `PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
 Only the central account can read it, so ask whoever runs infra-central; their runbook says where
 they get it. It is a public address, so any channel will do.
