@@ -9,7 +9,7 @@
 # It creates nothing and prompts for nothing. The one secret it touches is the
 # node's own deploy token, which it renews and never prints.
 #
-# The ref it tracks is FILONE_GIT_REF in /etc/filone/node.conf, which is the
+# The ref it tracks is FILONE_GIT_REF in /etc/fil-one/node.conf, which is the
 # only statement of it. Point a node at a feature branch by editing that file.
 set -euo pipefail
 
@@ -18,7 +18,7 @@ set -euo pipefail
 # shell reading from a different file at a different offset. Re-exec from a copy
 # before touching the checkout.
 if [ -z "${FILONE_RECONCILE_COPY:-}" ]; then
-  copy_dir="$(mktemp -d /run/filone-reconcile.XXXXXX)"
+  copy_dir="$(mktemp -d /run/fil-one-reconcile.XXXXXX)"
   cp -a "$(dirname "$(readlink -f "$0")")/." "$copy_dir/"
   FILONE_RECONCILE_COPY="$copy_dir" exec "$copy_dir/reconcile.sh" "$@"
 fi

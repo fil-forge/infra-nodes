@@ -8,7 +8,7 @@
 # central.
 #
 # Output lands in /var/log/filone-bootstrap.log and in cloud-init's own
-# /var/log/cloud-init-output.log. /etc/filone/bootstrap-complete is written last,
+# /var/log/cloud-init-output.log. /etc/fil-one/bootstrap-complete is written last,
 # so its absence means this script died partway.
 set -euo pipefail
 exec > >(tee -a /var/log/filone-bootstrap.log) 2>&1
@@ -18,9 +18,9 @@ CONTROL_VOLUME_ID="${control_volume_id}"
 DATA_VOLUME_ID="${data_volume_id}"
 REPOSITORY_URL="${repository_url}"
 
-CHECKOUT_DIR=/opt/filone/infra-nodes
-CONTROL_MOUNT=/mnt/filone/control
-DATA_MOUNT=/mnt/filone/data
+CHECKOUT_DIR=/opt/fil-one/infra-nodes
+CONTROL_MOUNT=/mnt/fil-one/control
+DATA_MOUNT=/mnt/fil-one/data
 
 echo "=== FilOne node bootstrap: $NODE_NAME ==="
 
@@ -103,12 +103,12 @@ echo "[4/7] Creating the secrets tmpfs"
 # bao/ holds no secret: it is where OpenBao's unix listener creates the API
 # socket Ingot dials. Root-owned, because OpenBao's entrypoint chowns it to the
 # user the server drops to when the container starts.
-mkdir -p /etc/filone
-install -d -m 0700 -o root -g root /run/filone /run/filone/secrets /run/filone/bao
+mkdir -p /etc/fil-one
+install -d -m 0700 -o root -g root /run/fil-one /run/fil-one/secrets /run/fil-one/bao
 cat > /etc/tmpfiles.d/filone.conf <<'TMPFILES'
-d /run/filone 0700 root root -
-d /run/filone/secrets 0700 root root -
-d /run/filone/bao 0700 root root -
+d /run/fil-one 0700 root root -
+d /run/fil-one/secrets 0700 root root -
+d /run/fil-one/bao 0700 root root -
 TMPFILES
 
 echo "[5/7] Creating the shared docker network"
@@ -137,7 +137,7 @@ fi
 # costs a re-provision: the seal token and the OpenBao root token have to be
 # pasted back in by hand. Point a node at a feature branch by editing this line
 # on the box and letting the next reconcile pass pick it up.
-cat > /etc/filone/node.conf <<CONF
+cat > /etc/fil-one/node.conf <<CONF
 FILONE_NODE=$NODE_NAME
 FILONE_CHECKOUT=$CHECKOUT_DIR
 FILONE_GIT_REF=main
@@ -159,5 +159,5 @@ else
   echo "  no units in the checkout yet, skipping"
 fi
 
-date -Is > /etc/filone/bootstrap-complete
+date -Is > /etc/fil-one/bootstrap-complete
 echo "=== bootstrap complete ==="

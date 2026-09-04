@@ -20,7 +20,7 @@ require tofu
 INSTANCE_ID="$(tofu_output "$NODE" instance_id)"
 
 echo "Opening a session on node '$NODE' ($INSTANCE_ID)."
-echo "The host scripts live in /opt/filone/infra-nodes/scripts/host and want root:"
+echo "The host scripts live in /opt/fil-one/infra-nodes/scripts/host and want root:"
 echo "  sudo -i"
 echo
 

@@ -21,17 +21,17 @@ command -v docker >/dev/null || { echo "ERROR: docker is not installed" >&2; exi
 command -v ufw >/dev/null || { echo "ERROR: ufw is not installed" >&2; exit 1; }
 
 install -d -m 0755 \
-  /mnt/data/filone/control/openbao \
-  /mnt/data/filone/control/postgres \
-  /mnt/data/filone/control/state/metrics \
-  /mnt/data/filone/data/piri \
-  /mnt/data/filone/data/ingot
-install -d -m 0700 /run/filone /run/filone/secrets /run/filone/bao
-install -d -m 0755 /etc/filone
+  /mnt/data/fil-one/control/openbao \
+  /mnt/data/fil-one/control/postgres \
+  /mnt/data/fil-one/control/state/metrics \
+  /mnt/data/fil-one/data/piri \
+  /mnt/data/fil-one/data/ingot
+install -d -m 0700 /run/fil-one /run/fil-one/secrets /run/fil-one/bao
+install -d -m 0755 /etc/fil-one
 cat >/etc/tmpfiles.d/filone.conf <<'TMPFILES'
-d /run/filone 0700 root root -
-d /run/filone/secrets 0700 root root -
-d /run/filone/bao 0700 root root -
+d /run/fil-one 0700 root root -
+d /run/fil-one/secrets 0700 root root -
+d /run/fil-one/bao 0700 root root -
 TMPFILES
 
 if docker network inspect filone >/dev/null 2>&1; then
@@ -44,7 +44,7 @@ else
   docker network create --subnet "$FILONE_SUBNET" filone
 fi
 
-cat >/etc/filone/node.conf <<'CONF'
+cat >/etc/fil-one/node.conf <<'CONF'
 FILONE_NODE=staging
 FILONE_CHECKOUT=/root/fil-one/infra-nodes
 FILONE_GIT_REF=main
@@ -62,5 +62,5 @@ ufw allow from "$FILONE_SUBNET" to any port 443 proto tcp comment 'FilOne Docker
 ufw allow from "$FILONE_SUBNET" to any port 1234 proto tcp comment 'FilOne Docker to host Lotus RPC'
 
 "$CHECKOUT/scripts/host/reload-host-caddy.sh"
-date -Is >/etc/filone/bootstrap-complete
+date -Is >/etc/fil-one/bootstrap-complete
 echo "staging bootstrap complete"

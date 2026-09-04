@@ -125,7 +125,7 @@ things by hand and nothing else: the wrapping token the unseal token is claimed 
 chain.love access token and the Grafana Cloud push token.
 
 Piri and Ingot read their configuration from files, secrets included, so the deploy scripts render
-what they need into `/run/filone/secrets` — a root-only tmpfs, mounted read-only into the
+what they need into `/run/fil-one/secrets` — a root-only tmpfs, mounted read-only into the
 containers, re-rendered on every deploy and compared by content so an unchanged deploy restarts
 nothing. Nothing secret is written to a disk that survives a reboot.
 

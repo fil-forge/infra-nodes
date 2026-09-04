@@ -27,8 +27,8 @@ that, and nothing in that one can read this node's keys.
 
 The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
 and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
-control and data directories are `/mnt/data/filone/control` and
-`/mnt/data/filone/data`.
+control and data directories are `/mnt/data/fil-one/control` and
+`/mnt/data/fil-one/data`.
 
 Apply the DNS-only root and confirm both names resolve to `23.83.66.244`:
 
@@ -165,10 +165,10 @@ Check it finished:
 ```sh
 scripts/operator/ssm-session.sh dev
 sudo -i
-cat /etc/filone/bootstrap-complete     # a timestamp; absent means bootstrap died
+cat /etc/fil-one/bootstrap-complete     # a timestamp; absent means bootstrap died
 tail -50 /var/log/filone-bootstrap.log
-findmnt /mnt/filone/control
-findmnt /mnt/filone/data
+findmnt /mnt/fil-one/control
+findmnt /mnt/fil-one/data
 docker network ls | grep filone
 ```
 
@@ -198,7 +198,7 @@ In an SSM session on the node:
 
 ```sh
 sudo -i
-cd /opt/filone/infra-nodes
+cd /opt/fil-one/infra-nodes
 scripts/host/provision-platform.sh
 ```
 
@@ -252,7 +252,7 @@ registry on its first start, and that transaction sends 5 tFIL from this wallet,
 directly:
 
 ```sh
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/filone/bao-token)" \
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
   filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri
 ```
 
@@ -286,7 +286,8 @@ it waits, prefixed `piri |`, so a registration or a proof-set transaction that n
 visible as it happens. Later runs skip init and print nothing extra.
 
 `provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
-`/readyz`, Ingot answers `/health`, and both hostnames serve over HTTPS with issued certificates.
+`/readyz`, Ingot answers `/health`, both hostnames serve over HTTPS with issued certificates, and
+Caddy serves the node status document.
 
 It then installs the systemd units from the checkout, so the timers below exist whatever revision
 cloud-init bootstrapped the box from.
@@ -300,7 +301,7 @@ systemctl list-timers | grep filone
 ```
 
 From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
-`/etc/filone/node.conf` names, which cloud-init writes as `main`.
+`/etc/fil-one/node.conf` names, which cloud-init writes as `main`.
 
 ## Day-to-day operations
 
@@ -347,23 +348,23 @@ took. `smoke.yml` runs the same test after every merge and hourly.
 **Deploy by hand**, without waiting for the timer:
 
 ```sh
-sudo -i /opt/filone/infra-nodes/scripts/host/reconcile.sh
+sudo -i /opt/fil-one/infra-nodes/scripts/host/reconcile.sh
 ```
 
 **Test a branch before it merges.** Point the node at it and let the next pass pick it up:
 
 ```sh
-sed -i 's|^FILONE_GIT_REF=.*|FILONE_GIT_REF=my-branch|' /etc/filone/node.conf
+sed -i 's|^FILONE_GIT_REF=.*|FILONE_GIT_REF=my-branch|' /etc/fil-one/node.conf
 ```
 
 Set it back to `main` before the branch is deleted. A node tracking a ref that no longer exists
 fails the reset, so reconcile stops and the deploy deadman goes stale.
 
-`/etc/filone/node.conf` is the only statement of the ref. Reconcile reads it on every pass, so an
+`/etc/fil-one/node.conf` is the only statement of the ref. Reconcile reads it on every pass, so an
 environment variable passed to a single run would be undone five minutes later.
 
 **Upgrade ucantool or cast.** Edit the pins in `nodes/dev/node.env`, merge, then run
-`sudo -i /opt/filone/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run
+`sudo -i /opt/fil-one/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run
 the install — only key generation uses these tools — so the new binary lands when the script runs,
 not when the commit merges.
 
@@ -547,13 +548,13 @@ the repository and commit it could not read.
 *The dev node never reached this commit.* The commit merged and the node has not deployed it within
 an hour. `journalctl -u filone-reconcile.service -n 200` on the box shows which: a pass that never
 ran, a proving gate that has not opened, a deploy that failed, or a node pointed at another ref by
-`FILONE_GIT_REF` in `/etc/filone/node.conf`. The entries below cover each.
+`FILONE_GIT_REF` in `/etc/fil-one/node.conf`. The entries below cover each.
 
 *The dev node failed its smoke test.* The node has the commit and is not serving what the commit
 pins, so suspect the image. The run's log names the failing check. A check that says the deployed
 revision is not in this checkout usually means the clone is behind, so `git fetch` and run it again;
 if the revision is still nowhere on origin, the node is following another ref and
-`FILONE_GIT_REF` in `/etc/filone/node.conf` says which. Rolling back is a pin bump like any other:
+`FILONE_GIT_REF` in `/etc/fil-one/node.conf` says which. Rolling back is a pin bump like any other:
 
 ```sh
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>

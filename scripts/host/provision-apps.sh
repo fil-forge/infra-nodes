@@ -44,7 +44,7 @@ echo "  Ingot: $INGOT_DID (key: $(bao_get ingot did))"
 # container. A re-init triggered by a changed base config is not a first setup,
 # and does not stream.
 piri_needs_init() {
-  local config=/mnt/filone/data/piri/piri-config.toml
+  local config="$FILONE_DATA_DIR/piri/piri-config.toml"
   [ -f "$config" ] && grep -q proof_set "$config" 2>/dev/null && return 1
   return 0
 }
@@ -175,6 +175,11 @@ check "Caddy serves $PIRI_HOSTNAME with an issued certificate" \
 
 check "Caddy serves $INGOT_HOSTNAME with an issued certificate" \
   curl -sf --max-time 20 "https://$INGOT_HOSTNAME/health" ||
+  failures=$((failures + 1))
+
+check "Caddy serves the node status document" \
+  curl -sf --max-time 20 \
+    "https://$PIRI_HOSTNAME/.well-known/filone-node-status.json" ||
   failures=$((failures + 1))
 
 if [ "$failures" -gt 0 ]; then

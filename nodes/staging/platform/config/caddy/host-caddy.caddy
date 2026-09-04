@@ -2,7 +2,7 @@
 # The appliance exposes its apps only on loopback.
 https://piri-0.staging.fil-forge.com {
   handle /.well-known/filone-node-status.json {
-    root * /mnt/data/filone/control/state
+    root * /mnt/data/fil-one/control/state
     rewrite * /filone-node-status.json
     file_server
   }

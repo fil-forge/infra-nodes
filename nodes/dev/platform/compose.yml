@@ -9,7 +9,7 @@
 # renders the secrets these definitions point at:
 #   docker compose -p filone-platform \
 #     --env-file ../node.env --env-file versions.env \
-#     --env-file /run/filone/secrets/platform.env up -d
+#     --env-file /run/fil-one/secrets/platform.env up -d
 #
 # Only Caddy publishes a port. Postgres is reachable on the filone network and
 # nowhere else, and OpenBao is not on that network at all: the one thing that
@@ -41,7 +41,7 @@ services:
       - VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}
     volumes:
       - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
-      - /mnt/filone/control/openbao:/openbao/file
+      - /mnt/fil-one/control/openbao:/openbao/file
       # Where the unix listener in bao.hcl puts its socket. Ingot mounts the
       # same host directory and dials the socket for every object key it wraps
       # or unwraps.
@@ -53,7 +53,7 @@ services:
       # Read-write, and so is Ingot's side: connecting to a socket on a
       # read-only bind mount is not dependably permitted, and the whole content
       # of this mount is one socket.
-      - /run/filone/bao:/openbao/logs
+      - /run/fil-one/bao:/openbao/logs
     # No ports and no filone network. The TCP listener is on the container's
     # loopback, so the only way to reach this API from the host is `docker
     # exec`, which is root, and the only way in from another container is the
@@ -79,7 +79,7 @@ services:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=${POSTGRES_ADMIN_PASSWORD}
     volumes:
-      - /mnt/filone/control/postgres:/var/lib/postgresql/data
+      - /mnt/fil-one/control/postgres:/var/lib/postgresql/data
     healthcheck:
       # -h 127.0.0.1 forces a TCP check. On a fresh data directory the image
       # runs a temporary bootstrap server on the unix socket only while initdb
@@ -144,12 +144,12 @@ services:
       # Issued certificates and ACME account keys. On the control volume so a
       # replaced instance serves the same certificates instead of re-issuing and
       # spending Let's Encrypt rate limit.
-      - /mnt/filone/control/caddy/data:/data
-      - /mnt/filone/control/caddy/config:/config
+      - /mnt/fil-one/control/caddy/data:/data
+      - /mnt/fil-one/control/caddy/config:/config
       # The node's status document, served at
       # /.well-known/filone-node-status.json. Read-only, and the Caddyfile's
       # exact path matcher exposes the one file rather than the directory.
-      - /mnt/filone/control/state:/srv/filone/.well-known:ro
+      - /mnt/fil-one/control/state:/srv/filone/.well-known:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:2019/config/"]
       start_interval: 2s
@@ -190,8 +190,8 @@ services:
       - /var/log/journal:/var/log/journal:ro
       - /etc/machine-id:/etc/machine-id:ro
       # Where deploy scripts stamp deploy_last_success_timestamp.
-      - /mnt/filone/control/state/metrics:/metrics:ro
-      - /mnt/filone/control/alloy:/var/lib/alloy/data
+      - /mnt/fil-one/control/state/metrics:/metrics:ro
+      - /mnt/fil-one/control/alloy:/var/lib/alloy/data
       # The host's own filesystems, processes and devices, for the node
       # exporter. rslave so a volume mounted on the host after this container
       # started still shows up here; without it the appliance's EBS mounts would

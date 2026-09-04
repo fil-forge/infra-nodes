@@ -7,5 +7,5 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/filone/infra-nodes/scripts/host/renew-seal-token.sh
+ExecStart=/opt/fil-one/infra-nodes/scripts/host/renew-seal-token.sh
 TimeoutStartSec=300

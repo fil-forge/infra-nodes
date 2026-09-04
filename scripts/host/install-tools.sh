@@ -41,7 +41,7 @@ echo "  target platform: $TARGET_PLATFORM"
 # Usage: install_from_archive <name> <version> <sha256> <url> <member>
 install_from_archive() {
   local name="$1" version="$2" sha256="$3" url="$4" member="$5"
-  local stamp="/etc/filone/$name.version" expected_stamp="$version $TARGET_PLATFORM"
+  local stamp="/etc/fil-one/$name.version" expected_stamp="$version $TARGET_PLATFORM"
 
   if [ -z "$version" ] || [ -z "$sha256" ]; then
     die "no $name pin: set its version and sha256 in nodes/$FILONE_NODE/node.env"

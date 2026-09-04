@@ -11,11 +11,11 @@ snippet directly from `/root/fil-one/infra-nodes`, validates the combined config
 Caddy listener and TCP 1234 Lotus RPC listener without depending on Docker's generated bridge name.
 The rules do not permit public access. The host firewall permits public TCP 80 and 443 for Caddy and
 ACME. The host Alloy service collects host and container telemetry, including the deploy stamps
-under `/mnt/data/filone/control/state/metrics`.
+under `/mnt/data/fil-one/control/state/metrics`.
 
 The OpenTofu staging root owns only the two Route53 A records. It creates no server, volume, IAM
 role or other AWS host resource. Appliance control state and data live in separate directories:
-`/mnt/data/filone/control` and `/mnt/data/filone/data`.
+`/mnt/data/fil-one/control` and `/mnt/data/fil-one/data`.
 
 Piri reaches the host's Lotus RPC through `host.docker.internal:1234` without an authorization
 token. Staging has no Indexer/IPNI configuration. Indexer and Swarf identities remain registered

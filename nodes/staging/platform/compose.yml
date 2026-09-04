@@ -9,8 +9,8 @@ services:
     environment: ["VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}"]
     volumes:
       - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
-      - /mnt/data/filone/control/openbao:/openbao/file
-      - /run/filone/bao:/openbao/logs
+      - /mnt/data/fil-one/control/openbao:/openbao/file
+      - /run/fil-one/bao:/openbao/logs
     healthcheck:
       test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null"]
       start_interval: 2s
@@ -25,7 +25,7 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
-    volumes: ["/mnt/data/filone/control/postgres:/var/lib/postgresql/data"]
+    volumes: ["/mnt/data/fil-one/control/postgres:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U admin -d admin"]
       start_interval: 1s
