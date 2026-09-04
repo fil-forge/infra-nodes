@@ -39,19 +39,55 @@ dig +short piri-0.staging.fil-forge.com
 dig +short s3.eu-central-3.staging.filonecontent.com
 ```
 
+The host-owned Caddy service needs public TCP 80 for ACME challenges and TCP
+443 for HTTPS. Check the existing UFW policy and add these rules only if an
+equivalent public rule is absent:
+
+```sh
+ufw status numbered
+ufw allow 80/tcp comment 'Host Caddy HTTP and ACME'
+ufw allow 443/tcp comment 'Host Caddy HTTPS'
+```
+
 Check out this repository at `/root/fil-one/infra-nodes`, then run:
 
 ```sh
 cd /root/fil-one/infra-nodes
 scripts/host/bootstrap-staging.sh
-docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl \
-  ws://host.docker.internal:1234/rpc/v1
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
-network, node config, systemd units, the Caddy import and the FilOne UFW rule.
-It validates the combined host Caddy configuration before reloading
-`caddy-guppy`.
+network, node config, systemd units, the Caddy import and the Docker-to-Caddy
+UFW rule. It validates the combined host Caddy configuration before reloading
+`caddy-guppy`. Ensure both Docker-only rules are present after bootstrap; UFW
+leaves the existing Caddy rule unchanged:
+
+```sh
+ufw allow in on docker0 from 172.16.0.0/12 to any port 443 proto tcp \
+  comment 'FilOne Docker to host Caddy'
+ufw allow in on docker0 from 172.16.0.0/12 to any port 1234 proto tcp \
+  comment 'FilOne Docker to host Lotus RPC'
+ufw status numbered
+```
+
+The two rules let Piri call its public Ingot URL and the host-owned Lotus RPC.
+Do not allow TCP 1234 from the public internet. If an old deployment has a
+broader Docker-source rule for TCP 1234, add the Docker-interface rule first,
+then remove the old rule by its number from `ufw status numbered`.
+
+Confirm that a container can call Lotus with a one-shot JSON-RPC request:
+
+```sh
+docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl \
+  --fail --show-error --max-time 10 \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"Filecoin.Version","params":[],"id":1}' \
+  http://host.docker.internal:1234/rpc/v1
+```
+
+The response contains the Lotus version. Do not use `curl ws://…` for this
+check: a WebSocket stays open after connecting, so curl waits for the server to
+close it.
 
 At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
 staging `wallet_addresses` payer address and commit it to `nodes/staging/node.env`.

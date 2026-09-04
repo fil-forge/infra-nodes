@@ -135,7 +135,8 @@ Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:
 
 1. Apply `terraform/envs/bootstrap/nonprod` by hand, once per account.
 2. Apply `terraform/envs/dev` for EC2 dev. For bare-metal staging, apply the DNS-only
-   `terraform/envs/staging` root and run `scripts/host/bootstrap-staging.sh` on the server.
+   `terraform/envs/staging` root, configure Caddy's public and Docker-only firewall rules, and run
+   `scripts/host/bootstrap-staging.sh` on the server. The staging runbook has the exact UFW rules.
 3. Have central mint the unseal token, which is bound to the Elastic IP the apply just allocated,
    and send back the wrapping token that claims it.
 4. Run `provision-platform.sh` on the node: initialise OpenBao, install the identity tooling,
