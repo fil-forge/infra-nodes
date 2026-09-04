@@ -17,10 +17,14 @@ set -euo pipefail
 # incrementally, so a `git reset --hard` partway through this one can leave the
 # shell reading from a different file at a different offset. Re-exec from a copy
 # before touching the checkout.
+#
+# Through the interpreter, not by executing the copy. /run is mounted noexec on
+# some hosts, and a script bash opens and reads needs neither an exec-capable
+# mount nor an exec bit.
 if [ -z "${FILONE_RECONCILE_COPY:-}" ]; then
   copy_dir="$(mktemp -d /run/fil-one-reconcile.XXXXXX)"
   cp -a "$(dirname "$(readlink -f "$0")")/." "$copy_dir/"
-  FILONE_RECONCILE_COPY="$copy_dir" exec "$copy_dir/reconcile.sh" "$@"
+  FILONE_RECONCILE_COPY="$copy_dir" exec "$BASH" "$copy_dir/reconcile.sh" "$@"
 fi
 trap 'rm -rf "$FILONE_RECONCILE_COPY"' EXIT
 
