@@ -6,25 +6,25 @@
 # root's.
 
 # shellcheck shell=bash
-# SC2154: filone_init reads /etc/filone/node.conf and the node's node.env, so
+# SC2154: filone_init reads /etc/fil-one/node.conf and the node's node.env, so
 # the variables from both are assigned at run time, in files no static check
 # can see.
 # shellcheck disable=SC2154
 
-FILONE_CONTROL_DIR=/mnt/filone/control
-FILONE_SECRETS_DIR=/run/filone/secrets
-FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
-FILONE_METRICS_DIR="$FILONE_CONTROL_DIR/state/metrics"
-FILONE_REVISIONS_DIR="$FILONE_CONTROL_DIR/state/revisions"
-FILONE_SEAL_TOKEN_FILE=/etc/filone/seal-token
-FILONE_BAO_TOKEN_FILE=/etc/filone/bao-token
+FILONE_CONTROL_DIR=/mnt/fil-one/control
+# SC2034: provision-apps.sh uses this after sourcing the library.
+# shellcheck disable=SC2034
+FILONE_DATA_DIR=/mnt/fil-one/data
+FILONE_SECRETS_DIR=/run/fil-one/secrets
+FILONE_SEAL_TOKEN_FILE=/etc/fil-one/seal-token
+FILONE_BAO_TOKEN_FILE=/etc/fil-one/bao-token
 FILONE_BAO_CONTAINER=filone-openbao
 
 # The bind mount OpenBao's unix listener puts its API socket on, and Ingot
 # mounts to reach it. Created root-owned, like the secrets tmpfs: OpenBao's
 # entrypoint chowns it to the user the server drops to before that drop
 # happens, which is the same thing that makes the raft mount writable.
-FILONE_BAO_SOCKET_DIR=/run/filone/bao
+FILONE_BAO_SOCKET_DIR=/run/fil-one/bao
 
 # Where this node's secrets live in the local OpenBao. One KV v2 mount, one
 # path per subject, so a policy can be written per subject later without moving
@@ -36,19 +36,19 @@ die() {
   exit 1
 }
 
-# Load /etc/filone/node.conf and the node's own node.env, and check that the box
+# Load /etc/fil-one/node.conf and the node's own node.env, and check that the box
 # agrees with the checkout about which node it is. A node running another node's
 # configuration would render another node's hostnames into its certificates and
 # register the wrong URL with sprue, so this is worth failing on.
 filone_init() {
   [ "$(id -u)" -eq 0 ] || die "must run as root"
 
-  [ -r /etc/filone/node.conf ] || die "/etc/filone/node.conf is missing; cloud-init did not finish"
+  [ -r /etc/fil-one/node.conf ] || die "/etc/fil-one/node.conf is missing; cloud-init did not finish"
   # shellcheck disable=SC1091
-  . /etc/filone/node.conf
+  . /etc/fil-one/node.conf
 
-  : "${FILONE_NODE:?FILONE_NODE not set in /etc/filone/node.conf}"
-  : "${FILONE_CHECKOUT:?FILONE_CHECKOUT not set in /etc/filone/node.conf}"
+  : "${FILONE_NODE:?FILONE_NODE not set in /etc/fil-one/node.conf}"
+  : "${FILONE_CHECKOUT:?FILONE_CHECKOUT not set in /etc/fil-one/node.conf}"
 
   FILONE_NODE_DIR="$FILONE_CHECKOUT/nodes/$FILONE_NODE"
   [ -d "$FILONE_NODE_DIR" ] || die "no directory for node '$FILONE_NODE' at $FILONE_NODE_DIR"
@@ -60,6 +60,10 @@ filone_init() {
   set +a
   [ "$FILONE_NODE" = "$host_node" ] ||
     die "node.env says node '$FILONE_NODE' but this box is '$host_node'"
+
+  FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
+  FILONE_METRICS_DIR="$FILONE_STATE_DIR/metrics"
+  FILONE_REVISIONS_DIR="$FILONE_STATE_DIR/revisions"
 
   mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
   install -d -m 0700 -o root -g root "$FILONE_SECRETS_DIR"
@@ -89,6 +93,32 @@ require_configured() {
   local name="$1" placeholder="$2"
   [ "${!name}" != "$placeholder" ] ||
     die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
+}
+
+# Whether this node ships its own telemetry, from whether its node.env carries
+# the Grafana Cloud endpoints. A node whose host owns Alloy leaves all four out
+# and needs no push token; a node that runs Alloy in the platform project has
+# all four and does.
+#
+# All four or none. A node.env missing one of them would otherwise deploy as if
+# it shipped nothing, and the operator's first sign of it would be a template
+# complaining about GRAFANA_PUSH_TOKEN several steps later.
+node_ships_telemetry() {
+  local name set_names="" unset_names=""
+  for name in GRAFANA_LOGS_URL GRAFANA_LOGS_USER GRAFANA_METRICS_URL GRAFANA_METRICS_USER; do
+    if [ -n "${!name:-}" ]; then
+      set_names+=" $name"
+    else
+      unset_names+=" $name"
+    fi
+  done
+
+  [ -n "$set_names" ] || return 1
+  [ -n "$unset_names" ] &&
+    die "$FILONE_NODE_DIR/node.env sets$set_names but not$unset_names.
+       Alloy needs all four to push, or none of them for a node whose host ships
+       its telemetry instead."
+  return 0
 }
 
 # --- systemd ---------------------------------------------------------------
@@ -163,7 +193,7 @@ sync_systemd_units() {
 # The wait is long because a deploy waiting on Piri's proving window legitimately
 # takes most of an hour. Past that, something is stuck and saying so beats a
 # timer that hangs forever.
-FILONE_DEPLOY_LOCK_FILE=/run/filone/deploy.lock
+FILONE_DEPLOY_LOCK_FILE=/run/fil-one/deploy.lock
 FILONE_DEPLOY_LOCK_WAIT=3600
 
 # flock does not nest, so a deploy script called by reconcile.sh would wait for
@@ -172,7 +202,7 @@ FILONE_DEPLOY_LOCK_WAIT=3600
 take_deploy_lock() {
   [ -z "${FILONE_DEPLOY_LOCK_HELD:-}" ] || return 0
 
-  install -d -m 0700 /run/filone
+  install -d -m 0700 /run/fil-one
   exec 9>"$FILONE_DEPLOY_LOCK_FILE"
   flock -w "$FILONE_DEPLOY_LOCK_WAIT" 9 ||
     die "another deploy has held $FILONE_DEPLOY_LOCK_FILE for ${FILONE_DEPLOY_LOCK_WAIT}s.

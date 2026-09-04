@@ -9,7 +9,7 @@
 # It creates nothing and prompts for nothing. The one secret it touches is the
 # node's own deploy token, which it renews and never prints.
 #
-# The ref it tracks is FILONE_GIT_REF in /etc/filone/node.conf, which is the
+# The ref it tracks is FILONE_GIT_REF in /etc/fil-one/node.conf, which is the
 # only statement of it. Point a node at a feature branch by editing that file.
 set -euo pipefail
 
@@ -17,10 +17,14 @@ set -euo pipefail
 # incrementally, so a `git reset --hard` partway through this one can leave the
 # shell reading from a different file at a different offset. Re-exec from a copy
 # before touching the checkout.
+#
+# Through the interpreter, not by executing the copy. /run is mounted noexec on
+# some hosts, and a script bash opens and reads needs neither an exec-capable
+# mount nor an exec bit.
 if [ -z "${FILONE_RECONCILE_COPY:-}" ]; then
-  copy_dir="$(mktemp -d /run/filone-reconcile.XXXXXX)"
+  copy_dir="$(mktemp -d /run/fil-one-reconcile.XXXXXX)"
   cp -a "$(dirname "$(readlink -f "$0")")/." "$copy_dir/"
-  FILONE_RECONCILE_COPY="$copy_dir" exec "$copy_dir/reconcile.sh" "$@"
+  FILONE_RECONCILE_COPY="$copy_dir" exec "$BASH" "$copy_dir/reconcile.sh" "$@"
 fi
 trap 'rm -rf "$FILONE_RECONCILE_COPY"' EXIT
 
@@ -66,6 +70,15 @@ fi
 # --- 2. Reconcile the systemd units -----------------------------------------
 
 sync_systemd_units
+
+# The staging appliance uses the host's Caddy. Its snippet is imported directly
+# from this checkout, so a changed snippet takes effect only after the combined
+# host configuration validates and caddy-guppy reloads.
+if [ "${FILONE_HOST_CADDY:-false}" = true ] && [ "$before" != "$after" ] &&
+  git -C "$FILONE_CHECKOUT" diff --name-only "$before" "$after" |
+    grep -qx "nodes/$FILONE_NODE/platform/config/caddy/host-caddy.caddy"; then
+  "$FILONE_CHECKOUT/scripts/host/reload-staging-host-caddy.sh"
+fi
 
 # --- 3. Work out what changed ----------------------------------------------
 

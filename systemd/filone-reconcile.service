@@ -8,7 +8,7 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/filone/infra-nodes/scripts/host/reconcile.sh
+ExecStart=/opt/fil-one/infra-nodes/scripts/host/reconcile.sh
 
 # Long enough for an image pull, a proving-window wait and both health gates.
 # Shorter than this and a deploy that is working normally gets killed halfway.

@@ -1,0 +1,60 @@
+name: filone-platform
+
+services:
+  openbao:
+    image: ${OPENBAO_IMAGE}
+    container_name: filone-openbao
+    user: "0:0"
+    command: ["server", "-config=/etc/openbao/bao.hcl"]
+    environment: ["VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}"]
+    volumes:
+      - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
+      - /mnt/data/fil-one/control/openbao:/openbao/file
+      - /run/fil-one/bao:/openbao/logs
+    healthcheck:
+      test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null"]
+      start_interval: 2s
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+    volumes: ["/mnt/data/fil-one/control/postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U admin -d admin"]
+      start_interval: 1s
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks: [filone]
+
+  postgres-init:
+    image: ${POSTGRES_IMAGE}
+    depends_on: { postgres: { condition: service_healthy } }
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        export PGPASSWORD="$$POSTGRES_ADMIN_PASSWORD"
+        ensure() { printf '%s\n' "SELECT 'CREATE ROLE \"$$1\"' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$$1')" '\gexec' "ALTER ROLE \"$$1\" WITH LOGIN PASSWORD '$$2';" "SELECT 'CREATE DATABASE \"$$1\" OWNER \"$$1\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$$1')" '\gexec' | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet; }
+        ensure piri "$$PIRI_POSTGRES_PASSWORD"
+        ensure ingot "$$INGOT_POSTGRES_PASSWORD"
+    environment:
+      POSTGRES_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      PIRI_POSTGRES_PASSWORD: ${PIRI_POSTGRES_PASSWORD}
+      INGOT_POSTGRES_PASSWORD: ${INGOT_POSTGRES_PASSWORD}
+    restart: "no"
+    networks: [filone]
+
+networks:
+  filone:
+    external: true

@@ -64,8 +64,15 @@ mark piri_changed render_template \
   "$FILONE_SECRETS_DIR/piri-base-config.toml"
 
 PIRI_POSTGRES_PASSWORD="$(bao_get postgres piri_password)"
-CHAIN_RPC_TOKEN="$(bao_get external chain_rpc_token)"
-export PIRI_POSTGRES_PASSWORD CHAIN_RPC_TOKEN
+export PIRI_POSTGRES_PASSWORD
+# A local Lotus can deliberately allow unauthenticated RPC. In that case the
+# node declares LOTUS_RPC_AUTH_REQUIRED=false and no token is read or rendered.
+if [ "${LOTUS_RPC_AUTH_REQUIRED:-true}" = true ]; then
+  CHAIN_RPC_TOKEN="$(bao_get external chain_rpc_token)"
+  export CHAIN_RPC_TOKEN
+else
+  unset CHAIN_RPC_TOKEN
+fi
 mark piri_changed render_template \
   "$FILONE_NODE_DIR/apps/templates/apps.env.tpl" \
   "$FILONE_SECRETS_DIR/apps.env"

@@ -43,12 +43,12 @@ services:
     volumes:
       # Rendered from OpenBao into a root-only tmpfs by deploy-apps.sh. Nothing
       # here survives a reboot.
-      - /run/filone/secrets/piri.pem:/keys/piri.pem:ro
-      - /run/filone/secrets/piri-owner-wallet.hex:/keys/owner-wallet.hex:ro
-      - /run/filone/secrets/piri-base-config.toml:/config/piri-base-config.toml:ro
+      - /run/fil-one/secrets/piri.pem:/keys/piri.pem:ro
+      - /run/fil-one/secrets/piri-owner-wallet.hex:/keys/owner-wallet.hex:ro
+      - /run/fil-one/secrets/piri-base-config.toml:/config/piri-base-config.toml:ro
       - ./config/piri/entrypoint.sh:/entrypoint.sh:ro
       # Blobs and the config `piri init` writes, on the data volume.
-      - /mnt/filone/data/piri:/data/piri
+      - /mnt/fil-one/data/piri:/data/piri
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/readyz | grep -qE '\"status\":[[:space:]]*\"ok\"'"]
       start_interval: 2s
@@ -70,17 +70,17 @@ services:
     user: "0:0" # same reason as piri: 0400 key files, root-owned data directory
     command: ["serve", "--config", "/etc/ingot/config.yaml"]
     volumes:
-      - /run/filone/secrets/ingot.pem:/keys/ingot.pem:ro
+      - /run/fil-one/secrets/ingot.pem:/keys/ingot.pem:ro
       # Embeds the Postgres DSN and the root S3 credentials, so it is a secret
       # in its own right and lives on the tmpfs with the rest.
-      - /run/filone/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
-      - /run/filone/secrets/hilt-ingot-proof.txt:/proofs/hilt-ingot-proof.txt:ro
+      - /run/fil-one/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
+      - /run/fil-one/secrets/hilt-ingot-proof.txt:/proofs/hilt-ingot-proof.txt:ro
       # The node's OpenBao, over the unix socket its listener creates here.
       # Every object's content-encryption key is wrapped under the region KEK in
       # that OpenBao's transit engine, so this mount is what makes a write
       # possible at all. Read-write for the same reason the OpenBao side is.
-      - /run/filone/bao:/run/openbao
-      - /mnt/filone/data/ingot:/data
+      - /run/fil-one/bao:/run/openbao
+      - /mnt/fil-one/data/ingot:/data
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
       start_interval: 1s

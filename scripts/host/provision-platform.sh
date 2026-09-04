@@ -249,12 +249,30 @@ prompt_secret() {
   bao_put_if_absent "$path" "$field" "$value"
 }
 
-prompt_secret external chain_rpc_token "chain.love access token"
-prompt_secret external grafana_push_token "Grafana Cloud push token"
+if [ "${LOTUS_RPC_AUTH_REQUIRED:-true}" = true ]; then
+  prompt_secret external chain_rpc_token "chain.love access token"
+else
+  echo "  local Lotus RPC is unauthenticated"
+fi
+
+if node_ships_telemetry; then
+  prompt_secret external grafana_push_token "Grafana Cloud push token"
+else
+  echo "  node.env names no Grafana endpoints, so no push token is needed"
+fi
 
 # --- 8. The rest of the platform --------------------------------------------
 
-echo "[8/8] Starting Postgres, Caddy and Alloy"
+# Which of them this node runs. The staging appliance has the host's Caddy and
+# the host's Alloy, so there it is Postgres alone.
+starting="Postgres"
+if [ "${FILONE_HOST_CADDY:-false}" != true ]; then
+  starting="$starting, Caddy"
+fi
+if node_ships_telemetry; then
+  starting="$starting and Alloy"
+fi
+echo "[8/8] Starting $starting"
 "$SCRIPT_DIR/deploy-platform.sh"
 
 echo

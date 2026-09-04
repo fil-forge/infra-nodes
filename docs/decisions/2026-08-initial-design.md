@@ -178,7 +178,7 @@ a Postgres DSN and root S3 credentials, and both read a private key from a path.
 handed a secret any other way today.
 
 So the deploy scripts read the local OpenBao and render env files, Ingot's YAML and the key files
-into **`/run/filone/secrets`**, a root-only tmpfs mounted read-only into the containers. Rendering
+into **`/run/fil-one/secrets`**, a root-only tmpfs mounted read-only into the containers. Rendering
 happens on every deploy; services restart only when the rendered content actually changed, compared
 by hash. Nothing secret is written to a disk that survives a reboot.
 

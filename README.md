@@ -3,11 +3,13 @@
 Deployment configuration for FilOne Appliance nodes: the regional half of the Forge network.
 
 An appliance is one Piri storage node and one Ingot S3 gateway, running under Docker Compose on a
-single EC2 VM, with the local OpenBao, Postgres, Caddy and Grafana Alloy they need. Central services
+single host, with the local OpenBao and Postgres they need. Dev runs Grafana Alloy in the platform
+project; staging uses the host-owned Alloy service. Central services
 live in [infra-central](https://github.com/fil-forge/infra-central); a node talks to them over public
 HTTPS and unseals its OpenBao against theirs.
 
-One node so far: `dev`, in us-east-2, paired with infra-central's dev stage.
+Two nodes: `dev`, an EC2 node in us-east-2 paired with infra-central's dev stage; and `staging`, a
+bare-metal Servers.com appliance in eu-central-3 paired with the staging services.
 
 ## Contents
 
@@ -43,13 +45,14 @@ addresses its delegation to. Both names come from [RFC 16][rfc-16].
 
 [rfc-16]: https://github.com/fil-one/RFC/blob/main/rfcs/2026-07-forge-service-identities.md
 
-Two Compose projects. **platform** is OpenBao, Postgres, Caddy and Alloy; **apps** is Piri and
-Ingot. They are separate because they restart on different terms: an apps deploy waits for Piri's
-proving window, and a platform deploy never has to.
+Two Compose projects. **platform** is OpenBao and Postgres; dev also runs Caddy and Alloy there,
+while staging imports its Caddy configuration into the host-owned service and uses its host-owned
+Alloy. **apps** is Piri and Ingot. They are separate because they restart on different terms: an
+apps deploy waits for Piri's proving window, and a platform deploy never has to.
 
-Caddy is the only process listening on a public interface. Piri, Ingot, Postgres and OpenBao publish
-no ports at all — the first three are reachable on the shared `filone` Docker network, and OpenBao
-is not even on it.
+Piri, Ingot, Postgres and OpenBao publish no public ports. Dev Caddy reaches the apps on the shared
+`filone` Docker network. On staging, Piri and Ingot bind only to host loopback and the host-owned
+Caddy proxies them; OpenBao is not on the Docker network.
 
 ## Repository layout
 
@@ -62,7 +65,8 @@ terraform/
                         group, DNS, IAM, and the cloud-init that prepares the box
   envs/
     bootstrap/nonprod/  applied by hand, once per account
-    dev/                the dev node
+    dev/                the EC2 dev node
+    staging/            the bare-metal staging appliance
 nodes/
   dev/
     node.env            everything about this node that is not a secret
@@ -121,7 +125,7 @@ things by hand and nothing else: the wrapping token the unseal token is claimed 
 chain.love access token and the Grafana Cloud push token.
 
 Piri and Ingot read their configuration from files, secrets included, so the deploy scripts render
-what they need into `/run/filone/secrets` — a root-only tmpfs, mounted read-only into the
+what they need into `/run/fil-one/secrets` — a root-only tmpfs, mounted read-only into the
 containers, re-rendered on every deploy and compared by content so an unchanged deploy restarts
 nothing. Nothing secret is written to a disk that survives a reboot.
 
@@ -130,7 +134,9 @@ nothing. Nothing secret is written to a disk that survives a reboot.
 Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:
 
 1. Apply `terraform/envs/bootstrap/nonprod` by hand, once per account.
-2. Apply `terraform/envs/dev`. cloud-init prepares the box; SSM Session Manager reaches it.
+2. Apply `terraform/envs/dev` for EC2 dev. For bare-metal staging, apply the DNS-only
+   `terraform/envs/staging` root, configure Caddy's public and Docker-only firewall rules, and run
+   `scripts/host/bootstrap-staging.sh` on the server. The staging runbook has the exact UFW rules.
 3. Have central mint the unseal token, which is bound to the Elastic IP the apply just allocated,
    and send back the wrapping token that claims it.
 4. Run `provision-platform.sh` on the node: initialise OpenBao, install the identity tooling,

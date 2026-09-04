@@ -23,7 +23,104 @@ that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-`nodes/dev/node.env` describes the dev node and the accounts it talks to, and the values below name
+### Staging on Servers.com
+
+The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
+and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
+control and data directories are `/mnt/data/fil-one/control` and
+`/mnt/data/fil-one/data`.
+
+Apply the DNS-only root and confirm both names resolve to `23.83.66.244`:
+
+```sh
+tofu -chdir=terraform/envs/staging init
+tofu -chdir=terraform/envs/staging apply
+dig +short piri-0.staging.fil-forge.com
+dig +short s3.eu-central-3.staging.filonecontent.com
+```
+
+The host-owned Caddy service needs public TCP 80 for ACME challenges and TCP
+443 for HTTPS. Check the existing UFW policy and add these rules only if an
+equivalent public rule is absent:
+
+```sh
+ufw status numbered
+ufw allow 80/tcp comment 'Host Caddy HTTP and ACME'
+ufw allow 443/tcp comment 'Host Caddy HTTPS'
+```
+
+Check out this repository at `/root/fil-one/infra-nodes`, then run:
+
+```sh
+cd /root/fil-one/infra-nodes
+scripts/host/bootstrap-staging.sh
+```
+
+Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
+network, node config, systemd units, the Caddy import and the two FilOne UFW
+rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
+stops if an existing network with that name uses another subnet. It validates
+the combined host Caddy configuration before reloading `caddy-guppy`.
+
+Confirm both source-subnet rules are present after bootstrap:
+
+```sh
+ufw allow from 172.18.0.0/16 to any port 443 proto tcp \
+  comment 'FilOne Docker to host Caddy'
+ufw allow from 172.18.0.0/16 to any port 1234 proto tcp \
+  comment 'FilOne Docker to host Lotus RPC'
+ufw status numbered
+```
+
+The two rules let Piri call its public Ingot URL and the host-owned Lotus RPC.
+Do not allow TCP 1234 from the public internet. Remove old FilOne rules tied to
+`docker0` or another Docker bridge after confirming these source-subnet rules.
+
+Confirm that a container can call Lotus with a one-shot JSON-RPC request:
+
+```sh
+docker run --rm --network filone \
+  --add-host host.docker.internal:host-gateway curlimages/curl \
+  --fail --show-error --max-time 10 \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"Filecoin.Version","params":[],"id":1}' \
+  http://host.docker.internal:1234/rpc/v1
+```
+
+The response contains the Lotus version. Do not use `curl ws://…` for this
+check: a WebSocket stays open after connecting, so curl waits for the server to
+close it.
+
+Confirm the same network can reach the host-owned Caddy listener:
+
+```sh
+docker run --rm --network filone \
+  --add-host host.docker.internal:host-gateway curlimages/curl \
+  --fail --show-error --max-time 10 \
+  --connect-to s3.eu-central-3.staging.filonecontent.com:443:host.docker.internal:443 \
+  https://s3.eu-central-3.staging.filonecontent.com/health
+```
+
+At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
+staging `wallet_addresses` payer address and commit it to `nodes/staging/node.env`.
+Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
+`NODE_IP=23.83.66.244`. On the host run `provision-platform.sh`, saving the
+OpenBao recovery key and root token, then provide the wrapping token. Staging
+uses its local unauthenticated Lotus RPC and the host-owned Alloy service, so it
+does not ask for a Chain.Love or Grafana token.
+
+Run `onboarding-request.sh`, fund its printed Piri owner wallet with
+Calibration testnet FIL, and send its DID, URL and proof to infra-central. Run
+`onboard-appliance` there for `staging/eu-central-3`, install its returned
+Ingot proof with `store-hilt-proof.sh`, then run `provision-apps.sh`. Enable
+both FilOne timers and check public Piri, Ingot, the status document and an
+OpenBao restart/unseal. Finish with:
+
+```sh
+scripts/ci/smoke-test.sh staging
+```
+
+`nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
 those accounts rather than anything in this repository. They are set for dev. A node added later
 needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
 placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
@@ -34,6 +131,12 @@ Grafana Cloud stack the node ships to. Both are on the stack's details page in t
 portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
 tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
 the cluster its stack sits on, so another stack pushes elsewhere.
+
+Those four lines are per node, and a node whose host already runs Alloy leaves all four out. The
+staging appliance is such a node: `nodes/staging/node.env` has no telemetry block, and the host
+scripts then neither ask for a Grafana push token nor render an Alloy config. It is all four or
+none. A node.env that sets some of them stops the deploy, because a node missing one id would
+otherwise deploy green and ship nothing.
 
 `PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
 Only the central account can read it, so ask whoever runs infra-central; their runbook says where
@@ -74,10 +177,10 @@ Check it finished:
 ```sh
 scripts/operator/ssm-session.sh dev
 sudo -i
-cat /etc/filone/bootstrap-complete     # a timestamp; absent means bootstrap died
+cat /etc/fil-one/bootstrap-complete     # a timestamp; absent means bootstrap died
 tail -50 /var/log/filone-bootstrap.log
-findmnt /mnt/filone/control
-findmnt /mnt/filone/data
+findmnt /mnt/fil-one/control
+findmnt /mnt/fil-one/data
 docker network ls | grep filone
 ```
 
@@ -107,7 +210,7 @@ In an SSM session on the node:
 
 ```sh
 sudo -i
-cd /opt/filone/infra-nodes
+cd /opt/fil-one/infra-nodes
 scripts/host/provision-platform.sh
 ```
 
@@ -161,7 +264,7 @@ registry on its first start, and that transaction sends 5 tFIL from this wallet,
 directly:
 
 ```sh
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/filone/bao-token)" \
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
   filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri
 ```
 
@@ -195,7 +298,8 @@ it waits, prefixed `piri |`, so a registration or a proof-set transaction that n
 visible as it happens. Later runs skip init and print nothing extra.
 
 `provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
-`/readyz`, Ingot answers `/health`, and both hostnames serve over HTTPS with issued certificates.
+`/readyz`, Ingot answers `/health`, both hostnames serve over HTTPS with issued certificates, and
+Caddy serves the node status document.
 
 It then installs the systemd units from the checkout, so the timers below exist whatever revision
 cloud-init bootstrapped the box from.
@@ -209,7 +313,7 @@ systemctl list-timers | grep filone
 ```
 
 From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
-`/etc/filone/node.conf` names, which cloud-init writes as `main`.
+`/etc/fil-one/node.conf` names, which cloud-init writes as `main`.
 
 ## Day-to-day operations
 
@@ -256,23 +360,23 @@ took. `smoke.yml` runs the same test after every merge and hourly.
 **Deploy by hand**, without waiting for the timer:
 
 ```sh
-sudo -i /opt/filone/infra-nodes/scripts/host/reconcile.sh
+sudo -i /opt/fil-one/infra-nodes/scripts/host/reconcile.sh
 ```
 
 **Test a branch before it merges.** Point the node at it and let the next pass pick it up:
 
 ```sh
-sed -i 's|^FILONE_GIT_REF=.*|FILONE_GIT_REF=my-branch|' /etc/filone/node.conf
+sed -i 's|^FILONE_GIT_REF=.*|FILONE_GIT_REF=my-branch|' /etc/fil-one/node.conf
 ```
 
 Set it back to `main` before the branch is deleted. A node tracking a ref that no longer exists
 fails the reset, so reconcile stops and the deploy deadman goes stale.
 
-`/etc/filone/node.conf` is the only statement of the ref. Reconcile reads it on every pass, so an
+`/etc/fil-one/node.conf` is the only statement of the ref. Reconcile reads it on every pass, so an
 environment variable passed to a single run would be undone five minutes later.
 
 **Upgrade ucantool or cast.** Edit the pins in `nodes/dev/node.env`, merge, then run
-`sudo -i /opt/filone/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run
+`sudo -i /opt/fil-one/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run
 the install — only key generation uses these tools — so the new binary lands when the script runs,
 not when the commit merges.
 
@@ -456,13 +560,13 @@ the repository and commit it could not read.
 *The dev node never reached this commit.* The commit merged and the node has not deployed it within
 an hour. `journalctl -u filone-reconcile.service -n 200` on the box shows which: a pass that never
 ran, a proving gate that has not opened, a deploy that failed, or a node pointed at another ref by
-`FILONE_GIT_REF` in `/etc/filone/node.conf`. The entries below cover each.
+`FILONE_GIT_REF` in `/etc/fil-one/node.conf`. The entries below cover each.
 
 *The dev node failed its smoke test.* The node has the commit and is not serving what the commit
 pins, so suspect the image. The run's log names the failing check. A check that says the deployed
 revision is not in this checkout usually means the clone is behind, so `git fetch` and run it again;
 if the revision is still nowhere on origin, the node is following another ref and
-`FILONE_GIT_REF` in `/etc/filone/node.conf` says which. Rolling back is a pin bump like any other:
+`FILONE_GIT_REF` in `/etc/fil-one/node.conf` says which. Rolling back is a pin bump like any other:
 
 ```sh
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
