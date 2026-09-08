@@ -206,11 +206,10 @@ better.
 
 ### 4. The platform
 
-In an SSM session on the node:
+In an SSM session on the node, as root (`sudo -i`), in the checkout at `/opt/fil-one/infra-nodes`.
+The rest of the bring-up runs in this shell.
 
 ```sh
-sudo -i
-cd /opt/fil-one/infra-nodes
 scripts/host/provision-platform.sh
 ```
 
@@ -317,6 +316,10 @@ From here, changes reach the node by being merged. The node tracks whatever `FIL
 
 ## Day-to-day operations
 
+Commands in this section run from the infra-nodes checkout: `/opt/fil-one/infra-nodes` on the
+cloud nodes and `/root/fil-one/infra-nodes` on staging, the `FILONE_CHECKOUT` value in
+`/etc/fil-one/node.conf`.
+
 **Deploy a new image.** Nothing to do. Piri and Ingot dispatch their new digest here when they
 publish a `:main` image, `bump-deployed-image.yml` opens the pull request that rewrites
 `nodes/dev/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and `compose` pass.
@@ -360,7 +363,7 @@ took. `smoke.yml` runs the same test after every merge and hourly.
 **Deploy by hand**, without waiting for the timer:
 
 ```sh
-sudo -i /opt/fil-one/infra-nodes/scripts/host/reconcile.sh
+sudo scripts/host/reconcile.sh
 ```
 
 **Test a branch before it merges.** Point the node at it and let the next pass pick it up:
@@ -373,10 +376,12 @@ Set it back to `main` before the branch is deleted. A node tracking a ref that n
 fails the reset, so reconcile stops and the deploy deadman goes stale.
 
 `/etc/fil-one/node.conf` is the only statement of the ref. Reconcile reads it on every pass, so an
-environment variable passed to a single run would be undone five minutes later.
+environment variable passed to a single run would be undone five minutes later. The timer units read
+`FILONE_CHECKOUT` from the same file, which is how one unit file serves a node whose checkout is
+under `/opt` and one whose checkout is under `/root`.
 
 **Upgrade ucantool or cast.** Edit the pins in `nodes/dev/node.env`, merge, then run
-`sudo -i /opt/fil-one/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run
+`sudo scripts/host/install-tools.sh` on the node. Reconcile does not run
 the install — only key generation uses these tools — so the new binary lands when the script runs,
 not when the commit merges.
 

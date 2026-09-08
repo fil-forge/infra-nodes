@@ -8,7 +8,11 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/fil-one/infra-nodes/scripts/host/reconcile.sh
+# The checkout lives where /etc/fil-one/node.conf says: /opt/fil-one on the
+# cloud nodes, /root/fil-one on the bare-metal staging host. systemd will not
+# take a variable as the program itself, hence bash in front.
+EnvironmentFile=/etc/fil-one/node.conf
+ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/reconcile.sh
 
 # Long enough for an image pull, a proving-window wait and both health gates.
 # Shorter than this and a deploy that is working normally gets killed halfway.
