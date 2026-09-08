@@ -373,7 +373,9 @@ Set it back to `main` before the branch is deleted. A node tracking a ref that n
 fails the reset, so reconcile stops and the deploy deadman goes stale.
 
 `/etc/fil-one/node.conf` is the only statement of the ref. Reconcile reads it on every pass, so an
-environment variable passed to a single run would be undone five minutes later.
+environment variable passed to a single run would be undone five minutes later. The timer units read
+`FILONE_CHECKOUT` from the same file, which is how one unit file serves a node whose checkout is
+under `/opt` and one whose checkout is under `/root`.
 
 **Upgrade ucantool or cast.** Edit the pins in `nodes/dev/node.env`, merge, then run
 `sudo -i /opt/fil-one/infra-nodes/scripts/host/install-tools.sh` on the node. Reconcile does not run

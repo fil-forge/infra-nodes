@@ -7,5 +7,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/fil-one/infra-nodes/scripts/host/renew-seal-token.sh
+# The checkout lives where /etc/fil-one/node.conf says: /opt/fil-one on the
+# cloud nodes, /root/fil-one on the bare-metal staging host. systemd will not
+# take a variable as the program itself, hence bash in front.
+EnvironmentFile=/etc/fil-one/node.conf
+ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/renew-seal-token.sh
 TimeoutStartSec=300
