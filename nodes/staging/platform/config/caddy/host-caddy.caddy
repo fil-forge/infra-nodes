@@ -1,5 +1,5 @@
 # Imported directly by the host-operated Caddy configuration.
-# The appliance exposes its apps only on loopback.
+# The appliance exposes its apps only on loopback, on ports 15000-15999.
 https://piri-0.staging.fil-forge.com {
   handle /.well-known/filone-node-status.json {
     root * /mnt/data/fil-one/control/state
@@ -7,10 +7,10 @@ https://piri-0.staging.fil-forge.com {
     file_server
   }
   handle {
-    reverse_proxy 127.0.0.1:3000
+    reverse_proxy 127.0.0.1:15100
   }
 }
 
 https://s3.eu-central-3.staging.filonecontent.com {
-  reverse_proxy 127.0.0.1:9000
+  reverse_proxy 127.0.0.1:15200
 }
