@@ -166,19 +166,24 @@ delegation to it survives. Dev takes no backups, by decision.
 
 ## Before production
 
-Two things this repository should have before a node carries anything that matters.
+Two things this repository should have before a node carries anything that matters, both tracked
+in Linear.
 
-**A backup strategy.** Dev runs with none. Production needs snapshots of the control volume, OpenBao
-raft snapshots off the box, or scheduled `pg_dump` — and a restore that has actually been run,
-because the failure this protects against is the one where the node's identity is gone.
+**A backup strategy.** Dev runs with none. [FIL-1166][] covers snapshots of the control volume,
+OpenBao raft snapshots off the box, and a restore that has actually been run, because the failure
+this protects against is the one where the node's identity is gone. Postgres replication and
+point-in-time recovery is [FIL-807][].
 
-**Piri and Ingot reading their secrets from OpenBao.** Ingot already reads one thing from it
-directly: the region key every object is encrypted under stays inside OpenBao's transit engine, and
-Ingot reaches it over a unix socket. Everything else is still a file, including the Postgres DSN,
-the root S3 credentials and both private keys, which is why the deploy scripts render secrets into a
-tmpfs at all. RFC 21 asks for nothing secret in a plain file; a tmpfs file is still a file. With both
-services able to fetch the rest of their own secrets, the rendering step goes away and so does the
-tmpfs.
+**Piri and Ingot reading their secrets from OpenBao.** Ingot already reads the region key from
+OpenBao's transit engine over a unix socket; everything else is still a file rendered into a tmpfs
+by the deploy scripts. [FIL-1167][] is Piri, [FIL-1168][] is Ingot, and [FIL-1183][] removes the
+rendering step once both have landed.
+
+[FIL-1166]: https://linear.app/filecoin-foundation/issue/FIL-1166
+[FIL-807]: https://linear.app/filecoin-foundation/issue/FIL-807
+[FIL-1167]: https://linear.app/filecoin-foundation/issue/FIL-1167
+[FIL-1168]: https://linear.app/filecoin-foundation/issue/FIL-1168
+[FIL-1183]: https://linear.app/filecoin-foundation/issue/FIL-1183
 
 ## Development
 
@@ -215,7 +220,10 @@ merging on the previous head's decision.
 The container images are outside all of this, and no ecosystem reads them. Piri and Ingot have a
 mechanism of their own: each dispatches its new digest here when it publishes, which is
 [how a change reaches a node](#how-a-change-reaches-a-node) above. The platform images in
-`nodes/dev/platform/versions.env` stay on mutable tags and are a hand edit.
+`nodes/dev/platform/versions.env` stay on mutable tags and are a hand edit; pinning them by digest
+with automated bump pull requests is [FIL-1165][].
+
+[FIL-1165]: https://linear.app/filecoin-foundation/issue/FIL-1165
 
 ## Related
 
