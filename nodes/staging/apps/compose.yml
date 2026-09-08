@@ -7,7 +7,7 @@ services:
     user: "0:0"
     entrypoint: ["/entrypoint.sh"]
     extra_hosts: ["host.docker.internal:host-gateway"]
-    ports: ["127.0.0.1:3000:3000"]
+    ports: ["127.0.0.1:15100:3000"]
     environment:
       LOTUS_ENDPOINT: ${LOTUS_RPC_URL}
       PUBLIC_URL: ${PIRI_PUBLIC_URL}
@@ -39,7 +39,7 @@ services:
     container_name: filone-ingot
     user: "0:0"
     command: ["serve", "--config", "/etc/ingot/config.yaml"]
-    ports: ["127.0.0.1:9000:9000"]
+    ports: ["127.0.0.1:15200:9000"]
     volumes:
       - /run/fil-one/secrets/ingot.pem:/keys/ingot.pem:ro
       - /run/fil-one/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
