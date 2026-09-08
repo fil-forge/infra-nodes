@@ -23,8 +23,8 @@ log_level: info
 
 # Browser origins the S3 listener answers CORS for.
 cors_allowed_origins:
-  - "https://app.fil.one"
-  - "https://app.filone.ai"
+  - "https://staging.fil.one"
+  - "https://staging.filone.ai"
   - "https://*.dev.fil.one"
 
 # Break-glass S3 account. Ordinary credentials are minted by hilt per tenant;
