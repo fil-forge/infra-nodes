@@ -6,7 +6,8 @@ Piri at `piri-0.staging.fil-forge.com` and Ingot at
 
 The host owns Caddy, Lotus, Grafana Alloy and its unrelated workloads. FilOne imports one Caddy
 snippet directly from `/root/fil-one/infra-nodes`, validates the combined configuration and reloads
-`caddy-guppy`. Piri and Ingot bind only to loopback, at `127.0.0.1:15100` and `127.0.0.1:15200`.
+`caddy-guppy`. The host publishes Piri and Ingot only on loopback, at `127.0.0.1:15100` and
+`127.0.0.1:15200`.
 Forge services on this host keep to ports 15000-15999, the range the Smelt deployment used. The
 host's other workloads sit on common defaults, and Guppy already listens on 3000.
 Their Docker network uses the fixed `172.18.0.0/16` subnet. Source-subnet UFW rules permit that
