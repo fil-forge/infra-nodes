@@ -27,11 +27,18 @@ PORT="${PORT:-3000}"
 HOST="${HOST:-0.0.0.0}"
 OPERATOR_EMAIL="${OPERATOR_EMAIL:?OPERATOR_EMAIL must be set}"
 REGISTRAR_URL="${REGISTRAR_URL:?REGISTRAR_URL must be set}"
+# The did:plc directory tenant identities resolve from. It is passed on every
+# run: to init, so the generated config records it, and to serve, because init
+# only re-runs when the base config changes and this value is not part of the
+# base config. `piri init` ignores a `[ucan] plc_directory` in the base config;
+# the flag is the only way into init.
+PLC_DIRECTORY_URL="${PLC_DIRECTORY_URL:?PLC_DIRECTORY_URL must be set}"
 
 echo "=== Piri entrypoint ==="
 echo "  Chain RPC:  $LOTUS_ENDPOINT"
 echo "  Public URL: $PUBLIC_URL"
 echo "  Registrar:  $REGISTRAR_URL"
+echo "  PLC:        $PLC_DIRECTORY_URL"
 
 mkdir -p "$DATA_DIR" "$TEMP_DIR"
 
@@ -80,6 +87,7 @@ else
     set -- /usr/bin/piri init \
         --base-config="$BASE_CONFIG" \
         --registrar-url="$REGISTRAR_URL" \
+        --plc-directory="$PLC_DIRECTORY_URL" \
         --data-dir="$DATA_DIR" \
         --temp-dir="$TEMP_DIR" \
         --key-file="$KEY_FILE" \
@@ -110,4 +118,5 @@ echo "[3/3] Serving"
 # No "$@" here. The init branch above rebuilt it with `set --`, so on a first
 # boot it still holds the whole init argv and `serve full` dies on
 # `unknown flag: --base-config`.
-exec /usr/bin/piri serve full --config "$CONFIG_FILE"
+exec /usr/bin/piri serve full --config "$CONFIG_FILE" \
+    --plc-directory="$PLC_DIRECTORY_URL"

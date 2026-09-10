@@ -33,6 +33,11 @@ services:
       - PORT=3000
       - HOST=0.0.0.0
       - REGISTRAR_URL=${REGISTRAR_URL}
+      # The same variable Ingot's config is rendered from, so the two services
+      # on this host resolve tenant did:plc identities from one directory. Left
+      # out, Piri falls back to the public plc.directory and rejects every
+      # tenant this stage minted.
+      - PLC_DIRECTORY_URL=${PLC_DIRECTORY_URL}
       - OPERATOR_EMAIL=${OPERATOR_EMAIL}
       - PIRI_DB_BACKEND=postgres
       # The password reaches the container's environment, where `docker inspect`
