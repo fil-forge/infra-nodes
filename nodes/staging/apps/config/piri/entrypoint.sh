@@ -12,6 +12,9 @@ BASE_CONFIG_SNAPSHOT="$DATA_DIR/piri-base-config.applied.toml"
 : "${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
 : "${PUBLIC_URL:?PUBLIC_URL must be set}"
 : "${REGISTRAR_URL:?REGISTRAR_URL must be set}"
+# Passed to both init and serve: init only re-runs when the base config
+# changes, and `piri init` ignores a `[ucan] plc_directory` in the base config.
+: "${PLC_DIRECTORY_URL:?PLC_DIRECTORY_URL must be set}"
 : "${OPERATOR_EMAIL:?OPERATOR_EMAIL must be set}"
 
 mkdir -p "$DATA_DIR" "$TEMP_DIR"
@@ -24,6 +27,7 @@ else
   /usr/bin/piri init \
     --base-config="$BASE_CONFIG" \
     --registrar-url="$REGISTRAR_URL" \
+    --plc-directory="$PLC_DIRECTORY_URL" \
     --data-dir="$DATA_DIR" \
     --temp-dir="$TEMP_DIR" \
     --key-file="$KEY_FILE" \
@@ -38,4 +42,5 @@ else
   cp "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"
 fi
 
-exec /usr/bin/piri serve full --config "$CONFIG_FILE"
+exec /usr/bin/piri serve full --config "$CONFIG_FILE" \
+  --plc-directory="$PLC_DIRECTORY_URL"

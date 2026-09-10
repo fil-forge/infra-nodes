@@ -14,6 +14,8 @@ services:
       PORT: 3000
       HOST: 0.0.0.0
       REGISTRAR_URL: ${REGISTRAR_URL}
+      # Same variable Ingot's config is rendered from: one directory per host.
+      PLC_DIRECTORY_URL: ${PLC_DIRECTORY_URL}
       OPERATOR_EMAIL: ${OPERATOR_EMAIL}
       PIRI_DB_BACKEND: postgres
       PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri?sslmode=disable
