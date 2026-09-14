@@ -101,6 +101,74 @@ docker run --rm --network filone \
   https://s3.eu-central-3.staging.filonecontent.com/health
 ```
 
+The host-owned Alloy ships the FilOne container logs and the host's metrics, and
+its configuration is maintained outside this repository. The appliance's output
+needs the same labels the dev node's Alloy attaches, so that one Grafana query
+selects a service across nodes: `node="staging"`, `region="eu-central-3"`,
+`appliance="staging-eu-central-3"`, and a `service_name` of the form
+`appliance-staging-eu-central-3-<service>`.
+
+The same Alloy also ships telemetry for unrelated workloads on that host and for
+remote scrape targets. The `appliance` label goes on the `prometheus.remote_write`
+component as `external_labels`, so every series from that machine carries it.
+The other labels belong on the FilOne components, and every rule below matches
+the Compose project, so those other workloads keep their own service names.
+
+Add the following rules to the existing Docker log relabel rules, after any
+generic `service_name` rule, and pass those rules to the existing
+`loki.source.docker` component's `relabel_rules` argument. Rules applied only to
+discovery targets do not reach log entries:
+
+```alloy
+rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project", "__meta_docker_container_label_com_docker_compose_service"]
+    separator     = ";"
+    regex         = "filone-(?:apps|platform);(.+)"
+    replacement   = "appliance-staging-eu-central-3-$1"
+    target_label  = "service_name"
+}
+
+rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "filone-(?:apps|platform)"
+    replacement   = "staging"
+    target_label  = "node"
+}
+
+rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "filone-(?:apps|platform)"
+    replacement   = "eu-central-3"
+    target_label  = "region"
+}
+
+rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "filone-(?:apps|platform)"
+    replacement   = "staging-eu-central-3"
+    target_label  = "appliance"
+}
+```
+
+The FilOne host metrics come from their own `prometheus.exporter.unix` scrape.
+Route that scrape through a `prometheus.relabel` component that sets
+`service_name="appliance-staging-eu-central-3-host"`, `node`, `region` and
+`instance="staging"` on every series, as `nodes/dev/platform/config/alloy/config.alloy`
+does for dev. Route the cAdvisor scrape through a `prometheus.relabel` component
+with the rules above; on cAdvisor series the Compose labels arrive as
+`container_label_com_docker_compose_project` and
+`container_label_com_docker_compose_service`. Give the reconcile journal source
+the same `service_name`, `node`, `region` and `appliance` as static labels, plus the shared
+journal relabel rules so the unit lands on its own label.
+
+Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
+reload is not enough for the log labels: on Alloy v1.17 the Docker log source
+keeps its running tailers, and their label sets, across a configuration reload,
+so entries keep arriving with the old labels. After the restart each tailer
+starts without a saved position and re-ships the container's retained Docker log
+once under the new labels. Once the FilOne containers run, `{service_name="appliance-staging-eu-central-3-piri"}`
+in Loki shows Piri's entries.
+
 At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
 staging `wallet_addresses` payer address and commit it to `nodes/staging/node.env`.
 Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
@@ -431,6 +499,19 @@ box:
 journalctl -u filone-reconcile.service -n 200
 docker logs --tail 200 filone-piri
 ```
+
+In Grafana Explore, select the Loki datasource and query `{appliance="dev-us-east-9"}` for
+everything the node ships, or `{node="dev"}` for one box. Docker logs carry
+`service_name="appliance-<stage>-<region>-<compose-service>"`, so Piri on dev is
+`{service_name="appliance-dev-us-east-9-piri"}`, Piri on staging is
+`{service_name="appliance-staging-eu-central-3-piri"}`, and Ingot ends in `-ingot`.
+
+Host metrics sit in the Prometheus datasource under the same `appliance`, `node` and `region` labels, with
+`service_name="appliance-<stage>-<region>-host"` and `instance` set to the node name, so
+`node_filesystem_avail_bytes{node="dev"}` is the dev appliance's free space. On dev the series
+come from the Alloy container's node exporter; on staging they come from the host's own exporter
+and cAdvisor, so container metrics such as `container_memory_working_set_bytes` exist for staging
+only.
 
 ## Re-onboarding after identity loss
 

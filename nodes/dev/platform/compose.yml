@@ -181,6 +181,9 @@ services:
       # Alloy ships. Composed here so the format is written once instead of in
       # each relabel rule.
       - SERVICE_NAME_PREFIX=appliance-${STAGE}-${REGION_LABEL}
+      # One label that selects everything this node ships, for a dashboard
+      # variable or a quick Explore query.
+      - APPLIANCE_LABEL=${STAGE}-${REGION_LABEL}
     volumes:
       - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
       # Read-only, all three. Alloy discovers containers and reads their logs
