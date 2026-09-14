@@ -374,7 +374,8 @@ Cloud over a push-only token held in OpenBao. Piri's own OTEL export to the Forg
 untouched and unrelated: that carries application traces to the central collector, this carries
 host and container health to a place an operator can page from.
 
-Every stream carries three labels. `node` and `region` come from `node.env` and identify the box.
+Every stream carries four labels. `node` and `region` come from `node.env` and identify the box.
+`appliance` is `<stage>-<region>` and selects everything the appliance ships in one matcher.
 `service_name` is `appliance-<stage>-<region>-<service>`, so `appliance-dev-us-east-9-piri`, and it
 identifies the service rather than the instance: two nodes in the same stage and region report the
 same `service_name` and are told apart by `node`. Container logs take the `<service>` part from the

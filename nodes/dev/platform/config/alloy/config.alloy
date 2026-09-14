@@ -13,7 +13,7 @@ logging {
 
 // Every series and every log line carries the node and its region label, which
 // is what lets one Grafana stack hold every appliance without them running
-// together.
+// together, and an appliance label naming the stage and region in one value.
 loki.write "grafana_cloud" {
 	endpoint {
 		url = sys.env("GRAFANA_LOGS_URL")
@@ -25,8 +25,9 @@ loki.write "grafana_cloud" {
 	}
 
 	external_labels = {
-		node   = sys.env("FILONE_NODE"),
-		region = sys.env("REGION_LABEL"),
+		node      = sys.env("FILONE_NODE"),
+		region    = sys.env("REGION_LABEL"),
+		appliance = sys.env("APPLIANCE_LABEL"),
 	}
 }
 
@@ -41,8 +42,9 @@ prometheus.remote_write "grafana_cloud" {
 	}
 
 	external_labels = {
-		node   = sys.env("FILONE_NODE"),
-		region = sys.env("REGION_LABEL"),
+		node      = sys.env("FILONE_NODE"),
+		region    = sys.env("REGION_LABEL"),
+		appliance = sys.env("APPLIANCE_LABEL"),
 	}
 }
 
@@ -78,7 +80,8 @@ discovery.docker "containers" {
 }
 
 discovery.relabel "containers" {
-	targets = discovery.docker.containers.targets
+	// The Docker log source applies these rules to each entry's metadata.
+	targets = []
 
 	rule {
 		source_labels = ["__meta_docker_container_name"]
@@ -106,10 +109,11 @@ discovery.relabel "containers" {
 }
 
 loki.source.docker "containers" {
-	host       = "unix:///var/run/docker.sock"
-	targets    = discovery.relabel.containers.output
-	labels     = {job = "docker"}
-	forward_to = [loki.write.grafana_cloud.receiver]
+	host          = "unix:///var/run/docker.sock"
+	targets       = discovery.docker.containers.targets
+	labels        = {job = "docker"}
+	relabel_rules = discovery.relabel.containers.rules
+	forward_to    = [loki.write.grafana_cloud.receiver]
 }
 
 // Host metrics, plus the textfile collector, which is how a shell script gets a
@@ -158,5 +162,13 @@ prometheus.relabel "host" {
 	rule {
 		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-host"
 		target_label = "service_name"
+	}
+
+	// The exporter runs inside this container, so the scrape's instance label
+	// is the container's hostname: a Docker id that changes on every recreate
+	// and restarts every series under a new label set. Name the node instead.
+	rule {
+		replacement  = sys.env("FILONE_NODE")
+		target_label = "instance"
 	}
 }
