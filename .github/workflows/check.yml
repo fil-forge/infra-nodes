@@ -18,12 +18,30 @@ on:
 jobs:
   tofu:
     runs-on: ubuntu-latest
+    # An absolute path: tofu does not expand `~` in this variable.
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tofu-plugin-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: "1.12.0"
+
+      # The registry serves providers straight from GitHub Releases, and GitHub
+      # throttles unauthenticated downloads from the shared runner IPs. A bad
+      # minute fails `tofu init` three attempts in a row and turns `main` red
+      # for nothing. Caching the plugins means the download only happens when a
+      # lock file changes.
+      #
+      # OpenTofu refuses to start when the cache directory does not exist, and
+      # actions/cache restores nothing on a miss, hence the mkdir.
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
 
       - run: make check-tofu
 
