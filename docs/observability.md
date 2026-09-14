@@ -36,14 +36,17 @@ Both are in Explore. Pick the data source, paste a query below, set the time ran
 
 ## Labels
 
-Four labels are on every stream and every series an appliance ships, whichever node it is.
+`appliance`, `node` and `region` are on every stream and every series an appliance ships, whichever
+node it is. `service_name` is on the journal, the host metrics and every container Compose started.
+A container started by hand with `docker run` has no Compose service, so its logs ship under
+`job="docker"` and `container=<name>` with no `service_name`.
 
 | Label          | Example                          | Meaning                                                                                                                                                        |
 | -------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `appliance`    | `dev-us-east-9`                  | `<stage>-<region>`. One matcher for everything the appliance ships. On staging it is also on the host's other metrics, since it sits on the metrics writer.   |
 | `node`         | `dev`, `staging`                 | The box. `FILONE_NODE` in `node.env`.                                                                                                                          |
 | `region`       | `us-east-9`, `eu-central-3`      | `REGION_LABEL` in `node.env`.                                                                                                                                  |
-| `service_name` | `appliance-dev-us-east-9-piri`   | `appliance-<stage>-<region>-<service>`. `<service>` is the Compose service name, or `host` for the journal and the host metrics. Two nodes in one stage and region share it and are told apart by `node`. |
+| `service_name` | `appliance-dev-us-east-9-piri`   | `appliance-<stage>-<region>-<service>`. `<service>` is the Compose service name, or `host` for the journal and the host metrics. Two nodes in one stage and region share it and are told apart by `node`. Absent on a container started by hand; select that one by `container`. |
 
 ## Logs
 
