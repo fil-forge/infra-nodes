@@ -79,6 +79,7 @@ scripts/
 systemd/                the reconcile timer and the seal-token renewal timer
 docs/
   RUNBOOK.md            bringing a node up, and what to do when it will not
+  observability.md      what ships to Grafana, and the queries that find it
   decisions/            why the node is shaped the way it is
 ```
 
