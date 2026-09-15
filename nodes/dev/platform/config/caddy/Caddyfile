@@ -1,12 +1,32 @@
 # Caddy is the only thing on this node listening on a public interface.
 #
 # Two public sites, both with certificates Caddy obtains and renews itself over
-# ACME. Nothing else: Piri and Ingot reach everything they need directly.
+# ACME, and one unpublished listener that serves Caddy's own metrics to Alloy.
+# Nothing else: Piri and Ingot reach everything they need directly.
 
 {
 	# The admin API, on the container's loopback. The healthcheck reads it; the
 	# host does not, because the port is not published.
 	admin 127.0.0.1:2019
+
+	# Per-request metrics, with a host label so Piri's traffic and Ingot's are
+	# told apart. The label takes one of the configured hostnames; any other
+	# Host header is counted under _other, so a client sending junk cannot grow
+	# the series set.
+	metrics {
+		per_host
+	}
+
+	# Names for the server label, in place of the srv0/srv1 Caddy would assign.
+	# Both public sites share :443 and so share one server; the host label is
+	# what splits them. Alloy drops everything recorded under `metrics`, which
+	# is its own scrape.
+	servers :443 {
+		name public
+	}
+	servers :2020 {
+		name metrics
+	}
 }
 
 # Piri. Storage protocol endpoints, the readiness probe sprue polls, and the
@@ -34,4 +54,12 @@ https://{$PIRI_HOSTNAME} {
 # fails TLS before it reaches anything here.
 https://{$INGOT_HOSTNAME} {
 	reverse_proxy ingot:9000
+}
+
+# Prometheus metrics for Alloy, which scrapes this over the filone network. The
+# port is not published, and this is a plain HTTP server rather than the admin
+# API's /metrics: the admin API stays on loopback so no other container on the
+# network can rewrite this config.
+http://:2020 {
+	metrics
 }
