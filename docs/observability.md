@@ -95,7 +95,8 @@ on dev the Compose healthcheck reading the admin API every fifteen seconds, whic
 lines. No node has access logs. On dev the stream is the Caddy container's stdout. On staging it is
 `/root/storacha/logs/caddy/caddy.log`, which the host Caddy writes and rolls itself.
 Most runtime entries name no site, so the staging stream covers every site that Caddy serves,
-Guppy's and Curio's included. The per-request error entries do name one, in `request.host`.
+Guppy's and Curio's included. The per-request error entries do name one, in the `request.host`
+field, which `| json` flattens to `request_host`.
 
 Caddy on every node, without the dev healthcheck:
 

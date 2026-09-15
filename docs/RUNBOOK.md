@@ -57,8 +57,8 @@ scripts/host/bootstrap-staging.sh
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
-network, node config, systemd units, the two Caddy imports and the two FilOne
-UFW rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
+network, node config, systemd units, the Caddy import and the two FilOne UFW
+rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
 stops if an existing network with that name uses another subnet. It validates
 the combined host Caddy configuration before reloading `caddy-guppy`.
 
@@ -184,8 +184,10 @@ and Caddy then warns on every start and keeps its autosave and instance id under
 working directory, which is `/`. A unit change needs `systemctl daemon-reload` and a restart of
 `caddy-guppy`, which interrupts every site on the host for a second or two.
 
-Tail the file with a source carrying the same label set as the container logs, so
-`{service_name=~"appliance-.*-caddy"}` selects Caddy on every node. Runtime entries name no site,
+Tail the file with a source carrying the four labels every appliance stream shares, `service_name`,
+`node`, `region` and `appliance`, so `{service_name=~"appliance-.*-caddy"}` selects Caddy on every
+node. The host's own `hostname` and `service` labels go on too; `stream` and `container` do not
+apply to a file. Runtime entries name no site,
 so this stream is every site the host Caddy serves:
 
 ```alloy
