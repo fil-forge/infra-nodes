@@ -212,6 +212,70 @@ loki.source.file "host_caddy" {
 The file source follows Caddy's roll, and it stamps each line with the time it read it, which is
 within a second of the line's own `ts` field except for whatever backlog exists when Alloy starts.
 
+The host Caddy answers the appliance's public requests, so its request metrics are the
+appliance's error rate, and they ship through the same Alloy. Caddy records per-request metrics
+only when the global `metrics` option is on, and the `host` label that tells the appliance's two
+sites apart from the host's other sites needs `per_host`, which arrived in Caddy 2.9. The host runs
+2.9.1; `caddy build-info` says so, since this build answers `caddy version` with `unknown`. Add to
+the global options block of `/root/storacha/caddy/Caddyfile`, next to the `log` block above, then
+run `reload-staging-host-caddy.sh`. A reload is enough; both options live in the HTTP app config.
+
+```caddyfile
+metrics {
+    per_host
+}
+servers :443 {
+    name public
+}
+```
+
+Caddy 2.9.1 records every Host header it sees as its own label value, and port 80 answers any
+name a scanner sends, so the set Caddy holds grows over time. Newer releases fold unknown names
+into `_other`. The scrape below keeps only the appliance's two hostnames, plus the series that
+carry no host at all, so nothing from the host's other sites or from scanners reaches Grafana. On
+the host, `curl -s localhost:2019/metrics | grep -o 'host="[^"]*"' | sort -u | wc -l` counts the
+names Caddy is holding; thousands is the point to upgrade it.
+
+Caddy serves `/metrics` on its admin API at `localhost:2019`, the address the reload script already
+uses. `appliance` is on the writer's `external_labels` and needs no rule.
+
+```alloy
+prometheus.scrape "host_caddy" {
+  targets         = [{__address__ = "127.0.0.1:2019"}]
+  job_name        = "caddy"
+  scrape_interval = "60s"
+  forward_to      = [prometheus.relabel.host_caddy.receiver]
+}
+
+prometheus.relabel "host_caddy" {
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+
+  // The host Caddy records every Host header it sees. Only the appliance's
+  // two sites ship, plus the series with no host label at all.
+  rule {
+    source_labels = ["host"]
+    regex         = "|piri-0\\.staging\\.fil-forge\\.com|s3\\.eu-central-3\\.staging\\.filonecontent\\.com"
+    action        = "keep"
+  }
+  rule {
+    target_label = "service_name"
+    replacement  = "appliance-staging-eu-central-3-caddy"
+  }
+  rule {
+    target_label = "node"
+    replacement  = "staging"
+  }
+  rule {
+    target_label = "region"
+    replacement  = "eu-central-3"
+  }
+  rule {
+    target_label = "instance"
+    replacement  = "staging"
+  }
+}
+```
+
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
 keeps its running tailers, and their label sets, across a configuration reload,
@@ -567,7 +631,8 @@ Host metrics sit in the Prometheus datasource under the same `appliance`, `node`
 `node_filesystem_avail_bytes{node="dev"}` is the dev appliance's free space. On dev the series
 come from the Alloy container's node exporter; on staging they come from the host's own exporter
 and cAdvisor, so container metrics such as `container_memory_working_set_bytes` exist for staging
-only.
+only. Caddy's request metrics ship from both nodes under `service_name="appliance-<stage>-<region>-caddy"`
+and `job="caddy"`; [observability.md](observability.md#caddy-requests) has the 5xx queries.
 
 ## Re-onboarding after identity loss
 
