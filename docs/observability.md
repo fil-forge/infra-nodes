@@ -11,7 +11,8 @@ design](decisions/2026-08-initial-design.md#telemetry).
 ## What ships
 
 **Logs.** Every line each FilOne container writes to stdout or stderr: Piri, Ingot, OpenBao,
-Postgres, and on dev also Caddy and Alloy itself. The host journal too: on dev the whole journal,
+Postgres, and on dev also Caddy and Alloy itself. On staging, Caddy is the host's, and the runtime
+log it writes for itself ships under the `-caddy` service name. The host journal too: on dev the whole journal,
 which is where cloud-init, Docker and a failed unit are legible; on staging only the reconcile
 service's unit, since the rest of that host's journal is not the appliance's.
 
@@ -86,6 +87,40 @@ The whole dev journal, every unit, for a boot or a Docker problem:
 {service_name="appliance-dev-us-east-9-host"}
 ```
 
+### Caddy
+
+Both nodes ship Caddy's runtime log as JSON: certificate issuance and renewal, TLS cache
+maintenance, config loads, the per-request error entries Caddy writes when an upstream fails, and
+on dev the Compose healthcheck reading the admin API every fifteen seconds, which is most of dev's
+lines. No node has access logs. On dev the stream is the Caddy container's stdout. On staging it is
+`/root/storacha/logs/caddy/caddy.log`, which the host Caddy writes and rolls itself.
+Most runtime entries name no site, so the staging stream covers every site that Caddy serves,
+Guppy's and Curio's included. The per-request error entries do name one, in `request.host`.
+
+Caddy on every node, without the dev healthcheck:
+
+```logql
+{service_name=~"appliance-.*-caddy"} | json | logger != "admin.api"
+```
+
+Requests to a FilOne site on staging that Caddy could not serve, such as a 502 while Piri restarts:
+
+```logql
+{service_name="appliance-staging-eu-central-3-caddy"} | json | logger =~ "http.log.error.*" | request_host =~ "piri-0.staging.fil-forge.com(:443)?"
+```
+
+Certificate activity for a FilOne hostname on staging:
+
+```logql
+{service_name="appliance-staging-eu-central-3-caddy"} | json | logger =~ "tls.*|http.acme_client" |= "s3.eu-central-3.staging.filonecontent.com"
+```
+
+Warnings and errors from Caddy on every node:
+
+```logql
+{service_name=~"appliance-.*-caddy"} | json | level =~ "warn|error"
+```
+
 ### Log labels
 
 | Label            | Example                     | On which streams                                                                                                      |
@@ -95,7 +130,7 @@ The whole dev journal, every unit, for a boot or a Docker problem:
 | `unit`           | `filone-reconcile.service`  | Journal lines. The systemd unit that wrote the line.                                                                  |
 | `job`            | `docker`, `journal`         | Dev streams. Staging container logs carry no `job`; its reconcile journal carries the Alloy component name.           |
 | `hostname`       | `curio`                     | Staging streams. The host's own label, shared with everything else that Alloy ships.                                 |
-| `service`, `stream` | `piri`, `stderr`         | Staging container logs. The host's own labels: bare Compose service name and the Docker stream.                       |
+| `service`, `stream` | `piri`, `stderr`         | Staging container logs. The host's own labels: bare Compose service name and the Docker stream. The staging Caddy log carries `service="caddy"` and the tailed file's path as `filename`, and no `stream`. |
 | `detected_level` | `info`                      | Loki, parsed from the line.                                                                                           |
 
 Select by `appliance`, `service_name`, `node`, `container` or `unit`. The others differ between nodes, so a query
