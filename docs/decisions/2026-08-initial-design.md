@@ -305,10 +305,11 @@ proving state until the timeout runs out aborts the deploy. An operator who know
 stops the container and re-runs, because a Piri that is already down has no proof in flight.
 
 An apps deploy waits when a rendered file, an image or a service definition changed. A platform
-deploy waits on the same gate when it has anything to apply, then stops Ingot and Piri, rebuilds the
-platform underneath them and starts them again: Postgres and Caddy are what those two run on, so
-recreating either one under a running Piri costs the same proof. A pass that finds nothing changed
-skips the gate and leaves both services running.
+deploy waits on the same gate when it has anything to apply, then stops Ingot and Piri, recreates
+the platform services whose definition, image or mounted file changed and starts the apps again:
+Postgres and Caddy are what those two run on, so recreating either one under a running Piri costs
+the same proof. The other platform services keep running, so a Caddyfile edit does not restart
+OpenBao. A pass that finds nothing changed skips the gate and leaves both apps running.
 
 The service definition each deploy hashes includes the contents of every committed file the project
 bind-mounts, not just the paths. Compose resolves a bind mount to a path and never reads what is

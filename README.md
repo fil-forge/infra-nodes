@@ -48,7 +48,9 @@ addresses its delegation to. Both names come from [RFC 16][rfc-16].
 Two Compose projects. **platform** is OpenBao and Postgres; dev also runs Caddy and Alloy there,
 while staging imports its Caddy configuration into the host-owned service and uses its host-owned
 Alloy. **apps** is Piri and Ingot. They are separate because they restart on different terms: an
-apps deploy waits for Piri's proving window, and a platform deploy never has to.
+apps deploy restarts only the app whose files changed, while a platform deploy that has anything
+to apply stops both apps first, because they run on top of Postgres and Caddy. Both wait for
+Piri's proving window.
 
 Piri, Ingot, Postgres and OpenBao publish no public ports. Dev Caddy reaches the apps on the shared
 `filone` Docker network. On staging, Piri and Ingot bind only to host loopback and the host-owned
