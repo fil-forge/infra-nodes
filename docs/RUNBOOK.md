@@ -161,6 +161,57 @@ with the rules above; on cAdvisor series the Compose labels arrive as
 the same `service_name`, `node`, `region` and `appliance` as static labels, plus the shared
 journal relabel rules so the unit lands on its own label.
 
+The host Caddy's runtime log is `/root/storacha/logs/caddy/caddy.log`. Caddy writes and rolls
+that file itself, through a `log` block in the global options of `/root/storacha/caddy/Caddyfile`,
+the same way the host's access logs roll:
+
+```caddyfile
+log {
+    output file /root/storacha/logs/caddy/caddy.log {
+        roll_size 100mb
+        roll_keep 5
+    }
+}
+```
+
+The `caddy-guppy` unit sends stdout and stderr to the journal, through a drop-in at
+`/etc/systemd/system/caddy-guppy.service.d/output.conf` with `StandardOutput=journal` and
+`StandardError=journal`, so the only lines that land there are the ones Caddy prints before its
+logger exists, such as a Caddyfile that fails to parse. The whole-journal source the host Alloy
+already runs ships those under `unit="caddy-guppy.service"`. The same drop-in sets
+`Environment=HOME=/root`: the unit runs as root without `User=`, so systemd gives it no `HOME`,
+and Caddy then warns on every start and keeps its autosave and instance id under `./caddy` in the
+working directory, which is `/`. A unit change needs `systemctl daemon-reload` and a restart of
+`caddy-guppy`, which interrupts every site on the host for a second or two.
+
+Tail the file with a source carrying the four labels every appliance stream shares, `service_name`,
+`node`, `region` and `appliance`, so `{service_name=~"appliance-.*-caddy"}` selects Caddy on every
+node. The host's own `hostname` and `service` labels go on too; `stream` and `container` do not
+apply to a file. Runtime entries name no site,
+so this stream is every site the host Caddy serves:
+
+```alloy
+local.file_match "host_caddy" {
+  path_targets = [{
+    __path__     = "/root/storacha/logs/caddy/caddy.log",
+    hostname     = "curio",
+    service      = "caddy",
+    service_name = "appliance-staging-eu-central-3-caddy",
+    node         = "staging",
+    region       = "eu-central-3",
+    appliance    = "staging-eu-central-3",
+  }]
+}
+
+loki.source.file "host_caddy" {
+  targets    = local.file_match.host_caddy.targets
+  forward_to = [loki.write.grafanacloud.receiver]
+}
+```
+
+The file source follows Caddy's roll, and it stamps each line with the time it read it, which is
+within a second of the line's own `ts` field except for whatever backlog exists when Alloy starts.
+
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
 keeps its running tailers, and their label sets, across a configuration reload,
