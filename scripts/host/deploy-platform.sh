@@ -38,7 +38,13 @@ write_openbao_env
 
 # Start OpenBao first and on its own. Everything below reads from it, and a
 # naive `up -d` would start Postgres with an unrendered password.
-compose_platform up -d openbao
+#
+# --no-recreate: this only has to make sure OpenBao is running. A new image, a
+# rotated seal token or an edited bao.hcl is applied further down, inside the
+# gate, like every other platform change. Without the flag a new image would
+# recreate the root of trust here, under a running Ingot, and then once more in
+# the gated pass because the recorded hash still differs.
+compose_platform up -d --no-recreate openbao
 
 if ! bao_is_unsealed; then
   # Give the transit handshake a moment on a cold start before calling it.
@@ -65,12 +71,13 @@ if node_ships_telemetry; then
   export GRAFANA_PUSH_TOKEN
 fi
 
-platform_changed=0
-
 echo "[2/7] Rendering secrets"
-mark platform_changed render_template \
+# Its changed/unchanged answer is not needed here. Everything in platform.env
+# reaches a container through that service's environment, so a re-rendered
+# value shows up in the per-service hashes below.
+render_template \
   "$FILONE_NODE_DIR/platform/templates/platform.env.tpl" \
-  "$FILONE_SECRETS_DIR/platform.env"
+  "$FILONE_SECRETS_DIR/platform.env" || true
 
 echo "[3/7] Pulling images"
 # Before the gate, not after. Pulling can take minutes, and doing it inside the
@@ -78,14 +85,22 @@ echo "[3/7] Pulling images"
 compose_platform pull --quiet
 
 echo "[4/7] Deciding what changed"
+# Per service, as deploy-apps.sh does, so that an edit to the Caddyfile
+# recreates Caddy and leaves OpenBao and Postgres running. One hash for the
+# whole project would have to recreate the whole project to be sure the edit
+# applied.
+changed_services=()
+declare -A platform_service_hash=()
 for service in $(compose_platform config --services); do
-  mark platform_changed image_differs compose_platform "$service"
+  service_changed=0
+  mark service_changed image_differs compose_platform "$service"
+  platform_service_hash[$service]="$(compose_config_hash compose_platform "$service")"
+  mark service_changed config_changed "platform-$service" "${platform_service_hash[$service]}"
+  if [ "$service_changed" -eq 1 ]; then changed_services+=("$service"); fi
 done
-platform_config_hash="$(compose_config_hash compose_platform)"
-mark platform_changed config_changed platform "$platform_config_hash"
 
-if [ "$platform_changed" -eq 1 ]; then
-  echo "  something changed"
+if [ "${#changed_services[@]}" -gt 0 ]; then
+  echo "  changed: ${changed_services[*]}"
 else
   echo "  nothing changed"
 fi
@@ -108,20 +123,29 @@ restore_apps() {
 trap restore_apps EXIT
 
 echo "[5/7] Applying"
-if [ "$platform_changed" -eq 1 ]; then
+if [ "${#changed_services[@]}" -gt 0 ]; then
   echo "  waiting for a safe restart window"
   "$SCRIPT_DIR/pdp-gate.sh"
   if stop_apps; then apps_stopped=1; fi
-  # --remove-orphans so a service deleted from compose.yml actually goes away.
-  # Compose recreates a container when its image, its environment or its mounts
-  # differ from what is running and leaves the rest alone.
-  compose_platform up -d --remove-orphans
-else
-  # --no-recreate is the guarantee that goes with skipping the gate: having
-  # decided nothing changed, this must not recreate Postgres out from under a
-  # Piri that is mid-proof on the strength of something the checks above missed.
-  compose_platform up -d --no-recreate --remove-orphans
+  # --force-recreate because most of what changes here is the *content* of a
+  # bind-mounted file: the Caddyfile, the Alloy config, bao.hcl. Compose decides
+  # recreation from the service definition, which those leave untouched, so a
+  # plain `up -d` would report success and leave the old process serving the
+  # old file. Only the listed services are forced; a dependency such as
+  # Postgres under postgres-init is recreated only if its own definition
+  # differs. OpenBao is in the list like any other service: the early start
+  # above never recreates it, so this is where its changes land. Never run
+  # this without service names: that recreates everything.
+  compose_platform up -d --force-recreate "${changed_services[@]}"
 fi
+# Create a service added to compose.yml and remove one deleted from it, without
+# recreating anything else: whether a service restarts was decided, and gated,
+# further up. --no-recreate is the guarantee that goes with skipping the gate:
+# having decided nothing changed, this must not recreate Postgres out from under
+# a Piri that is mid-proof on the strength of something the checks above missed.
+# Removing a deleted service is not gated. The only platform service one would
+# delete under running apps is Alloy, which they do not depend on.
+compose_platform up -d --no-recreate --remove-orphans
 
 echo "[6/7] Health"
 wait_healthy compose_platform 300
@@ -139,11 +163,15 @@ fi
 
 trap - EXIT
 
-# Only now, with the apps back up. Recording the hash any earlier would make a
+# Only now, with the apps back up. Recording the hashes any earlier would make a
 # run that left them down look like an up-to-date one on the next pass, and the
 # next pass would then skip the gate, skip the restart and print "left running"
 # over two stopped containers.
-config_hash_record platform "$platform_config_hash"
+for service in "${!platform_service_hash[@]}"; do
+  config_hash_record "platform-$service" "${platform_service_hash[$service]}"
+done
+# The project-wide record the per-service ones replaced.
+rm -f "$FILONE_STATE_DIR/platform.sha256"
 
 stamp_deploy_success platform
 echo "=== platform deploy complete ==="

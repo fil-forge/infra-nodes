@@ -213,6 +213,8 @@ works. On staging it is the host's `alloy` systemd service, `journalctl -u alloy
 container streams have no equivalent of `up`; a node whose metrics arrive and whose logs do not has
 a Loki push problem, and Alloy logs that as a write error.
 
-Dev picks up an Alloy config change on the next reconcile pass after it merges. Staging picks one up
+Dev picks up an Alloy config change on the next reconcile pass after it merges: the platform deploy
+hashes the file's content along with the service definition and recreates the Alloy container, and
+only that one, inside the proving-window gate. Staging picks one up
 after the operator restarts the host's Alloy; a reload is not enough for the container log labels,
 as the runbook explains.

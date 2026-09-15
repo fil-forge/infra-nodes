@@ -507,6 +507,11 @@ not when the commit merges.
 **Rotate a secret.** Write the new value into OpenBao, then run `deploy-platform.sh` or
 `deploy-apps.sh`. Rendering compares by content, so only the services whose files changed restart.
 
+The seal token is not in OpenBao. A new one written to `/etc/fil-one/seal-token` applies on the next
+platform deploy, which recreates OpenBao inside the proving-window gate with the apps stopped. That
+works while the old token still unseals. A node whose OpenBao is already sealed fails the deploy
+before it reaches the gate; the way back is `provision-platform.sh` with a fresh wrapping token.
+
 The Postgres **admin** password is the exception. The image reads `POSTGRES_PASSWORD` only when it
 initialises an empty data directory, so writing a new one into OpenBao leaves the cluster on the old
 one and `postgres-init` starts failing authentication. Change it in the database first, then in
