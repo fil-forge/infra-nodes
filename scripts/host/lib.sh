@@ -628,8 +628,11 @@ mark() {
 # what render_template and write_secret_file return, and the data volumes are
 # not configuration.
 #
-# With a service name, only that service's definition is hashed; without one,
-# the whole project's.
+# With a service name, that service's definition is hashed together with the
+# top-level networks, volumes, secrets and configs it references. Those live
+# outside the service block, so a change to one of them would otherwise read as
+# no change to any service. Without a service name, the whole project's
+# definition is hashed.
 compose_config_hash() {
   local compose_fn="$1" service="${2:-}"
   "$compose_fn" config --format json |
@@ -639,9 +642,21 @@ import hashlib, json, os, sys
 document = json.load(sys.stdin)
 root = os.path.realpath(os.environ["FILONE_HASH_ROOT"]) + os.sep
 
+def referenced(service):
+    keys = {
+        "networks": list(service.get("networks") or {}),
+        "volumes": [v["source"] for v in service.get("volumes") or []
+                    if isinstance(v, dict) and v.get("type") == "volume"],
+        "secrets": [s["source"] for s in service.get("secrets") or [] if isinstance(s, dict)],
+        "configs": [c["source"] for c in service.get("configs") or [] if isinstance(c, dict)],
+    }
+    return {kind: {key: (document.get(kind) or {}).get(key) for key in names}
+            for kind, names in keys.items() if names}
+
 if len(sys.argv) > 1:
-    services = {sys.argv[1]: document["services"][sys.argv[1]]}
-    config = services[sys.argv[1]]
+    name = sys.argv[1]
+    services = {name: document["services"][name]}
+    config = {"service": services[name], "referenced": referenced(services[name])}
 else:
     services = document.get("services", {})
     config = document
