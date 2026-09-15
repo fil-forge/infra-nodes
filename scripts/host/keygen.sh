@@ -158,24 +158,18 @@ fi
 
 # Hex, all of them. postgres-init interpolates these into SQL string literals,
 # which is safe exactly because a hex string contains no quote to escape.
-echo "[4/4] Passwords and root credentials"
+echo "[4/4] Passwords"
 generate_password() {
-  local path="$1" field="$2" bytes="${3:-32}"
+  local path="$1" field="$2"
   if bao_has "$path" "$field"; then
     echo "  $path#$field already set"
     return 0
   fi
-  bao_put_if_absent "$path" "$field" "$(openssl rand -hex "$bytes")"
+  bao_put_if_absent "$path" "$field" "$(openssl rand -hex 32)"
 }
 
 generate_password postgres admin_password
 generate_password postgres piri_password
 generate_password postgres ingot_password
-
-# Ingot's break-glass S3 account. Tenant credentials are minted by hilt; these
-# exist for the case where hilt cannot be reached and someone has to look at
-# what the gateway is holding.
-generate_password ingot root_access_key 16
-generate_password ingot root_secret_key 32
 
 echo "=== keygen complete ==="
