@@ -1,6 +1,6 @@
 # Ingot's config for the dev node.
 #
-# This file is a secret: it embeds the Postgres DSN and the root S3 credentials.
+# This file is a secret: it embeds the Postgres DSN and the region-key token.
 # Rendered from OpenBao into the root-only tmpfs and mounted read-only, never
 # written to a disk that survives a reboot.
 
@@ -26,12 +26,6 @@ cors_allowed_origins:
   - "https://staging.fil.one"
   - "https://staging.filone.ai"
   - "https://*.dev.fil.one"
-
-# Break-glass S3 account. Ordinary credentials are minted by hilt per tenant;
-# these exist for the case where hilt cannot be reached and someone has to see
-# what the gateway is holding.
-root_access: "${INGOT_ROOT_ACCESS_KEY}"
-root_secret: "${INGOT_ROOT_SECRET_KEY}"
 
 # Ingot signs as this did:web and serves the matching document at
 # /.well-known/did.json, over the same listener. The key below is what the

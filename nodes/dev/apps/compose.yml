@@ -76,7 +76,7 @@ services:
     command: ["serve", "--config", "/etc/ingot/config.yaml"]
     volumes:
       - /run/fil-one/secrets/ingot.pem:/keys/ingot.pem:ro
-      # Embeds the Postgres DSN and the root S3 credentials, so it is a secret
+      # Embeds the Postgres DSN and the region-key token, so it is a secret
       # in its own right and lives on the tmpfs with the rest.
       - /run/fil-one/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
       - /run/fil-one/secrets/hilt-ingot-proof.txt:/proofs/hilt-ingot-proof.txt:ro
