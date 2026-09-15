@@ -17,10 +17,11 @@ which is where cloud-init, Docker and a failed unit are legible; on staging only
 service's unit, since the rest of that host's journal is not the appliance's.
 
 **Metrics.** The host's CPU, disk I/O, filesystems, load and memory from a node exporter, scraped
-every minute, plus the deploy stamp the reconcile timer writes on every pass. Staging also ships
-per-container CPU, memory, network and I/O from cAdvisor every fifteen seconds. Dev does not: the
-Alloy container has no cgroup mount, and container health there is read from the journal and the
-deploy stamp instead.
+every minute, plus the deploy stamp the reconcile timer writes on every pass. Caddy's request
+metrics, also every minute: counts, durations and sizes per site, handler, method and status code,
+which is where the public error rate is read from. Staging also ships per-container CPU, memory,
+network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
+mount, and container health there is read from the journal and the deploy stamp instead.
 
 **Not shipped.** Piri's and Ingot's own application metrics; the network interface collector, which
 inside the Alloy container would report the container's namespace rather than the host's; traces.
@@ -140,9 +141,9 @@ built on them works on one node only.
 ## Metrics
 
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
-and `deploy_last_success_timestamp`. Every series carries the four labels above plus `instance`,
-which is the node name, and `job`, which is `integrations/unix` for the host and `cadvisor` for
-containers.
+Caddy's `caddy_http_*` family, and `deploy_last_success_timestamp`. Every series carries the four
+labels above plus `instance`, which is the node name, and `job`, which is `integrations/unix` for
+the host, `cadvisor` for containers and `caddy` for Caddy.
 
 Free space on the dev appliance's filesystems:
 
@@ -179,6 +180,52 @@ matcher keeps the appliance's ones. On staging, `appliance` alone is not that fi
 the metrics writer, so the host's Lotus, Sophon and other series carry it too, and a query for the
 appliance's own metrics adds `service_name=~"appliance-.*"`.
 
+### Caddy requests
+
+Caddy records every request it serves. The counters and histograms carry `server`, `handler`,
+`method` and `code`, plus `host`, which is the site the request was for. `caddy_http_requests_total`
+has no `code` label, so a status-code query reads the histogram's count instead.
+
+| Label     | Example                                | Meaning                                                                                                              |
+| --------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `host`    | `piri-0.latest.dev.fil-forge.com`      | The hostname the request was for. On dev any other name is counted under `_other`. On staging the host Caddy is 2.9.1, which records every name it sees, and the scrape keeps only the appliance's two. |
+| `handler` | `reverse_proxy`, `file_server`         | The handler that produced the response. `file_server` is the node status document; the rest is proxied to Piri or Ingot. |
+| `server`  | `public`                               | The listener. On dev, `public` is :443 and `remaining_auto_https_redirects` is the :80 redirect Caddy adds itself.  |
+| `code`    | `502`                                  | The response status. A 502 is Caddy failing to reach the upstream; a 500 came from Piri or Ingot itself.             |
+
+The dev appliance's 5xx responses as a share of everything it served, over five minutes:
+
+```promql
+sum(rate(caddy_http_request_duration_seconds_count{appliance="dev-us-east-9", code=~"5.."}[5m]))
+/
+sum(rate(caddy_http_request_duration_seconds_count{appliance="dev-us-east-9"}[5m]))
+```
+
+The same split by site, so Piri and Ingot each get a line:
+
+```promql
+sum by (host) (rate(caddy_http_request_duration_seconds_count{appliance="dev-us-east-9", code=~"5.."}[5m]))
+/
+sum by (host) (rate(caddy_http_request_duration_seconds_count{appliance="dev-us-east-9"}[5m]))
+```
+
+5xx responses per second, by status code and handler, which separates a proxy that cannot reach
+its upstream from an upstream returning errors:
+
+```promql
+sum by (appliance, host, handler, code) (rate(caddy_http_request_duration_seconds_count{service_name=~"appliance-.*-caddy", code=~"5.."}[5m]))
+```
+
+On staging, Caddy belongs to the host and serves sites that are not the appliance's. The host's
+Alloy ships only the series for the appliance's two hostnames, plus Caddy's own process series,
+which carry no `host`, all under `service_name="appliance-staging-eu-central-3-caddy"`:
+
+```promql
+sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com", code=~"5.."}[5m]))
+/
+sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com"}[5m]))
+```
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with
@@ -204,6 +251,13 @@ series per node:
 
 ```promql
 up{service_name=~"appliance-.*-host"}
+```
+
+The Caddy scrape has its own `up`. A zero here with the host scrape at one means Alloy is running
+and Caddy's metrics listener is not answering:
+
+```promql
+up{job="caddy"}
 ```
 
 No series at all for a node means Alloy is not pushing. On dev, that is the Alloy container: check

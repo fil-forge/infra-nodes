@@ -172,3 +172,40 @@ prometheus.relabel "host" {
 		target_label = "instance"
 	}
 }
+
+// Caddy's own metrics: request counts, durations and sizes per site, handler,
+// method and status code. Every public response the node gives passes through
+// Caddy, so this is the one scrape that sees all of them.
+// Caddy serves them on an unpublished HTTP listener that only this network
+// reaches; the Caddyfile says why it is not the admin API.
+prometheus.scrape "caddy" {
+	targets         = [{__address__ = "caddy:2020"}]
+	job_name        = "caddy"
+	forward_to      = [prometheus.relabel.caddy.receiver]
+	scrape_interval = "60s"
+}
+
+prometheus.relabel "caddy" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	// Caddy counts this scrape's own requests like any other. They would sit
+	// in every denominator, so the series recorded under the metrics server
+	// are dropped here. `up` carries no server label and passes through.
+	rule {
+		source_labels = ["server"]
+		regex         = "metrics"
+		action        = "drop"
+	}
+
+	rule {
+		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-caddy"
+		target_label = "service_name"
+	}
+
+	// Same reason as the host relabel above: the scrape's instance label would
+	// be `caddy:2020`, and the node name is the value every other series uses.
+	rule {
+		replacement  = sys.env("FILONE_NODE")
+		target_label = "instance"
+	}
+}
