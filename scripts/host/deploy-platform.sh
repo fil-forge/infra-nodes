@@ -38,7 +38,13 @@ write_openbao_env
 
 # Start OpenBao first and on its own. Everything below reads from it, and a
 # naive `up -d` would start Postgres with an unrendered password.
-compose_platform up -d openbao
+#
+# --no-recreate: this only has to make sure OpenBao is running. A new image, a
+# rotated seal token or an edited bao.hcl is applied further down, inside the
+# gate, like every other platform change. Without the flag a new image would
+# recreate the root of trust here, under a running Ingot, and then once more in
+# the gated pass because the recorded hash still differs.
+compose_platform up -d --no-recreate openbao
 
 if ! bao_is_unsealed; then
   # Give the transit handshake a moment on a cold start before calling it.
@@ -127,7 +133,9 @@ if [ "${#changed_services[@]}" -gt 0 ]; then
   # plain `up -d` would report success and leave the old process serving the
   # old file. Only the listed services are forced; a dependency such as
   # Postgres under postgres-init is recreated only if its own definition
-  # differs. Never run this without service names: that recreates everything.
+  # differs. OpenBao is in the list like any other service: the early start
+  # above never recreates it, so this is where its changes land. Never run
+  # this without service names: that recreates everything.
   compose_platform up -d --force-recreate "${changed_services[@]}"
 fi
 # Create a service added to compose.yml and remove one deleted from it, without
