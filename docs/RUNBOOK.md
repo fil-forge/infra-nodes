@@ -290,6 +290,71 @@ prometheus.relabel "host_caddy" {
 }
 ```
 
+Piri's own application metrics — job queue depth, PDP proving failures, the chain epoch it has
+reached, HTTP latency — arrive by push rather than scrape: Piri exposes no `/metrics` endpoint and
+exports OTLP instead. The host Alloy needs a receiver for them, and it has to listen where a
+container can reach it. `0.0.0.0:4318` does that; the Docker bridge has no route to a listener bound
+to loopback. Everything else on this host that Piri reaches goes the same way, through
+`host.docker.internal`, which the apps project maps to the host gateway.
+
+The receiver is unauthenticated, so the host firewall has to keep it to the Docker bridge: it must
+not be reachable from the public interface. Check with `ss -lntp | grep 4318` for the bind address
+and the firewall for what can reach it.
+
+```alloy
+otelcol.receiver.otlp "filone_apps" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.exporter.prometheus.filone_apps.input]
+  }
+}
+
+// service.name becomes `job`, service.instance.id becomes `instance`, and the
+// remaining resource attributes are carried on a `target_info` series that a
+// query joins on those two labels. Piri's version and node DID are read there.
+otelcol.exporter.prometheus "filone_apps" {
+  forward_to = [prometheus.relabel.filone_apps.receiver]
+}
+
+prometheus.relabel "filone_apps" {
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+
+  // The same service_name the container logs carry, so Piri's logs and its
+  // metrics select under one name.
+  rule {
+    source_labels = ["job"]
+    regex         = "(.+)"
+    replacement   = "appliance-staging-eu-central-3-$1"
+    target_label  = "service_name"
+  }
+  rule {
+    target_label = "node"
+    replacement  = "staging/eu-central-3"
+  }
+  rule {
+    target_label = "region"
+    replacement  = "eu-central-3"
+  }
+  // instance arrives as the node's DID, where every other series from this
+  // host carries the node name. Overwriting it on the series and on
+  // target_info alike keeps the join between them working.
+  rule {
+    target_label = "instance"
+    replacement  = "staging/eu-central-3"
+  }
+}
+```
+
+Only metrics are wired: Piri emits spans but samples none of its own, and there is no trace backend
+to forward them to.
+
+This receiver has to exist before the apps project deploys a Piri that points at it. It does not
+have to exist first for safety — a Piri whose collector refuses the connection logs one warning
+every five minutes and serves normally — but until it does, no application metric arrives.
+
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
 keeps its running tailers, and their label sets, across a configuration reload,

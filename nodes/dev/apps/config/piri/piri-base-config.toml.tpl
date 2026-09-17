@@ -37,3 +37,19 @@ usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 [ucan.services.upload]
 did = "${SPRUE_DID}"
 url = "${SPRUE_URL}"
+
+# Application metrics to the node's own Alloy, which relabels them and forwards
+# to Grafana Cloud. Piri exports nowhere unless a collector is named here.
+#
+# The endpoint is a host and port: no scheme and no path, because Piri appends
+# /v1/metrics itself, and OTLP over HTTP is 4318. `alloy` resolves on the
+# `filone` network, the same way `postgres` does from the apps project.
+# Insecure because it never leaves the node; the only credential on this path
+# is the Grafana token Alloy holds.
+[telemetry]
+environment = "${STAGE}"
+
+[[telemetry.metrics]]
+endpoint = "alloy:4318"
+insecure = true
+publish_interval = "30s"
