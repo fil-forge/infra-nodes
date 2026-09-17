@@ -91,37 +91,16 @@ argument, shell history, or captured log.
 docker stop filone-ingot filone-piri
 ```
 
-The next step removes paths that are bind-mount sources of these containers,
-and `provision-platform.sh` ends by calling `deploy-platform.sh`, which brings
-back whatever it stopped before `deploy-apps.sh` has rendered the files again.
+Recovery replaces the files these two bind-mount, and `provision-platform.sh`
+ends by calling `deploy-platform.sh`, which brings back whatever it stopped
+before `deploy-apps.sh` has rendered those files again.
 With both already down, `deploy-platform.sh` reports them as left running and
 `deploy-apps.sh` starts them on a complete set of secrets. A stopped Piri also
 has no proof in flight, so the proving gate passes at once.
 
-## Repair volatile secret paths
+## Move the expired tokens aside
 
-After a reboot, `/run/fil-one/secrets` is recreated. If Compose was started
-while its source files were absent, Docker may have created empty directories
-where secret files should be. Remove only those known, empty placeholders:
-
-```bash
-set -euo pipefail
-
-for name in openbao.env platform.env apps.env \
-  piri.pem piri-owner-wallet.hex piri-base-config.toml \
-  ingot.pem ingot-config.yaml hilt-ingot-proof.txt; do
-  path="/run/fil-one/secrets/$name"
-  if [ -d "$path" ]; then
-    if find "$path" -mindepth 1 -print -quit | grep -q .; then
-      echo "ERROR: placeholder is not empty: $path" >&2
-      exit 1
-    fi
-    rmdir "$path"
-  fi
-done
-```
-
-Move both expired tokens aside so provisioning claims replacements:
+Move both files aside so provisioning claims replacements:
 
 ```sh
 ts=$(date -u +%Y%m%dT%H%M%SZ)

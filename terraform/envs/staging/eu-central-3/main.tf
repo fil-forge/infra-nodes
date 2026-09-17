@@ -6,7 +6,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project = "forge-nodes"
-      Node    = "staging"
+      Node    = "staging/eu-central-3"
     }
   }
 }

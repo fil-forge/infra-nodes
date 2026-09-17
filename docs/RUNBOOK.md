@@ -352,9 +352,9 @@ scripts/host/bootstrap-staging-pilot-mad.sh
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker network on the fixed
-`172.18.0.0/16` subnet, node config, systemd units and a mount-ordering drop-in. It adds TCP 80 and
-443 to UFW only when UFW is already active, and never enables it: this host serves other workloads,
-and turning a firewall on under them is the host owner's call.
+`172.18.0.0/16` subnet, node config and systemd units. It adds TCP 80 and 443 to UFW only when UFW
+is already active, and never enables it: this host serves other workloads, and turning a firewall on
+under them is the host owner's call.
 
 The unseal token binds to the address the node reaches central from, which is not always the
 address its hostnames resolve to. Confirm they are the same before asking for the token:
@@ -365,10 +365,10 @@ curl -4 --silent https://ifconfig.me
 
 The node's state sits on the root filesystem. Moving `/fil-one/data` to a volume later needs no
 re-provisioning: stop both projects, copy with `rsync -aHAX --numeric-ids`, mount the volume at the
-same path, and start. Give a ZFS dataset `mountpoint=legacy` and an `/etc/fstab` entry, or the
-`RequiresMountsFor` drop-in bootstrap installed has no mount unit to wait for, and a deploy that
-starts before the mount leaves Postgres creating a new cluster under the mount point, where it
-disappears the moment the volume mounts over it.
+same path, and start. Keep that order. A bind mount whose source is missing is created empty by
+Docker rather than refused, so a project started before the volume mounts leaves Piri and Ingot
+writing fresh state under the mount point, where it disappears the moment the volume mounts over
+it. Postgres and the OpenBao raft store are under `/fil-one/control` and are not affected.
 
 Then the shared steps below, with `STAGE=staging` and `REGION=pilot-mad`. Provisioning asks for the
 chain.love access token and the Grafana Cloud push token, which the eu-central-3 appliance does not

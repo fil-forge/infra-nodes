@@ -142,6 +142,10 @@ what they need into `/run/fil-one/secrets` — a root-only tmpfs, mounted read-o
 containers, re-rendered on every deploy and compared by content so an unchanged deploy restarts
 nothing. Nothing secret is written to a disk that survives a reboot.
 
+A reboot therefore empties that tmpfs, and Piri and Ingot come back with nothing to mount. The first
+reconcile pass after a boot renders the apps project again and recreates both on a complete set of
+files, whether or not anything was merged.
+
 ## Bringing up a node
 
 Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:

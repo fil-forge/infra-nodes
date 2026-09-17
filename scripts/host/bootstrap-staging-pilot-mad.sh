@@ -79,28 +79,6 @@ CONF
 
 echo "[5/6] Installing systemd units"
 install -m 0644 "$CHECKOUT"/systemd/filone-*.service "$CHECKOUT"/systemd/filone-*.timer /etc/systemd/system/
-
-# Both timers run against $FILONE_ROOT, and a bind mount whose source is missing
-# is created empty by Docker rather than refused. Started before the filesystem
-# is mounted, Postgres would initdb a new cluster and OpenBao would come up with
-# an empty raft store, both under the mount point where they then disappear.
-#
-# A drop-in rather than an edit to the unit: the two nodes whose state sits on a
-# filesystem mounted before Docker need nothing, and a unit file that named this
-# path would follow them around. RequiresMountsFor resolves to the mount unit
-# covering the path, which is -.mount while $FILONE_ROOT is on the root
-# filesystem, so this is inert until the directory becomes a mount of its own.
-#
-# A ZFS dataset mounted by its own `mountpoint` property generates no mount
-# unit. Give the dataset mountpoint=legacy and an /etc/fstab entry, or this
-# ordering has nothing to wait for.
-for unit in filone-reconcile.service filone-seal-token-renew.service; do
-  install -d -m 0755 "/etc/systemd/system/$unit.d"
-  cat >"/etc/systemd/system/$unit.d/mounts.conf" <<CONF
-[Unit]
-RequiresMountsFor=$FILONE_ROOT
-CONF
-done
 systemctl daemon-reload
 
 echo "[6/6] Opening the firewall for Caddy"

@@ -17,9 +17,12 @@ BASE_CONFIG="/config/piri-base-config.toml"
 DATA_DIR="/data/piri"
 TEMP_DIR="/tmp/piri"
 CONFIG_FILE="${DATA_DIR}/piri-config.toml"
-# The base config init last merged from. Compared on every boot, because a
-# changed address or service URL has to reach the generated config.
+# What init last ran against: the base config it merged, and a digest of the
+# inputs that reach init only as flags. Both compared on every boot, because a
+# changed address, service URL or database password has to reach the generated
+# config.
 BASE_CONFIG_SNAPSHOT="${DATA_DIR}/piri-base-config.applied.toml"
+INIT_INPUTS_SNAPSHOT="${DATA_DIR}/piri-init-inputs.applied.sha256"
 
 LOTUS_ENDPOINT="${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
 PUBLIC_URL="${PUBLIC_URL:?PUBLIC_URL must be set}"
@@ -27,12 +30,30 @@ PORT="${PORT:-3000}"
 HOST="${HOST:-0.0.0.0}"
 OPERATOR_EMAIL="${OPERATOR_EMAIL:?OPERATOR_EMAIL must be set}"
 REGISTRAR_URL="${REGISTRAR_URL:?REGISTRAR_URL must be set}"
-# The did:plc directory tenant identities resolve from. It is passed on every
-# run: to init, so the generated config records it, and to serve, because init
-# only re-runs when the base config changes and this value is not part of the
-# base config. `piri init` ignores a `[ucan] plc_directory` in the base config;
-# the flag is the only way into init.
+# The did:plc directory tenant identities resolve from. Passed on every run, to
+# init and to serve alike, so a run that skips init still serves against the
+# current directory. `piri init` ignores a `[ucan] plc_directory` in the base
+# config; the flag is the only way into init.
 PLC_DIRECTORY_URL="${PLC_DIRECTORY_URL:?PLC_DIRECTORY_URL must be set}"
+PIRI_DB_POSTGRES_URL="${PIRI_DB_POSTGRES_URL:?PIRI_DB_POSTGRES_URL must be set}"
+
+# Everything init takes that the base config does not carry. A digest rather
+# than the values themselves, because the DSN carries the Postgres password and
+# this snapshot sits on the data volume next to the config.
+init_inputs_digest() {
+    command -v sha256sum >/dev/null ||
+        { echo "ERROR: this image has no sha256sum" >&2; exit 1; }
+    printf '%s\n' \
+        "lotus-endpoint=$LOTUS_ENDPOINT" \
+        "public-url=$PUBLIC_URL" \
+        "port=$PORT" \
+        "host=$HOST" \
+        "operator-email=$OPERATOR_EMAIL" \
+        "registrar-url=$REGISTRAR_URL" \
+        "plc-directory=$PLC_DIRECTORY_URL" \
+        "db-postgres-url=$PIRI_DB_POSTGRES_URL" |
+        sha256sum | cut -d' ' -f1
+}
 
 echo "=== Piri entrypoint ==="
 echo "  Chain RPC:  $LOTUS_ENDPOINT"
@@ -62,17 +83,21 @@ echo "  DID: $PIRI_DID"
 echo "[2/3] Initialising"
 # init merges the base config with what it discovers on chain and from the
 # registrar, and writes the result to CONFIG_FILE. Skipping it once a config
-# exists would strand every later edit to the base config: a changed contract
-# address, payer or service URL would recreate this container and never reach
-# the config Piri actually serves from.
+# exists would strand every later edit: a changed contract address, payer,
+# service URL, chain endpoint or database password would recreate this container
+# and never reach the config Piri actually serves from. Several of those reach
+# init only as flags, so the base config alone is not enough to compare against.
 #
 # Re-running it is safe. `piri init` reuses an existing provider registration
 # and an existing proof set, and skips delegator registration for a DID that is
 # already registered, so a second run re-merges and rewrites the config without
-# touching anything on chain.
+# touching anything on chain. A node that predates the digest snapshot has no
+# file to compare against and re-runs init once, which costs one re-merge.
+INIT_INPUTS="$(init_inputs_digest)"
 if [ -f "$CONFIG_FILE" ] && grep -q "proof_set" "$CONFIG_FILE" 2>/dev/null &&
-   cmp -s "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"; then
-    echo "  config exists and the base config is unchanged, skipping init"
+   cmp -s "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT" &&
+   [ "$INIT_INPUTS" = "$(cat "$INIT_INPUTS_SNAPSHOT" 2>/dev/null)" ]; then
+    echo "  config exists and the init inputs are unchanged, skipping init"
 else
     if [ -f "$CONFIG_FILE" ]; then
         echo "  re-running init to pick up the current base config"
@@ -98,7 +123,7 @@ else
         --host="$HOST" \
         --operator-email="$OPERATOR_EMAIL" \
         --db-type=postgres \
-        --db-postgres-url="${PIRI_DB_POSTGRES_URL:?PIRI_DB_POSTGRES_URL must be set}"
+        --db-postgres-url="$PIRI_DB_POSTGRES_URL"
 
     # init calls the registrar for approval, which returns 403 for any DID that
     # is not on the delegator's allow list. That write is the first step of
@@ -111,6 +136,7 @@ else
     # stderr and stay on the console.
     "$@" >/dev/null
     cp "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"
+    printf '%s\n' "$INIT_INPUTS" >"$INIT_INPUTS_SNAPSHOT"
     echo "  init complete"
 fi
 
