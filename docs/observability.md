@@ -2,7 +2,8 @@
 
 Every appliance ships its host journal, its container logs and its host metrics to the Filecoin
 Foundation Grafana Cloud stack through Grafana Alloy. On dev, Alloy is a platform container and its
-config is `nodes/dev/platform/config/alloy/config.alloy`. On staging, the host owns Alloy and its
+config is `nodes/dev/platform/config/alloy/config.alloy`. On the eu-central-3 appliance the host
+owns Alloy and its
 config lives outside this repository; the staging section of the [runbook](RUNBOOK.md) says what
 that config has to contain. This page says what arrives, under which labels, and the queries that
 find it. Why the pipeline is shaped this way is in the [telemetry section of the initial
@@ -46,7 +47,7 @@ A container started by hand with `docker run` has no Compose service, so its log
 | Label          | Example                          | Meaning                                                                                                                                                        |
 | -------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `appliance`    | `dev-us-east-9`                  | `<stage>-<region>`. One matcher for everything the appliance ships. On staging it is also on the host's other metrics, since it sits on the metrics writer.   |
-| `node`         | `dev`, `staging`                 | The box. `FILONE_NODE` in `node.env`.                                                                                                                          |
+| `node`         | `dev`, `staging/eu-central-3`    | The box. `FILONE_NODE`, which is the node's path under `nodes/`.                                                                                                                          |
 | `region`       | `us-east-9`, `eu-central-3`      | `REGION_LABEL` in `node.env`.                                                                                                                                  |
 | `service_name` | `appliance-dev-us-east-9-piri`   | `appliance-<stage>-<region>-<service>`. `<service>` is the Compose service name, or `host` for the journal and the host metrics. Two nodes in one stage and region share it and are told apart by `node`. Absent on a container started by hand; select that one by `container`. |
 
@@ -73,7 +74,7 @@ Piri on every node, told apart by the `node` label:
 Everything an appliance's containers wrote, errors only:
 
 ```logql
-{node="staging", container=~"filone-.*"} |= "ERROR"
+{node="staging/eu-central-3", container=~"filone-.*"} |= "ERROR"
 ```
 
 The reconcile timer's own output, which is where a failed deploy is legible:
@@ -172,7 +173,7 @@ container_memory_working_set_bytes{service_name="appliance-staging-eu-central-3-
 Every FilOne container's CPU on staging, per service:
 
 ```promql
-sum by (service_name) (rate(container_cpu_usage_seconds_total{node="staging", service_name!=""}[5m]))
+sum by (service_name) (rate(container_cpu_usage_seconds_total{node="staging/eu-central-3", service_name!=""}[5m]))
 ```
 
 cAdvisor also reports the host's other containers under `job="cadvisor"`. The `service_name`
@@ -221,9 +222,9 @@ Alloy ships only the series for the appliance's two hostnames, plus Caddy's own 
 which carry no `host`, all under `service_name="appliance-staging-eu-central-3-caddy"`:
 
 ```promql
-sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com", code=~"5.."}[5m]))
+sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-central-3", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com", code=~"5.."}[5m]))
 /
-sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com"}[5m]))
+sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-central-3", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com"}[5m]))
 ```
 
 ### The deploy stamp

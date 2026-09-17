@@ -23,7 +23,7 @@ that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-### Staging on Servers.com
+### The eu-central-3 staging appliance on Servers.com
 
 The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
 and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
@@ -33,8 +33,8 @@ control and data directories are `/mnt/data/fil-one/control` and
 Apply the DNS-only root and confirm both names resolve to `23.83.66.244`:
 
 ```sh
-tofu -chdir=terraform/envs/staging init
-tofu -chdir=terraform/envs/staging apply
+tofu -chdir=terraform/envs/staging/eu-central-3 init
+tofu -chdir=terraform/envs/staging/eu-central-3 apply
 dig +short piri-0.staging.fil-forge.com
 dig +short s3.eu-central-3.staging.filonecontent.com
 ```
@@ -53,7 +53,7 @@ Check out this repository at `/root/fil-one/infra-nodes`, then run:
 
 ```sh
 cd /root/fil-one/infra-nodes
-scripts/host/bootstrap-staging.sh
+scripts/host/bootstrap-staging-eu-central-3.sh
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
@@ -61,6 +61,20 @@ network, node config, systemd units, the Caddy import and the two FilOne UFW
 rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
 stops if an existing network with that name uses another subnet. It validates
 the combined host Caddy configuration before reloading `caddy-guppy`.
+
+The import it appends to `/root/storacha/caddy/Caddyfile` is an absolute path
+into the checkout, so it names this node's directory under `nodes/`. A node
+directory that moves has to be followed there in the same window:
+
+```sh
+grep -n 'infra-nodes/nodes' /root/storacha/caddy/Caddyfile
+caddy validate --config /root/storacha/caddy/Caddyfile --adapter caddyfile
+```
+
+Caddy holds its running configuration in memory, so an import pointing at a
+path that no longer exists costs nothing until something reloads. The next
+`caddy validate` fails, and a `caddy-guppy` restart fails outright, which takes
+down every site on the host rather than the appliance's two.
 
 Confirm both source-subnet rules are present after bootstrap:
 
@@ -104,7 +118,7 @@ docker run --rm --network filone \
 The host-owned Alloy ships the FilOne container logs and the host's metrics, and
 its configuration is maintained outside this repository. The appliance's output
 needs the same labels the dev node's Alloy attaches, so that one Grafana query
-selects a service across nodes: `node="staging"`, `region="eu-central-3"`,
+selects a service across nodes: `node="staging/eu-central-3"`, `region="eu-central-3"`,
 `appliance="staging-eu-central-3"`, and a `service_name` of the form
 `appliance-staging-eu-central-3-<service>`.
 
@@ -131,7 +145,7 @@ rule {
 rule {
     source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
     regex         = "filone-(?:apps|platform)"
-    replacement   = "staging"
+    replacement   = "staging/eu-central-3"
     target_label  = "node"
 }
 
@@ -153,7 +167,7 @@ rule {
 The FilOne host metrics come from their own `prometheus.exporter.unix` scrape.
 Route that scrape through a `prometheus.relabel` component that sets
 `service_name="appliance-staging-eu-central-3-host"`, `node`, `region` and
-`instance="staging"` on every series, as `nodes/dev/platform/config/alloy/config.alloy`
+`instance="staging/eu-central-3"` on every series, as `nodes/dev/platform/config/alloy/config.alloy`
 does for dev. Route the cAdvisor scrape through a `prometheus.relabel` component
 with the rules above; on cAdvisor series the Compose labels arrive as
 `container_label_com_docker_compose_project` and
@@ -197,7 +211,7 @@ local.file_match "host_caddy" {
     hostname     = "curio",
     service      = "caddy",
     service_name = "appliance-staging-eu-central-3-caddy",
-    node         = "staging",
+    node         = "staging/eu-central-3",
     region       = "eu-central-3",
     appliance    = "staging-eu-central-3",
   }]
@@ -263,7 +277,7 @@ prometheus.relabel "host_caddy" {
   }
   rule {
     target_label = "node"
-    replacement  = "staging"
+    replacement  = "staging/eu-central-3"
   }
   rule {
     target_label = "region"
@@ -271,7 +285,7 @@ prometheus.relabel "host_caddy" {
   }
   rule {
     target_label = "instance"
-    replacement  = "staging"
+    replacement  = "staging/eu-central-3"
   }
 }
 ```
@@ -285,7 +299,8 @@ once under the new labels. Once the FilOne containers run, `{service_name="appli
 in Loki shows Piri's entries.
 
 At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
-staging `wallet_addresses` payer address and commit it to `nodes/staging/node.env`.
+staging `wallet_addresses` payer address and commit it to
+`nodes/staging/eu-central-3/node.env`.
 Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
 `NODE_IP=23.83.66.244`. On the host run `provision-platform.sh`, saving the
 OpenBao recovery key and root token, then provide the wrapping token. Staging
@@ -300,7 +315,7 @@ both FilOne timers and check public Piri, Ingot, the status document and an
 OpenBao restart/unseal. Finish with:
 
 ```sh
-scripts/ci/smoke-test.sh staging
+scripts/ci/smoke-test.sh staging/eu-central-3
 ```
 
 `nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
@@ -316,7 +331,8 @@ tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRI
 the cluster its stack sits on, so another stack pushes elsewhere.
 
 Those four lines are per node, and a node whose host already runs Alloy leaves all four out. The
-staging appliance is such a node: `nodes/staging/node.env` has no telemetry block, and the host
+staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
+and the host
 scripts then neither ask for a Grafana push token nor render an Alloy config. It is all four or
 none. A node.env that sets some of them stops the deploy, because a node missing one id would
 otherwise deploy green and ship nothing.
