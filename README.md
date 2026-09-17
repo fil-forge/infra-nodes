@@ -8,8 +8,9 @@ project; staging uses the host-owned Alloy service. Central services
 live in [infra-central](https://github.com/fil-forge/infra-central); a node talks to them over public
 HTTPS and unseals its OpenBao against theirs.
 
-Two nodes: `dev`, an EC2 node in us-east-2 paired with infra-central's dev stage; and
-`staging/eu-central-3`, a bare-metal Servers.com appliance paired with the staging services.
+Three nodes: `dev`, an EC2 node in us-east-2 paired with infra-central's dev stage; and
+`staging/eu-central-3` and `staging/pilot-mad`, two bare-metal appliances paired with the staging
+services.
 
 ## Contents
 
@@ -69,14 +70,16 @@ terraform/
     bootstrap/nonprod/  applied by hand, once per account
     dev/                the EC2 dev node
     staging/
-      eu-central-3/     the bare-metal staging appliance
+      eu-central-3/     the Servers.com staging appliance
+      pilot-mad/        the second staging appliance
 nodes/
   dev/
     node.env            everything about this node that is not a secret
     platform/           OpenBao, Postgres, Caddy, Alloy
     apps/               Piri, Ingot
   staging/
-    eu-central-3/       the same three, for the staging appliance
+    eu-central-3/       the same three, per staging appliance
+    pilot-mad/
 scripts/
   host/                 run on the node: provision, deploy, reconcile, keygen, onboarding
   operator/             run from a laptop with AWS credentials for the node's account
@@ -90,7 +93,7 @@ docs/
 
 A node's directory under `nodes/` is its name: `FILONE_NODE` in `/etc/fil-one/node.conf` is the
 path, so a stage with one node states it flat and a stage with several nests them by region label.
-`dev` is the first, `staging/eu-central-3` the second.
+`dev` is the first, `staging/eu-central-3` and `staging/pilot-mad` the other two.
 
 Each node owns its Compose files and templates rather than sharing a parameterized stack. A change
 is made on one node, watched, and copied to the next; a shared stack would change every node at the
@@ -144,11 +147,11 @@ nothing. Nothing secret is written to a disk that survives a reboot.
 Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:
 
 1. Apply `terraform/envs/bootstrap/nonprod` by hand, once per account.
-2. Apply `terraform/envs/dev` for EC2 dev. For bare-metal staging, apply the DNS-only
-   `terraform/envs/staging/eu-central-3` root, configure Caddy's public and Docker-only firewall
-   rules, and run `scripts/host/bootstrap-staging-eu-central-3.sh` on the server. The staging
-   runbook has the exact UFW rules.
-3. Have central mint the unseal token, which is bound to the Elastic IP the apply just allocated,
+2. Apply `terraform/envs/dev` for EC2 dev. A bare-metal node has a DNS-only root and a bootstrap
+   script of its own, one per host: `terraform/envs/staging/eu-central-3` with
+   `scripts/host/bootstrap-staging-eu-central-3.sh`, `terraform/envs/staging/pilot-mad` with
+   `scripts/host/bootstrap-staging-pilot-mad.sh`. The runbook has each one's firewall rules.
+3. Have central mint the unseal token, which is bound to the address the node reaches central from,
    and send back the wrapping token that claims it.
 4. Run `provision-platform.sh` on the node: initialise OpenBao, install the identity tooling,
    generate keys, start the platform.

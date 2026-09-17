@@ -318,6 +318,66 @@ OpenBao restart/unseal. Finish with:
 scripts/ci/smoke-test.sh staging/eu-central-3
 ```
 
+### The pilot-mad appliance on bare metal
+
+The host runs k3s and an IPNI indexer, and FilOne leaves both alone. Nothing on it owns Caddy,
+Lotus or Alloy, so unlike eu-central-3 this node runs its own Caddy and its own Alloy, and Piri
+dials the hosted chain RPC with a token. Its checkout is `/opt/fil-one/infra-nodes`; its state is
+`/fil-one/control` and `/fil-one/data`.
+
+Docker first. k3s brings containerd, which `docker compose` cannot drive:
+
+```sh
+apt-get install -y docker.io docker-compose-v2 git jq
+```
+
+That install sets the iptables `FORWARD` policy to `DROP`, which can cut k3s pod networking.
+Compare `k3s kubectl get pods -A` before and after. If pods start failing, add `-i cni0` and
+`-o cni0` ACCEPT rules to `FORWARD` and make them persistent.
+
+Apply the DNS-only root and confirm both names resolve to `142.234.33.12`:
+
+```sh
+tofu -chdir=terraform/envs/staging/pilot-mad init
+tofu -chdir=terraform/envs/staging/pilot-mad apply
+dig +short piri-1.staging.fil-forge.com
+dig +short s3.pilot-mad.staging.filonecontent.com
+```
+
+Check out this repository at `/opt/fil-one/infra-nodes`, then run:
+
+```sh
+cd /opt/fil-one/infra-nodes
+scripts/host/bootstrap-staging-pilot-mad.sh
+```
+
+Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker network on the fixed
+`172.18.0.0/16` subnet, node config, systemd units and a mount-ordering drop-in. It adds TCP 80 and
+443 to UFW only when UFW is already active, and never enables it: this host serves other workloads,
+and turning a firewall on under them is the host owner's call.
+
+The unseal token binds to the address the node reaches central from, which is not always the
+address its hostnames resolve to. Confirm they are the same before asking for the token:
+
+```sh
+curl -4 --silent https://ifconfig.me
+```
+
+The node's state sits on the root filesystem. Moving `/fil-one/data` to a volume later needs no
+re-provisioning: stop both projects, copy with `rsync -aHAX --numeric-ids`, mount the volume at the
+same path, and start. Give a ZFS dataset `mountpoint=legacy` and an `/etc/fstab` entry, or the
+`RequiresMountsFor` drop-in bootstrap installed has no mount unit to wait for, and a deploy that
+starts before the mount leaves Postgres creating a new cluster under the mount point, where it
+disappears the moment the volume mounts over it.
+
+Then the shared steps below, with `STAGE=staging` and `REGION=pilot-mad`. Provisioning asks for the
+chain.love access token and the Grafana Cloud push token, which the eu-central-3 appliance does not
+need. Finish with:
+
+```sh
+scripts/ci/smoke-test.sh staging/pilot-mad
+```
+
 `nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
 those accounts rather than anything in this repository. They are set for dev. A node added later
 needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
@@ -331,9 +391,9 @@ tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRI
 the cluster its stack sits on, so another stack pushes elsewhere.
 
 Those four lines are per node, and a node whose host already runs Alloy leaves all four out. The
-staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
-and the host
-scripts then neither ask for a Grafana push token nor render an Alloy config. It is all four or
+eu-central-3 appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry
+block, and the host scripts then neither ask for a Grafana push token nor render an Alloy config.
+It is all four or
 none. A node.env that sets some of them stops the deploy, because a node missing one id would
 otherwise deploy green and ship nothing.
 
