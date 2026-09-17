@@ -1,8 +1,8 @@
-# Recover from an expired appliance seal token
+# Recover from an expired appliance unseal token
 
-Use this procedure when the staging appliance's OpenBao seal token has expired
-or was revoked. It assumes the node's persistent control volume is still
-available and the OpenBao data directory has not been replaced.
+Use this procedure when the staging appliance's OpenBao unseal token has
+expired or was revoked. It assumes the node's persistent control volume is
+still available and the OpenBao data directory has not been replaced.
 
 Every operative value below is staging's. The dev node takes the same steps
 with different ones:
