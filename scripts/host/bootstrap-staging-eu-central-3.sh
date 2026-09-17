@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Prepare the existing Servers.com host for the FilOne staging appliance.
+# Prepare the Servers.com host for the staging/eu-central-3 FilOne appliance.
+#
+# One host, not every staging node: the checkout path, the host Caddyfile and
+# the data directories below are this machine's. Another bare-metal node gets a
+# script of its own rather than a flag on this one.
 #
 # This script owns only FilOne paths, units, Docker networking and the one Caddy
 # import below. Lotus, Caddy's other sites and unrelated host workloads remain
@@ -10,7 +14,7 @@ set -euo pipefail
 
 CHECKOUT=/root/fil-one/infra-nodes
 CADDYFILE=/root/storacha/caddy/Caddyfile
-SNIPPET="$CHECKOUT/nodes/staging/platform/config/caddy/host-caddy.caddy"
+SNIPPET="$CHECKOUT/nodes/staging/eu-central-3/platform/config/caddy/host-caddy.caddy"
 IMPORT="import $SNIPPET"
 FILONE_SUBNET=172.18.0.0/16
 
@@ -45,7 +49,7 @@ else
 fi
 
 cat >/etc/fil-one/node.conf <<'CONF'
-FILONE_NODE=staging
+FILONE_NODE=staging/eu-central-3
 FILONE_CHECKOUT=/root/fil-one/infra-nodes
 FILONE_GIT_REF=main
 FILONE_HOST_CADDY=true

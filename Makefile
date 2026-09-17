@@ -36,12 +36,16 @@ check-tofu:
 .PHONY: check-shell
 check-shell:
 	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
-	shellcheck nodes/*/apps/config/piri/entrypoint.sh
+	find nodes -name entrypoint.sh -exec shellcheck {} +
 	shellcheck scripts/ci/*.sh
 
 # `compose config` resolves every interpolation, so it catches a variable a
 # compose file expects and no env file supplies — which on a node shows up as a
 # service starting with an empty password.
+#
+# The loop finds nodes by their node.env rather than by a fixed glob depth: dev
+# sits at nodes/dev, and a stage with more than one node nests them one level
+# deeper, as nodes/staging/eu-central-3 does.
 .PHONY: check-compose
 check-compose:
 	@set -euo pipefail; \
@@ -54,7 +58,9 @@ check-compose:
 	  INGOT_POSTGRES_PASSWORD=x \
 	  CHAIN_RPC_TOKEN=x \
 	  GRAFANA_PUSH_TOKEN=x >"$$secrets"; \
-	for node in nodes/*/; do \
+	for env in nodes/*/node.env nodes/*/*/node.env; do \
+	  [ -f "$$env" ] || continue; \
+	  node="$${env%node.env}"; \
 	  for project in platform apps; do \
 	    echo "==> $${node}$${project}"; \
 	    docker compose \

@@ -3,7 +3,7 @@ terraform {
 
   backend "s3" {
     bucket       = "forge-nodes-tfstate-654654381893"
-    key          = "nodes/staging.tfstate"
+    key          = "nodes/staging/eu-central-3.tfstate"
     region       = "us-east-2"
     encrypt      = true
     use_lockfile = true

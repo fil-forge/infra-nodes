@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [dev, staging]
+        node: [dev, staging/eu-central-3]
     runs-on: ubuntu-latest
     # The wait budget below, the smoke retries, and room for the checkout and a
     # slow first poll. Both steps stop themselves well inside it; a job that

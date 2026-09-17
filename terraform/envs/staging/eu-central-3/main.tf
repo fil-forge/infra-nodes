@@ -12,7 +12,7 @@ provider "aws" {
 }
 
 module "constants" {
-  source = "../../modules/shared/constants"
+  source = "../../../modules/shared/constants"
 }
 
 data "aws_route53_zone" "forge" {
