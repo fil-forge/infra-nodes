@@ -7,8 +7,8 @@ available and the OpenBao data directory has not been replaced.
 Every operative value below is staging's. The dev node takes the same steps
 with different ones:
 
-- Reach it with `scripts/operator/ssm-session.sh dev` and `sudo -i`. There is no
-  inbound SSH.
+- Reach it with `scripts/operator/ssm-session.sh dev` and `sudo -i`. There is
+  no inbound SSH.
 - Its checkout is `/opt/fil-one/infra-nodes`.
 - Its control and data directories are `/mnt/fil-one/control` and
   `/mnt/fil-one/data` on EBS volumes, so the ZFS commands below do not apply.
@@ -58,9 +58,10 @@ the control and data filesystems being readable.
 ## Stop the timers
 
 `filone-reconcile.timer` fires every five minutes and `reconcile.sh` resets the
-checkout to `origin/main`. `provision-platform.sh` takes no deploy lock until
-the `deploy-platform.sh` it calls at its step 8, so a reconcile pass during the
-recovery can change the scripts underneath it. Stopping a timer leaves a run
+checkout to the ref `FILONE_GIT_REF` names in `/etc/fil-one/node.conf`.
+`provision-platform.sh` takes no deploy lock until the `deploy-platform.sh` it
+calls at its step 8, so a reconcile pass during the recovery can change the
+scripts underneath it. Stopping a timer leaves a run
 already in flight alone, so stop the service too:
 
 ```sh
