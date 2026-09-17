@@ -62,6 +62,20 @@ rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
 stops if an existing network with that name uses another subnet. It validates
 the combined host Caddy configuration before reloading `caddy-guppy`.
 
+The import it appends to `/root/storacha/caddy/Caddyfile` is an absolute path
+into the checkout, so it names this node's directory under `nodes/`. A node
+directory that moves has to be followed there in the same window:
+
+```sh
+grep -n 'infra-nodes/nodes' /root/storacha/caddy/Caddyfile
+caddy validate --config /root/storacha/caddy/Caddyfile --adapter caddyfile
+```
+
+Caddy holds its running configuration in memory, so an import pointing at a
+path that no longer exists costs nothing until something reloads. The next
+`caddy validate` fails, and a `caddy-guppy` restart fails outright, which takes
+down every site on the host rather than the appliance's two.
+
 Confirm both source-subnet rules are present after bootstrap:
 
 ```sh
