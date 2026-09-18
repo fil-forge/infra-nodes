@@ -2,9 +2,11 @@
 // deploy stamp, all pushed to Grafana Cloud.
 //
 // Push-only credentials, so this is a one-way pipe: nothing in Grafana Cloud
-// can reach back into the node. Piri's own OTEL export to the Forge collector is
-// separate and untouched — that carries application traces, this carries whether
-// the box is alive.
+// can reach back into the node.
+//
+// Piri's own application metrics arrive here too, through the OTLP receiver at
+// the bottom of this file: Piri pushes them over the compose network and this
+// file is the only thing on the node that holds a Grafana token.
 
 logging {
 	level  = "info"
@@ -204,6 +206,66 @@ prometheus.relabel "caddy" {
 
 	// Same reason as the host relabel above: the scrape's instance label would
 	// be `caddy:2020`, and the node name is the value every other series uses.
+	rule {
+		replacement  = sys.env("FILONE_NODE")
+		target_label = "instance"
+	}
+}
+
+// Piri's own application metrics: its job queues, its IPNI advertisement
+// backlog, HTTP server latency, the free space behind its data directory and
+// its build. Piri exposes no /metrics endpoint and pushes OTLP instead, so
+// this is a receiver rather than a scrape, and the apps project points Piri at
+// it by compose service name. Its PDP proving carries no instrumentation, so
+// nothing about proving arrives here.
+//
+// Nothing outside this network can reach it: the container publishes no port,
+// and the receiver is unauthenticated on the assumption that the compose
+// network is the trust boundary, as it already is for Postgres.
+//
+// Metrics only. Piri emits spans but samples none of its own — it only
+// continues a trace another service started — and there is no trace backend
+// to forward them to, so no traces output is wired.
+otelcol.receiver.otlp "apps" {
+	http { }
+
+	output {
+		metrics = [otelcol.exporter.prometheus.apps.input]
+	}
+}
+
+// OTLP metrics into Prometheus series. Resource attributes do not become
+// labels on each series: service.name becomes `job`, service.instance.id
+// becomes `instance`, and the rest is carried by a `target_info` series which
+// a query joins on those two labels. Piri's version and node DID are read
+// from there.
+otelcol.exporter.prometheus "apps" {
+	forward_to = [prometheus.relabel.apps.receiver]
+}
+
+prometheus.relabel "apps" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	// The same service_name this node's container logs carry, built from the
+	// `job` label the conversion set, so Piri's logs and its metrics select
+	// under one name. Piri sets no service.namespace, so `job` is the bare
+	// service name.
+	//
+	// A sender must not put an attribute called `job` on a data point: the
+	// conversion writes attributes over the target labels, so that name
+	// replaces the one taken from service.name and every series here would be
+	// named after the attribute instead. Piri's job queues report the job's
+	// type as `job_name` for this reason.
+	rule {
+		source_labels = ["job"]
+		regex         = "(.+)"
+		replacement   = sys.env("SERVICE_NAME_PREFIX") + "-$1"
+		target_label  = "service_name"
+	}
+
+	// instance arrives as the node's DID, where every other series on this
+	// node carries the node name. Overwrite it on the series and on
+	// target_info alike, so the join between them still holds.
 	rule {
 		replacement  = sys.env("FILONE_NODE")
 		target_label = "instance"

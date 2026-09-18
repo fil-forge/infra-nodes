@@ -76,19 +76,23 @@ path that no longer exists costs nothing until something reloads. The next
 `caddy validate` fails, and a `caddy-guppy` restart fails outright, which takes
 down every site on the host rather than the appliance's two.
 
-Confirm both source-subnet rules are present after bootstrap:
+Confirm all three source-subnet rules are present after bootstrap:
 
 ```sh
 ufw allow from 172.18.0.0/16 to any port 443 proto tcp \
   comment 'FilOne Docker to host Caddy'
 ufw allow from 172.18.0.0/16 to any port 1234 proto tcp \
   comment 'FilOne Docker to host Lotus RPC'
+ufw allow from 172.18.0.0/16 to any port 4318 proto tcp \
+  comment 'FilOne Docker to host Alloy OTLP'
 ufw status numbered
 ```
 
-The two rules let Piri call its public Ingot URL and the host-owned Lotus RPC.
-Do not allow TCP 1234 from the public internet. Remove old FilOne rules tied to
-`docker0` or another Docker bridge after confirming these source-subnet rules.
+The three rules let Piri call its public Ingot URL, the host-owned Lotus RPC,
+and the host Alloy's OTLP receiver. Do not allow TCP 1234 or 4318 from the
+public internet: the receiver is unauthenticated, and the source-subnet rule is
+what keeps it to the Docker bridge. Remove old FilOne rules tied to `docker0`
+or another Docker bridge after confirming these source-subnet rules.
 
 Confirm that a container can call Lotus with a one-shot JSON-RPC request:
 
@@ -289,6 +293,74 @@ prometheus.relabel "host_caddy" {
   }
 }
 ```
+
+Piri's own application metrics — its job queues, its IPNI advertisement backlog, HTTP latency, the
+free space behind its data directory and its build — arrive by push rather than scrape: Piri
+exposes no `/metrics` endpoint and exports OTLP instead. Its PDP proving is not instrumented, so
+nothing about proving arrives here. The host Alloy needs a receiver for them, and it has to listen where a
+container can reach it. `0.0.0.0:4318` does that; the Docker bridge has no route to a listener bound
+to loopback. Everything else on this host that Piri reaches goes the same way, through
+`host.docker.internal`, which the apps project maps to the host gateway.
+
+The receiver is unauthenticated, so the host firewall is what keeps it to the Docker bridge. UFW
+denies incoming by default and the bootstrap script opens 4318 to `172.18.0.0/16` alongside 443 and
+1234; on a host bootstrapped before that rule existed, add it by hand or Piri's publishes are
+refused even once Alloy is listening. Check the bind address with `ss -lntp | grep 4318` and the
+rule with `ufw status numbered`.
+
+```alloy
+otelcol.receiver.otlp "filone_apps" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.exporter.prometheus.filone_apps.input]
+  }
+}
+
+// service.name becomes `job`, service.instance.id becomes `instance`, and the
+// remaining resource attributes are carried on a `target_info` series that a
+// query joins on those two labels. Piri's version and node DID are read there.
+otelcol.exporter.prometheus "filone_apps" {
+  forward_to = [prometheus.relabel.filone_apps.receiver]
+}
+
+prometheus.relabel "filone_apps" {
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+
+  // The same service_name the container logs carry, so Piri's logs and its
+  // metrics select under one name.
+  rule {
+    source_labels = ["job"]
+    regex         = "(.+)"
+    replacement   = "appliance-staging-eu-central-3-$1"
+    target_label  = "service_name"
+  }
+  rule {
+    target_label = "node"
+    replacement  = "staging/eu-central-3"
+  }
+  rule {
+    target_label = "region"
+    replacement  = "eu-central-3"
+  }
+  // instance arrives as the node's DID, where every other series from this
+  // host carries the node name. Overwriting it on the series and on
+  // target_info alike keeps the join between them working.
+  rule {
+    target_label = "instance"
+    replacement  = "staging/eu-central-3"
+  }
+}
+```
+
+Only metrics are wired: Piri emits spans but samples none of its own, and there is no trace backend
+to forward them to.
+
+This receiver has to exist before the apps project deploys a Piri that points at it. It does not
+have to exist first for safety — a Piri whose collector refuses the connection logs one warning
+every five minutes and serves normally — but until it does, no application metric arrives.
 
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source

@@ -371,9 +371,15 @@ there is more than one node; today the copy is a diff between two directories.
 ## Telemetry
 
 Grafana Alloy runs as a platform service and ships journald, Docker logs and node metrics to Grafana
-Cloud over a push-only token held in OpenBao. Piri's own OTEL export to the Forge collector is
-untouched and unrelated: that carries application traces to the central collector, this carries
-host and container health to a place an operator can page from.
+Cloud over a push-only token held in OpenBao.
+
+Piri's own application metrics go through the same Alloy, which also runs an OTLP receiver for
+them: Piri exposes no `/metrics` endpoint, so it pushes. Piri once exported to a collector at
+`telemetry.storacha.network` by default, which is where an earlier version of this section said its
+telemetry went; that host was Storacha's and never existed for FilOne, and the default was removed
+from Piri
+([FIL-1223](https://linear.app/filecoin-foundation/issue/FIL-1223)). There is no central
+collector and no trace pipeline.
 
 Every stream carries `node`, `region` and `appliance`. `node` and `region` come from `node.env` and
 identify the box. `appliance` is `<stage>-<region>` and selects everything the appliance ships in
