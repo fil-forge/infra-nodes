@@ -1,4 +1,5 @@
-# DNS for the Servers.com staging appliance. This root creates no host resources.
+# DNS for the pilot-mad appliance. This root creates no host resources: the
+# machine is a bare-metal host nothing here provisions.
 provider "aws" {
   region              = "us-east-2"
   allowed_account_ids = [module.constants.nonprod_account_id]
@@ -6,7 +7,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project = "forge-nodes"
-      Node    = "staging/eu-central-3"
+      Node    = "staging/pilot-mad"
     }
   }
 }
@@ -26,12 +27,13 @@ data "aws_route53_zone" "content" {
 }
 
 locals {
-  server_ip = "23.83.66.244"
+  server_ip = "142.234.33.12"
 }
 
+# piri-0 on this suffix belongs to the eu-central-3 appliance.
 resource "aws_route53_record" "piri" {
   zone_id = data.aws_route53_zone.forge.zone_id
-  name    = "piri-0.staging.fil-forge.com"
+  name    = "piri-1.staging.fil-forge.com"
   type    = "A"
   ttl     = 300
   records = [local.server_ip]
@@ -39,7 +41,7 @@ resource "aws_route53_record" "piri" {
 
 resource "aws_route53_record" "ingot" {
   zone_id = data.aws_route53_zone.content.zone_id
-  name    = "s3.eu-central-3.staging.filonecontent.com"
+  name    = "s3.pilot-mad.staging.filonecontent.com"
   type    = "A"
   ttl     = 300
   records = [local.server_ip]

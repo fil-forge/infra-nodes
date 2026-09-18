@@ -242,6 +242,10 @@ write_openbao_env() {
     "SEAL_TOKEN=$(cat "$FILONE_SEAL_TOKEN_FILE")
 " || [ "$?" -eq 1 ]
 
+  # Before the test, not only before a write: `install` onto a directory puts
+  # the file inside it, so a placeholder Docker left here would swallow the
+  # empty platform.env rather than be replaced by it.
+  clear_bind_mount_directory "$FILONE_SECRETS_DIR/platform.env"
   [ -f "$FILONE_SECRETS_DIR/platform.env" ] ||
     install -m 0400 /dev/null "$FILONE_SECRETS_DIR/platform.env"
 }
@@ -527,6 +531,8 @@ with open(destination, "w") as handle:
     die "rendering $template failed"
   fi
 
+  clear_bind_mount_directory "$destination"
+
   # Compare before replacing, so the caller can restart only what changed.
   if [ -f "$destination" ] && cmp -s "$tmp" "$destination"; then
     rm -f "$tmp"
@@ -546,6 +552,8 @@ write_secret_file() {
   chmod 0400 "$tmp" || die "could not chmod $tmp"
   printf '%s' "$content" >"$tmp" || die "could not write $tmp"
 
+  clear_bind_mount_directory "$destination"
+
   if [ -f "$destination" ] && cmp -s "$tmp" "$destination"; then
     rm -f "$tmp"
     return 1
@@ -554,6 +562,24 @@ write_secret_file() {
   mv "$tmp" "$destination" || die "could not write $destination"
   chmod 0400 "$destination" || die "could not chmod $destination"
   return 0
+}
+
+# Clear a directory Docker left where a rendered file belongs.
+#
+# The secrets tmpfs is empty after a reboot, and Docker creates a missing bind
+# mount source as a directory. So the containers the daemon restarts at boot
+# leave a directory at every path they mount out of it, and `mv` onto a
+# directory moves the rendered file inside it instead of replacing it: the
+# render reports success and the container goes on mounting a directory.
+#
+# rmdir, not rm -rf. A directory Docker made this way is empty, and one that is
+# not is somebody else's and worth stopping on.
+clear_bind_mount_directory() {
+  local destination="$1"
+  [ -d "$destination" ] || return 0
+  echo "  clearing the directory Docker left at $destination"
+  rmdir "$destination" ||
+    die "$destination is a non-empty directory where a rendered file belongs"
 }
 
 # Piri's --wallet-file is not a private key. It is a hex-encoded Filecoin

@@ -1,4 +1,4 @@
-# Checks that the dev and staging nodes are serving what main pins.
+# Checks that every node is serving what main pins.
 #
 # A merge queues an image rather than deploying it: the node picks it up on its
 # next reconcile pass and can spend 45 minutes in the proving gate before Piri
@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [dev, staging/eu-central-3]
+        node: [dev, staging/eu-central-3, staging/pilot-mad]
     runs-on: ubuntu-latest
     # The wait budget below, the smoke retries, and room for the checkout and a
     # slow first poll. Both steps stop themselves well inside it; a job that
