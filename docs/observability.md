@@ -244,10 +244,10 @@ conversion: `_total` on counters, a unit token where the name does not already c
 `instance` like everything else the appliance ships, plus `job="piri"` and the `otel_scope_name` of
 the instrument that recorded it. The two job queues are `replication` and `egress-tracker`.
 
-What Piri reports today is its job queues, its HTTP server, its data directory and its build. The
-job queues are replication and egress tracking only; PDP proving runs on a different scheduler
-inside Piri and is not instrumented, so proving health is still read from the logs and from the
-chain.
+What Piri reports today is its job queues, its IPNI advertisement queue, its HTTP server, its data
+directory and its build. The job queues are replication and egress tracking only; PDP proving runs
+on a different scheduler inside Piri and is not instrumented, so proving health is still read from
+the logs and from the chain.
 
 Queue depth per node and queue, which is where a node that has stopped making progress shows up:
 
@@ -266,6 +266,19 @@ How long jobs take, as a p95 over five minutes, per queue:
 
 ```promql
 histogram_quantile(0.95, sum by (le, node, queue) (rate(job_duration_seconds_bucket{service_name=~"appliance-.*-piri"}[5m])))
+```
+
+IPNI advertisements queued and not yet published, and the age of the oldest. Publishing is
+asynchronous, so a `blob/accept` receipt no longer reports a failure to advertise: a backlog that
+keeps growing, or an age that does, is how a publisher that is down or failing shows up. The dev
+node publishes no advertisements, since no indexing service is deployed for it:
+
+```promql
+ipni_pending_adverts{service_name=~"appliance-.*-piri"}
+```
+
+```promql
+ipni_pending_adverts_oldest_seconds{service_name=~"appliance-.*-piri"}
 ```
 
 Piri's own view of its request latency. Caddy's `caddy_http_request_duration_seconds` measures the
