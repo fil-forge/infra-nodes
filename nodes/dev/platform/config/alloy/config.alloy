@@ -212,10 +212,12 @@ prometheus.relabel "caddy" {
 	}
 }
 
-// Piri's own application metrics: job queue depth, PDP proving failures, the
-// chain epoch it has reached, HTTP server latency. Piri exposes no /metrics
-// endpoint and pushes OTLP instead, so this is a receiver rather than a
-// scrape, and the apps project points Piri at it by compose service name.
+// Piri's own application metrics: its job queues, its IPNI advertisement
+// backlog, HTTP server latency, the free space behind its data directory and
+// its build. Piri exposes no /metrics endpoint and pushes OTLP instead, so
+// this is a receiver rather than a scrape, and the apps project points Piri at
+// it by compose service name. Its PDP proving carries no instrumentation, so
+// nothing about proving arrives here.
 //
 // Nothing outside this network can reach it: the container publishes no port,
 // and the receiver is unauthenticated on the assumption that the compose

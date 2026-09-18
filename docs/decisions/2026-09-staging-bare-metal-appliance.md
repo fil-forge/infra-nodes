@@ -11,8 +11,8 @@ snippet directly from `/root/fil-one/infra-nodes`, validates the combined config
 Forge services on this host keep to ports 15000-15999, the range the Smelt deployment used. The
 host's other workloads sit on common defaults, and Guppy already listens on 3000.
 Their Docker network uses the fixed `172.18.0.0/16` subnet. Source-subnet UFW rules permit that
-network to reach the host's TCP 443 Caddy listener and TCP 1234 Lotus RPC listener without depending
-on Docker's generated bridge name.
+network to reach the host's TCP 443 Caddy listener, TCP 1234 Lotus RPC listener and TCP 4318 Alloy
+OTLP receiver without depending on Docker's generated bridge name.
 The rules do not permit public access. The host firewall permits public TCP 80 and 443 for Caddy and
 ACME. The host Alloy service collects host and container telemetry, including the deploy stamps
 under `/mnt/data/fil-one/control/state/metrics`.
