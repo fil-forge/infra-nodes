@@ -46,10 +46,15 @@ url = "${SPRUE_URL}"
 # `filone` network, the same way `postgres` does from the apps project.
 # Insecure because it never leaves the node; the only credential on this path
 # is the Grafana token Alloy holds.
+#
+# Dev publishes every ten seconds rather than the thirty staging uses, for a
+# faster feedback loop while a change is being tried out. It is one node with
+# a handful of series, so the extra samples per minute cost little; staging is
+# closer to what a real appliance does and stays at thirty.
 [telemetry]
 environment = "${STAGE}"
 
 [[telemetry.metrics]]
 endpoint = "alloy:4318"
 insecure = true
-publish_interval = "30s"
+publish_interval = "10s"

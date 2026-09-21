@@ -24,7 +24,8 @@ which is where the public error rate is read from. Staging also ships per-contai
 network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
 mount, and container health there is read from the journal and the deploy stamp instead.
 
-Piri's own application metrics too, every thirty seconds: its job queues, its HTTP server's
+Piri's own application metrics too, every thirty seconds on staging and every ten on dev, where a
+faster feedback loop is worth more than the samples it costs: its job queues, its HTTP server's
 latency, the free space behind its data directory and its build. Piri exposes no `/metrics`
 endpoint and pushes OTLP to Alloy instead, so this one arrives by push rather than scrape. Its PDP
 proving is not instrumented.
