@@ -267,15 +267,20 @@ otelcol.auth.basic "grafana_cloud" {
 // service.instance.id to instance, and puts every other resource attribute on a
 // separate target_info series rather than on each series.
 otelcol.exporter.prometheus "apps" {
-	forward_to = [prometheus.relabel.piri.receiver]
+	forward_to = [prometheus.relabel.apps.receiver]
 }
 
-prometheus.relabel "piri" {
+prometheus.relabel "apps" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 
+	// Named from job, which is the sender's service.name, so a second service
+	// pushing to this receiver gets its own service_name rather than Piri's.
+	// Piri's service.name is `piri`, matching its Compose service name.
 	rule {
-		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-piri"
-		target_label = "service_name"
+		source_labels = ["job"]
+		regex         = "(.+)"
+		replacement   = sys.env("SERVICE_NAME_PREFIX") + "-$1"
+		target_label  = "service_name"
 	}
 
 	// Piri sets service.instance.id to its DID. Name the node instead, as every

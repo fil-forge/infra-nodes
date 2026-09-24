@@ -57,7 +57,7 @@ scripts/host/bootstrap-staging-eu-central-3.sh
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
-network, node config, systemd units, the Caddy import and the two FilOne UFW
+network, node config, systemd units, the Caddy import and the three FilOne UFW
 rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
 stops if an existing network with that name uses another subnet. It validates
 the combined host Caddy configuration before reloading `caddy-guppy`.
@@ -302,13 +302,15 @@ ss -ltnp | grep -E ':431[78]\b'
 ```
 
 Check the same way for an `otelcol.exporter.otlphttp` or `otelcol.exporter.otlp` that already
-sends traces to Grafana Cloud. The receiver below needs somewhere to send traces, and the push
-credentials the host's Alloy already uses carry `logs:write` and `metrics:write` at most, not the
-`traces:write` a trace push needs.
+sends traces to Grafana Cloud. The receiver below needs somewhere to send traces, and a trace push
+needs a token with `traces:write`, which the host's existing Grafana credentials may not have.
 
-If there is a receiver already, route its metrics output through the relabel below instead of adding
-a second receiver, and match the FilOne series on `job="piri"` so the host's other senders keep their
-own labels. Otherwise add all of it:
+If there is a receiver already, keep it rather than adding a second one. Send its metrics output to
+the relabel below as well as wherever it goes now; the relabel's first rule keeps only `job="piri"`,
+so the host's other series are not relabelled as Piri. Route its traces output through the transform
+instead of straight to its exporter, and point the batch processor at that exporter: the transform
+only labels `service.name="piri"` and passes every other trace through unchanged, and sending traces
+both ways would export them twice. Otherwise add all of it:
 
 ```alloy
 otelcol.receiver.otlp "filone" {
@@ -330,9 +332,9 @@ otelcol.processor.transform "filone_traces" {
   trace_statements {
     context    = "resource"
     statements = [
-      `set(resource.attributes["node"], "staging/eu-central-3")`,
-      `set(resource.attributes["region"], "eu-central-3")`,
-      `set(resource.attributes["appliance"], "staging-eu-central-3")`,
+      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.name"] == "piri"`,
+      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.name"] == "piri"`,
+      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.name"] == "piri"`,
     ]
   }
 
@@ -369,6 +371,13 @@ otelcol.exporter.prometheus "filone" {
 prometheus.relabel "filone_piri" {
   forward_to = [prometheus.remote_write.grafanacloud.receiver]
 
+  // Only Piri's series. Anything else reaching this relabel through a shared
+  // receiver has its own path and must not be labelled as Piri.
+  rule {
+    source_labels = ["job"]
+    regex         = "piri"
+    action        = "keep"
+  }
   rule {
     target_label = "service_name"
     replacement  = "appliance-staging-eu-central-3-piri"

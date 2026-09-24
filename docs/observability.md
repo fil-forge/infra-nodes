@@ -235,7 +235,7 @@ sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-c
 
 Piri pushes its metrics over OTLP/HTTP to Alloy on port 4318: on dev to the platform Alloy at
 `alloy:4318` on the filone network, on staging to the host's Alloy at `host.docker.internal:4318`.
-Where is set in the `[telemetry]` section of Piri's base config. Alloy converts them to Prometheus
+The `[telemetry]` section of Piri's base config sets the address. Alloy converts the metrics to Prometheus
 series under `job="piri"` and `service_name="appliance-<stage>-<region>-piri"`, with `instance` set
 to the node name rather than the DID Piri reports.
 
