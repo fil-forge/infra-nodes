@@ -1,12 +1,8 @@
-// Telemetry out of the node: journald, container logs, host metrics and the
-// deploy stamp, all pushed to Grafana Cloud.
+// Telemetry out of the node: journald, container logs, host metrics, the
+// deploy stamp and Piri's OTLP metrics and traces, all pushed to Grafana Cloud.
 //
 // Push-only credentials, so this is a one-way pipe: nothing in Grafana Cloud
 // can reach back into the node.
-//
-// Piri's own application metrics arrive here too, through the OTLP receiver at
-// the bottom of this file: Piri pushes them over the compose network and this
-// file is the only thing on the node that holds a Grafana token.
 
 logging {
 	level  = "info"
@@ -156,8 +152,8 @@ prometheus.scrape "host" {
 }
 
 // service_name goes on the series rather than in external_labels, which would
-// stamp every series the writer carries. Once Piri and Ingot expose their own
-// /metrics through the same writer, their series need their own names.
+// stamp every series the writer carries, and Piri's series below carry their
+// own.
 prometheus.relabel "host" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 
@@ -212,33 +208,64 @@ prometheus.relabel "caddy" {
 	}
 }
 
-// Piri's own application metrics: its job queues, its IPNI advertisement
-// backlog, HTTP server latency, the free space behind its data directory and
-// its build. Piri exposes no /metrics endpoint and pushes OTLP instead, so
-// this is a receiver rather than a scrape, and the apps project points Piri at
-// it by compose service name. Its PDP proving carries no instrumentation, so
-// nothing about proving arrives here.
-//
-// Nothing outside this network can reach it: the container publishes no port,
-// and the receiver is unauthenticated on the assumption that the compose
-// network is the trust boundary, as it already is for Postgres.
-//
-// Metrics only. Piri emits spans but samples none of its own — it only
-// continues a trace another service started — and there is no trace backend
-// to forward them to, so no traces output is wired.
+// Piri's metrics and traces, pushed over OTLP/HTTP to this receiver on the
+// filone network. compose.yml publishes no port for it, so nothing outside that
+// network reaches it. Piri pushes metrics every 30 seconds; the base config says
+// where.
 otelcol.receiver.otlp "apps" {
-	http { }
+	http {
+		endpoint = "0.0.0.0:4318"
+	}
 
 	output {
-		metrics = [otelcol.exporter.prometheus.apps.input]
+		metrics = [otelcol.processor.batch.apps.input]
+		traces  = [otelcol.processor.transform.traces.input]
 	}
 }
 
-// OTLP metrics into Prometheus series. Resource attributes do not become
-// labels on each series: service.name becomes `job`, service.instance.id
-// becomes `instance`, and the rest is carried by a `target_info` series which
-// a query joins on those two labels. Piri's version and node DID are read
-// from there.
+// Metrics get their labels from the Prometheus relabel below. Traces stay
+// OTLP all the way to Grafana Cloud, so they carry the node's identity as
+// resource attributes instead, under the same names as the labels.
+otelcol.processor.transform "traces" {
+	error_mode = "ignore"
+
+	trace_statements {
+		context    = "resource"
+		statements = [
+			string.format("set(resource.attributes[\"node\"], %q)", sys.env("FILONE_NODE")),
+			string.format("set(resource.attributes[\"region\"], %q)", sys.env("REGION_LABEL")),
+			string.format("set(resource.attributes[\"appliance\"], %q)", sys.env("APPLIANCE_LABEL")),
+		]
+	}
+
+	output {
+		traces = [otelcol.processor.batch.apps.input]
+	}
+}
+
+otelcol.processor.batch "apps" {
+	output {
+		metrics = [otelcol.exporter.prometheus.apps.input]
+		traces  = [otelcol.exporter.otlphttp.grafana_cloud.input]
+	}
+}
+
+// The stack's OTLP endpoint. The exporter appends /v1/traces to the URL.
+otelcol.exporter.otlphttp "grafana_cloud" {
+	client {
+		endpoint = sys.env("GRAFANA_TRACES_URL")
+		auth     = otelcol.auth.basic.grafana_cloud.handler
+	}
+}
+
+otelcol.auth.basic "grafana_cloud" {
+	username = sys.env("GRAFANA_TRACES_USER")
+	password = sys.env("GRAFANA_PUSH_TOKEN")
+}
+
+// The OTLP-to-Prometheus conversion maps service.name to job and
+// service.instance.id to instance, and puts every other resource attribute on a
+// separate target_info series rather than on each series.
 otelcol.exporter.prometheus "apps" {
 	forward_to = [prometheus.relabel.apps.receiver]
 }
@@ -246,16 +273,9 @@ otelcol.exporter.prometheus "apps" {
 prometheus.relabel "apps" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 
-	// The same service_name this node's container logs carry, built from the
-	// `job` label the conversion set, so Piri's logs and its metrics select
-	// under one name. Piri sets no service.namespace, so `job` is the bare
-	// service name.
-	//
-	// A sender must not put an attribute called `job` on a data point: the
-	// conversion writes attributes over the target labels, so that name
-	// replaces the one taken from service.name and every series here would be
-	// named after the attribute instead. Piri's job queues report the job's
-	// type as `job_name` for this reason.
+	// Named from job, which is the sender's service.name, so a second service
+	// pushing to this receiver gets its own service_name rather than Piri's.
+	// Piri's service.name is `piri`, matching its Compose service name.
 	rule {
 		source_labels = ["job"]
 		regex         = "(.+)"
@@ -263,9 +283,8 @@ prometheus.relabel "apps" {
 		target_label  = "service_name"
 	}
 
-	// instance arrives as the node's DID, where every other series on this
-	// node carries the node name. Overwrite it on the series and on
-	// target_info alike, so the join between them still holds.
+	// Piri sets service.instance.id to its DID. Name the node instead, as every
+	// other series from this node does; the DID stays readable in Piri's logs.
 	rule {
 		replacement  = sys.env("FILONE_NODE")
 		target_label = "instance"

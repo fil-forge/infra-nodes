@@ -19,13 +19,12 @@ usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 did = "${SPRUE_DID}"
 url = "${SPRUE_URL}"
 
-# Application metrics to the host-owned Alloy, which relabels them and forwards
-# to Grafana Cloud. Piri exports nowhere unless a collector is named here.
-#
-# The endpoint is a host and port: no scheme and no path, because Piri appends
-# /v1/metrics itself, and OTLP over HTTP is 4318. This host's Alloy is a
-# systemd service rather than a container, reached the same way Lotus is; the
-# runbook's staging section says what its OTLP receiver has to bind to.
+# OTLP metrics and traces go to the host's Alloy, reached the same way as Lotus. The host
+# Alloy's receiver is configured outside this repository; docs/RUNBOOK.md says
+# what it needs.
+# `environment` becomes the deployment.environment.name resource attribute, and
+# so the deployment_environment_name label on target_info. Piri otherwise takes
+# it from the configured network, which a base-config node has none of.
 [telemetry]
 environment = "${STAGE}"
 
@@ -33,3 +32,7 @@ environment = "${STAGE}"
 endpoint = "host.docker.internal:4318"
 insecure = true
 publish_interval = "30s"
+
+[[telemetry.traces]]
+endpoint = "host.docker.internal:4318"
+insecure = true

@@ -38,19 +38,13 @@ usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 did = "${SPRUE_DID}"
 url = "${SPRUE_URL}"
 
-# Application metrics to the node's own Alloy, which relabels them and forwards
-# to Grafana Cloud. Piri exports nowhere unless a collector is named here.
-#
-# The endpoint is a host and port: no scheme and no path, because Piri appends
-# /v1/metrics itself, and OTLP over HTTP is 4318. `alloy` resolves on the
-# `filone` network, the same way `postgres` does from the apps project.
-# Insecure because it never leaves the node; the only credential on this path
-# is the Grafana token Alloy holds.
-#
-# Dev publishes every ten seconds rather than the thirty staging uses, for a
-# faster feedback loop while a change is being tried out. It is one node with
-# a handful of series, so the extra samples per minute cost little; staging is
-# closer to what a real appliance does and stays at thirty.
+# Piri's OTLP metrics and traces go to the platform project's Alloy, which
+# labels them and pushes them to Grafana Cloud with everything else this node
+# ships. `alloy` is its Compose service name on the shared filone network; the
+# port is not published. Plain HTTP, because the hop never leaves that network.
+# `environment` becomes the deployment.environment.name resource attribute, and
+# so the deployment_environment_name label on target_info. Piri otherwise takes
+# it from the configured network, which a base-config node has none of.
 [telemetry]
 environment = "${STAGE}"
 
@@ -58,3 +52,7 @@ environment = "${STAGE}"
 endpoint = "alloy:4318"
 insecure = true
 publish_interval = "10s"
+
+[[telemetry.traces]]
+endpoint = "alloy:4318"
+insecure = true

@@ -57,7 +57,7 @@ scripts/host/bootstrap-staging-eu-central-3.sh
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
-network, node config, systemd units, the Caddy import and the two FilOne UFW
+network, node config, systemd units, the Caddy import and the three FilOne UFW
 rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
 stops if an existing network with that name uses another subnet. It validates
 the combined host Caddy configuration before reloading `caddy-guppy`.
@@ -76,23 +76,19 @@ path that no longer exists costs nothing until something reloads. The next
 `caddy validate` fails, and a `caddy-guppy` restart fails outright, which takes
 down every site on the host rather than the appliance's two.
 
-Confirm all three source-subnet rules are present after bootstrap:
+Confirm both source-subnet rules are present after bootstrap:
 
 ```sh
 ufw allow from 172.18.0.0/16 to any port 443 proto tcp \
   comment 'FilOne Docker to host Caddy'
 ufw allow from 172.18.0.0/16 to any port 1234 proto tcp \
   comment 'FilOne Docker to host Lotus RPC'
-ufw allow from 172.18.0.0/16 to any port 4318 proto tcp \
-  comment 'FilOne Docker to host Alloy OTLP'
 ufw status numbered
 ```
 
-The three rules let Piri call its public Ingot URL, the host-owned Lotus RPC,
-and the host Alloy's OTLP receiver. Do not allow TCP 1234 or 4318 from the
-public internet: the receiver is unauthenticated, and the source-subnet rule is
-what keeps it to the Docker bridge. Remove old FilOne rules tied to `docker0`
-or another Docker bridge after confirming these source-subnet rules.
+The two rules let Piri call its public Ingot URL and the host-owned Lotus RPC.
+Do not allow TCP 1234 from the public internet. Remove old FilOne rules tied to
+`docker0` or another Docker bridge after confirming these source-subnet rules.
 
 Confirm that a container can call Lotus with a one-shot JSON-RPC request:
 
@@ -294,48 +290,97 @@ prometheus.relabel "host_caddy" {
 }
 ```
 
-Piri's own application metrics — its job queues, its IPNI advertisement backlog, HTTP latency, the
-free space behind its data directory and its build — arrive by push rather than scrape: Piri
-exposes no `/metrics` endpoint and exports OTLP instead. Its PDP proving is not instrumented, so
-nothing about proving arrives here. The host Alloy needs a receiver for them, and it has to listen where a
-container can reach it. `0.0.0.0:4318` does that; the Docker bridge has no route to a listener bound
-to loopback. Everything else on this host that Piri reaches goes the same way, through
-`host.docker.internal`, which the apps project maps to the host gateway.
+Piri pushes its application metrics and traces over OTLP/HTTP to `host.docker.internal:4318`, which is this
+host's Alloy; the `[telemetry]` section of `nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`
+says so. Before adding a receiver, check whether the host's Alloy already runs one, or whether
+anything else listens on 4318. `systemctl cat alloy` names the configuration file the service runs;
+a package install defaults to `/etc/alloy/config.alloy`:
 
-The receiver is unauthenticated, so the host firewall is what keeps it to the Docker bridge. UFW
-denies incoming by default and the bootstrap script opens 4318 to `172.18.0.0/16` alongside 443 and
-1234; on a host bootstrapped before that rule existed, add it by hand or Piri's publishes are
-refused even once Alloy is listening. Check the bind address with `ss -lntp | grep 4318` and the
-rule with `ufw status numbered`.
+```sh
+grep -n 'otelcol.receiver.otlp' /etc/alloy/config.alloy
+ss -ltnp | grep -E ':431[78]\b'
+```
+
+Check the same way for an `otelcol.exporter.otlphttp` or `otelcol.exporter.otlp` that already
+sends traces to Grafana Cloud. The receiver below needs somewhere to send traces, and a trace push
+needs a token with `traces:write`, which the host's existing Grafana credentials may not have.
+
+If there is a receiver already, keep it rather than adding a second one. Send its metrics output to
+the relabel below as well as wherever it goes now; the relabel's first rule keeps only `job="piri"`,
+so the host's other series are not relabelled as Piri. Route its traces output through the transform
+instead of straight to its exporter, and point the batch processor at that exporter: the transform
+only labels `service.name="piri"` and passes every other trace through unchanged, and sending traces
+both ways would export them twice. Otherwise add all of it:
 
 ```alloy
-otelcol.receiver.otlp "filone_apps" {
+otelcol.receiver.otlp "filone" {
   http {
     endpoint = "0.0.0.0:4318"
   }
 
   output {
-    metrics = [otelcol.exporter.prometheus.filone_apps.input]
+    metrics = [otelcol.processor.batch.filone.input]
+    traces  = [otelcol.processor.transform.filone_traces.input]
   }
 }
 
-// service.name becomes `job`, service.instance.id becomes `instance`, and the
-// remaining resource attributes are carried on a `target_info` series that a
-// query joins on those two labels. Piri's version and node DID are read there.
-otelcol.exporter.prometheus "filone_apps" {
-  forward_to = [prometheus.relabel.filone_apps.receiver]
+// Traces stay OTLP to Grafana Cloud, so the appliance labels go on as
+// resource attributes rather than through a Prometheus relabel.
+otelcol.processor.transform "filone_traces" {
+  error_mode = "ignore"
+
+  trace_statements {
+    context    = "resource"
+    statements = [
+      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.name"] == "piri"`,
+      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.name"] == "piri"`,
+      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.name"] == "piri"`,
+    ]
+  }
+
+  output {
+    traces = [otelcol.processor.batch.filone.input]
+  }
 }
 
-prometheus.relabel "filone_apps" {
+otelcol.processor.batch "filone" {
+  output {
+    metrics = [otelcol.exporter.prometheus.filone.input]
+    traces  = [otelcol.exporter.otlphttp.grafanacloud_traces.input]
+  }
+}
+
+// If the host already has a traces exporter to Grafana Cloud, point the batch
+// processor's traces output at it and leave these two out.
+otelcol.exporter.otlphttp "grafanacloud_traces" {
+  client {
+    endpoint = sys.env("GRAFANA_TRACES_URL")
+    auth     = otelcol.auth.basic.grafanacloud_traces.handler
+  }
+}
+
+otelcol.auth.basic "grafanacloud_traces" {
+  username = sys.env("GRAFANA_TRACES_USER")
+  password = sys.env("GRAFANA_TRACES_TOKEN")
+}
+
+otelcol.exporter.prometheus "filone" {
+  forward_to = [prometheus.relabel.filone_piri.receiver]
+}
+
+prometheus.relabel "filone_piri" {
   forward_to = [prometheus.remote_write.grafanacloud.receiver]
 
-  // The same service_name the container logs carry, so Piri's logs and its
-  // metrics select under one name.
+  // Only Piri's series. Anything else reaching this relabel through a shared
+  // receiver has its own path and must not be labelled as Piri.
   rule {
     source_labels = ["job"]
-    regex         = "(.+)"
-    replacement   = "appliance-staging-eu-central-3-$1"
-    target_label  = "service_name"
+    regex         = "piri"
+    action        = "keep"
+  }
+  rule {
+    target_label = "service_name"
+    replacement  = "appliance-staging-eu-central-3-piri"
   }
   rule {
     target_label = "node"
@@ -345,9 +390,8 @@ prometheus.relabel "filone_apps" {
     target_label = "region"
     replacement  = "eu-central-3"
   }
-  // instance arrives as the node's DID, where every other series from this
-  // host carries the node name. Overwriting it on the series and on
-  // target_info alike keeps the join between them working.
+  // Piri reports its DID as service.instance.id; name the node, as every
+  // other appliance series does.
   rule {
     target_label = "instance"
     replacement  = "staging/eu-central-3"
@@ -355,12 +399,22 @@ prometheus.relabel "filone_apps" {
 }
 ```
 
-Only metrics are wired: Piri emits spans but samples none of its own, and there is no trace backend
-to forward them to.
+`GRAFANA_TRACES_URL` and `GRAFANA_TRACES_USER` are the stack's OTLP endpoint and instance id, the
+same values `nodes/dev/node.env` carries; `GRAFANA_TRACES_TOKEN` is a token with `traces:write`.
+Supply them to the host's Alloy the way it gets its existing Grafana credentials, or write them in
+directly if that is how the host's configuration holds the others.
 
-This receiver has to exist before the apps project deploys a Piri that points at it. It does not
-have to exist first for safety — a Piri whose collector refuses the connection logs one warning
-every five minutes and serves normally — but until it does, no application metric arrives.
+The receiver listens on every interface because Piri reaches it from the `filone` network through
+the host gateway. UFW, not the bind address, keeps it off the public interface, so confirm that
+`ufw status verbose` shows incoming traffic denied by default before adding it. Bootstrap permits
+the `filone` subnet to reach 4318; a host bootstrapped before that rule existed needs it added once:
+
+```sh
+ufw allow from 172.18.0.0/16 to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
+```
+
+Piri's series then arrive in Grafana under `job="piri"`, and its traces under `service.name="piri"`;
+`docs/observability.md` has the queries.
 
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
@@ -402,10 +456,14 @@ portal, on the Loki tile and the Prometheus tile, and they differ from each othe
 tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
 the cluster its stack sits on, so another stack pushes elsewhere.
 
-Those four lines are per node, and a node whose host already runs Alloy leaves all four out. The
+Traces go to the stack's OTLP endpoint. Its URL and its user id, which is the stack's own instance
+id and differs from the two above, are on the same page's OpenTelemetry tile, and belong in
+`GRAFANA_TRACES_URL` and `GRAFANA_TRACES_USER`.
+
+Those six lines are per node, and a node whose host already runs Alloy leaves all six out. The
 staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
 and the host
-scripts then neither ask for a Grafana push token nor render an Alloy config. It is all four or
+scripts then neither ask for a Grafana push token nor render an Alloy config. It is all six or
 none. A node.env that sets some of them stops the deploy, because a node missing one id would
 otherwise deploy green and ship nothing.
 
@@ -505,8 +563,8 @@ It asks for the root token, enables the transit engine, creates `region-us-east-
 lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
 overwrites the old one.
 
-The Grafana Cloud token is an access policy token scoped to the stack with `logs:write` and
-`metrics:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
+The Grafana Cloud token is an access policy token scoped to the stack with `logs:write`,
+`metrics:write` and `traces:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
 needs Admin on the org, so ask whoever holds it if the page tells you to.
 
 Certificates are issued on Caddy's first start. If the DNS records have not propagated yet, Caddy
