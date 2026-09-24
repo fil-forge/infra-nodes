@@ -25,8 +25,8 @@ network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy con
 mount, and container health there is read from the journal and the deploy stamp instead.
 Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds.
 
-**Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's OTLP
-endpoint unchanged apart from the node's identity.
+**Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's Tempo
+unchanged apart from the node's identity.
 
 **Not shipped.** Ingot's own application metrics; the network interface collector, which
 inside the Alloy container would report the container's namespace rather than the host's.
