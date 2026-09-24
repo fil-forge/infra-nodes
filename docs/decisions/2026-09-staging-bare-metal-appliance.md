@@ -15,7 +15,9 @@ network to reach the host's TCP 443 Caddy listener and TCP 1234 Lotus RPC listen
 on Docker's generated bridge name.
 The rules do not permit public access. The host firewall permits public TCP 80 and 443 for Caddy and
 ACME. The host Alloy service collects host and container telemetry, including the deploy stamps
-under `/mnt/data/fil-one/control/state/metrics`.
+under `/mnt/data/fil-one/control/state/metrics`, and receives Piri's OTLP metrics on
+`host.docker.internal:4318`. Its configuration is not in this repository, so every FilOne signal
+from this host depends on edits an operator applies to it by hand; the runbook lists them.
 
 The OpenTofu staging root owns only the two Route53 A records. It creates no server, volume, IAM
 role or other AWS host resource. Appliance control state and data live in separate directories:

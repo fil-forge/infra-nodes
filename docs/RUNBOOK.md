@@ -290,6 +290,77 @@ prometheus.relabel "host_caddy" {
 }
 ```
 
+Piri pushes its application metrics over OTLP/HTTP to `host.docker.internal:4318`, which is this
+host's Alloy; the `[telemetry]` section of `nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`
+says so. Before adding a receiver, check whether the host's Alloy already runs one, or whether
+anything else listens on 4318. `systemctl cat alloy` names the configuration file the service runs;
+a package install defaults to `/etc/alloy/config.alloy`:
+
+```sh
+grep -n 'otelcol.receiver.otlp' /etc/alloy/config.alloy
+ss -ltnp | grep -E ':431[78]\b'
+```
+
+If there is one already, route its metrics output through the relabel below instead of adding a
+second receiver, and match the FilOne series on `job="piri"` so the host's other senders keep their
+own labels. Otherwise add all of it:
+
+```alloy
+otelcol.receiver.otlp "filone" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.filone.input]
+  }
+}
+
+otelcol.processor.batch "filone" {
+  output {
+    metrics = [otelcol.exporter.prometheus.filone.input]
+  }
+}
+
+otelcol.exporter.prometheus "filone" {
+  forward_to = [prometheus.relabel.filone_piri.receiver]
+}
+
+prometheus.relabel "filone_piri" {
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+
+  rule {
+    target_label = "service_name"
+    replacement  = "appliance-staging-eu-central-3-piri"
+  }
+  rule {
+    target_label = "node"
+    replacement  = "staging/eu-central-3"
+  }
+  rule {
+    target_label = "region"
+    replacement  = "eu-central-3"
+  }
+  // Piri reports its DID as service.instance.id; name the node, as every
+  // other appliance series does.
+  rule {
+    target_label = "instance"
+    replacement  = "staging/eu-central-3"
+  }
+}
+```
+
+The receiver listens on every interface because Piri reaches it from the `filone` network through
+the host gateway. UFW, not the bind address, keeps it off the public interface, so confirm that
+`ufw status verbose` shows incoming traffic denied by default before adding it. Bootstrap permits
+the `filone` subnet to reach 4318; a host bootstrapped before that rule existed needs it added once:
+
+```sh
+ufw allow from 172.18.0.0/16 to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
+```
+
+Piri's series then arrive in Grafana under `job="piri"`; `docs/observability.md` has the queries.
+
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
 keeps its running tailers, and their label sets, across a configuration reload,

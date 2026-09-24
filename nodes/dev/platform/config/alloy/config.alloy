@@ -1,10 +1,8 @@
-// Telemetry out of the node: journald, container logs, host metrics and the
-// deploy stamp, all pushed to Grafana Cloud.
+// Telemetry out of the node: journald, container logs, host metrics, the
+// deploy stamp and Piri's OTLP metrics, all pushed to Grafana Cloud.
 //
 // Push-only credentials, so this is a one-way pipe: nothing in Grafana Cloud
-// can reach back into the node. Piri's own OTEL export to the Forge collector is
-// separate and untouched — that carries application traces, this carries whether
-// the box is alive.
+// can reach back into the node.
 
 logging {
 	level  = "info"
@@ -154,8 +152,8 @@ prometheus.scrape "host" {
 }
 
 // service_name goes on the series rather than in external_labels, which would
-// stamp every series the writer carries. Once Piri and Ingot expose their own
-// /metrics through the same writer, their series need their own names.
+// stamp every series the writer carries, and Piri's series below carry their
+// own.
 prometheus.relabel "host" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 
@@ -204,6 +202,48 @@ prometheus.relabel "caddy" {
 
 	// Same reason as the host relabel above: the scrape's instance label would
 	// be `caddy:2020`, and the node name is the value every other series uses.
+	rule {
+		replacement  = sys.env("FILONE_NODE")
+		target_label = "instance"
+	}
+}
+
+// Piri's application metrics, pushed over OTLP/HTTP to this receiver on the
+// filone network. compose.yml publishes no port for it, so nothing outside that
+// network reaches it. Piri pushes every 30 seconds; the base config says where.
+otelcol.receiver.otlp "apps" {
+	http {
+		endpoint = "0.0.0.0:4318"
+	}
+
+	output {
+		metrics = [otelcol.processor.batch.apps.input]
+	}
+}
+
+otelcol.processor.batch "apps" {
+	output {
+		metrics = [otelcol.exporter.prometheus.apps.input]
+	}
+}
+
+// The OTLP-to-Prometheus conversion maps service.name to job and
+// service.instance.id to instance, and puts every other resource attribute on a
+// separate target_info series rather than on each series.
+otelcol.exporter.prometheus "apps" {
+	forward_to = [prometheus.relabel.piri.receiver]
+}
+
+prometheus.relabel "piri" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	rule {
+		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-piri"
+		target_label = "service_name"
+	}
+
+	// Piri sets service.instance.id to its DID. Name the node instead, as every
+	// other series from this node does; the DID stays readable in Piri's logs.
 	rule {
 		replacement  = sys.env("FILONE_NODE")
 		target_label = "instance"

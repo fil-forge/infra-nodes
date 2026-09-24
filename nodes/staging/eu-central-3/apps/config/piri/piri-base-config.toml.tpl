@@ -18,3 +18,14 @@ usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 [ucan.services.upload]
 did = "${SPRUE_DID}"
 url = "${SPRUE_URL}"
+
+# OTLP metrics go to the host's Alloy, reached the same way as Lotus. The host
+# Alloy's receiver is configured outside this repository; docs/RUNBOOK.md says
+# what it needs. The Storacha analytics endpoint does not exist for this network.
+[telemetry]
+disable_storacha_analytics = true
+
+[[telemetry.metrics]]
+endpoint = "host.docker.internal:4318"
+insecure = true
+publish_interval = "30s"
