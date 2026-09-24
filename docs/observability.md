@@ -23,10 +23,13 @@ metrics, also every minute: counts, durations and sizes per site, handler, metho
 which is where the public error rate is read from. Staging also ships per-container CPU, memory,
 network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
 mount, and container health there is read from the journal and the deploy stamp instead.
+Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds.
 
-**Not shipped.** Piri's and Ingot's own application metrics; the network interface collector, which
-inside the Alloy container would report the container's namespace rather than the host's; traces.
-Piri exports traces over OTEL to the Forge collector, which is a separate pipeline.
+**Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's OTLP
+endpoint unchanged apart from the node's identity.
+
+**Not shipped.** Ingot's own application metrics; the network interface collector, which
+inside the Alloy container would report the container's namespace rather than the host's.
 
 ## Where to look
 
@@ -34,6 +37,7 @@ Piri exports traces over OTEL to the Forge collector, which is a separate pipeli
 | ------- | -------------------------------------- | -------------- |
 | Logs    | `grafanacloud-filecoinfoundation-logs` | LogQL          |
 | Metrics | `grafanacloud-filecoinfoundation-prom` | PromQL         |
+| Traces  | the stack's Tempo data source          | TraceQL        |
 
 Both are in Explore. Pick the data source, paste a query below, set the time range.
 
@@ -144,7 +148,7 @@ built on them works on one node only.
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
 Caddy's `caddy_http_*` family, and `deploy_last_success_timestamp`. Every series carries the four
 labels above plus `instance`, which is the node name, and `job`, which is `integrations/unix` for
-the host, `cadvisor` for containers and `caddy` for Caddy.
+the host, `cadvisor` for containers, `caddy` for Caddy and `piri` for Piri.
 
 Free space on the dev appliance's filesystems:
 
@@ -227,6 +231,34 @@ sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-c
 sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-central-3", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com"}[5m]))
 ```
 
+### Piri
+
+Piri pushes its metrics over OTLP/HTTP to Alloy on port 4318: on dev to the platform Alloy at
+`alloy:4318` on the filone network, on staging to the host's Alloy at `host.docker.internal:4318`.
+The `[telemetry]` section of Piri's base config sets the address. Alloy converts the metrics to Prometheus
+series under `job="piri"` and `service_name="appliance-<stage>-<region>-piri"`, with `instance` set
+to the node name rather than the DID Piri reports.
+
+The conversion keeps each metric's own attributes as labels, but not Piri's resource attributes.
+Those land on one `target_info` series per node, which is where Piri's version is read from:
+
+```promql
+target_info{job="piri"}
+```
+
+Everything Piri ships on one node:
+
+```promql
+{service_name="appliance-staging-eu-central-3-piri"}
+```
+
+A Piri that stops pushing leaves no `up` series to go to zero, since nothing scrapes it. Its absence
+is the signal:
+
+```promql
+absent(target_info{job="piri", node="staging/eu-central-3"})
+```
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with
@@ -244,6 +276,22 @@ When each project last deployed, per node:
 ```promql
 deploy_last_success_timestamp{project=~"apps|platform"}
 ```
+
+## Traces
+
+Piri pushes its spans to the same Alloy receiver as its metrics. Alloy does not relabel them into
+Prometheus series; it adds `node`, `region` and `appliance` as resource attributes, under the same
+names and values as the labels above, and sends them on over OTLP. `service.name` stays `piri`, as
+Piri sets it, and `service.instance.id` stays Piri's DID.
+
+Every Piri trace from the staging appliance:
+
+```traceql
+{ resource.service.name = "piri" && resource.node = "staging/eu-central-3" }
+```
+
+Piri records a span only when the request that reached it carries a sampled trace context, so an
+empty result can mean no caller started a trace rather than a broken pipeline.
 
 ## Is the pipeline itself healthy
 

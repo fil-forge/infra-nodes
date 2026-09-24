@@ -160,7 +160,8 @@ services:
     restart: unless-stopped
     networks: [filone]
 
-  # Ships journald, container logs and host metrics to Grafana Cloud. Push-only
+  # Ships journald, container logs, host metrics and Piri's OTLP metrics and
+  # traces to Grafana Cloud. Push-only
   # credentials: this is a one-way pipe out of the node.
   alloy:
     image: ${ALLOY_IMAGE}
@@ -174,6 +175,8 @@ services:
       - GRAFANA_LOGS_USER=${GRAFANA_LOGS_USER}
       - GRAFANA_METRICS_URL=${GRAFANA_METRICS_URL}
       - GRAFANA_METRICS_USER=${GRAFANA_METRICS_USER}
+      - GRAFANA_TRACES_URL=${GRAFANA_TRACES_URL}
+      - GRAFANA_TRACES_USER=${GRAFANA_TRACES_USER}
       - GRAFANA_PUSH_TOKEN=${GRAFANA_PUSH_TOKEN}
       - FILONE_NODE=${FILONE_NODE}
       - REGION_LABEL=${REGION_LABEL}

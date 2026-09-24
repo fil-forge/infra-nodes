@@ -31,6 +31,7 @@ echo "=== deploy platform ($FILONE_NODE) ==="
 if node_ships_telemetry; then
   require_configured GRAFANA_LOGS_USER 000000
   require_configured GRAFANA_METRICS_USER 000000
+  require_configured GRAFANA_TRACES_USER 000000
 fi
 
 echo "[1/7] Reading secrets"
