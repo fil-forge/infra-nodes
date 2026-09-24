@@ -250,7 +250,8 @@ otelcol.processor.batch "apps" {
 	}
 }
 
-// The stack's OTLP endpoint. The exporter appends /v1/traces to the URL.
+// The stack's Tempo, which takes OTLP over HTTP. The exporter appends
+// /v1/traces to the URL.
 otelcol.exporter.otlphttp "grafana_cloud" {
 	client {
 		endpoint = sys.env("GRAFANA_TRACES_URL")
