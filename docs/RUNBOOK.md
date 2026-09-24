@@ -290,7 +290,7 @@ prometheus.relabel "host_caddy" {
 }
 ```
 
-Piri pushes its application metrics over OTLP/HTTP to `host.docker.internal:4318`, which is this
+Piri pushes its application metrics and traces over OTLP/HTTP to `host.docker.internal:4318`, which is this
 host's Alloy; the `[telemetry]` section of `nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`
 says so. Before adding a receiver, check whether the host's Alloy already runs one, or whether
 anything else listens on 4318. `systemctl cat alloy` names the configuration file the service runs;
@@ -301,8 +301,13 @@ grep -n 'otelcol.receiver.otlp' /etc/alloy/config.alloy
 ss -ltnp | grep -E ':431[78]\b'
 ```
 
-If there is one already, route its metrics output through the relabel below instead of adding a
-second receiver, and match the FilOne series on `job="piri"` so the host's other senders keep their
+Check the same way for an `otelcol.exporter.otlphttp` or `otelcol.exporter.otlp` that already
+sends traces to Grafana Cloud. The receiver below needs somewhere to send traces, and the push
+credentials the host's Alloy already uses carry `logs:write` and `metrics:write` at most, not the
+`traces:write` a trace push needs.
+
+If there is a receiver already, route its metrics output through the relabel below instead of adding
+a second receiver, and match the FilOne series on `job="piri"` so the host's other senders keep their
 own labels. Otherwise add all of it:
 
 ```alloy
@@ -313,13 +318,48 @@ otelcol.receiver.otlp "filone" {
 
   output {
     metrics = [otelcol.processor.batch.filone.input]
+    traces  = [otelcol.processor.transform.filone_traces.input]
+  }
+}
+
+// Traces stay OTLP to Grafana Cloud, so the appliance labels go on as
+// resource attributes rather than through a Prometheus relabel.
+otelcol.processor.transform "filone_traces" {
+  error_mode = "ignore"
+
+  trace_statements {
+    context    = "resource"
+    statements = [
+      `set(resource.attributes["node"], "staging/eu-central-3")`,
+      `set(resource.attributes["region"], "eu-central-3")`,
+      `set(resource.attributes["appliance"], "staging-eu-central-3")`,
+    ]
+  }
+
+  output {
+    traces = [otelcol.processor.batch.filone.input]
   }
 }
 
 otelcol.processor.batch "filone" {
   output {
     metrics = [otelcol.exporter.prometheus.filone.input]
+    traces  = [otelcol.exporter.otlphttp.grafanacloud_traces.input]
   }
+}
+
+// If the host already has a traces exporter to Grafana Cloud, point the batch
+// processor's traces output at it and leave these two out.
+otelcol.exporter.otlphttp "grafanacloud_traces" {
+  client {
+    endpoint = sys.env("GRAFANA_TRACES_URL")
+    auth     = otelcol.auth.basic.grafanacloud_traces.handler
+  }
+}
+
+otelcol.auth.basic "grafanacloud_traces" {
+  username = sys.env("GRAFANA_TRACES_USER")
+  password = sys.env("GRAFANA_TRACES_TOKEN")
 }
 
 otelcol.exporter.prometheus "filone" {
@@ -350,6 +390,11 @@ prometheus.relabel "filone_piri" {
 }
 ```
 
+`GRAFANA_TRACES_URL` and `GRAFANA_TRACES_USER` are the stack's OTLP endpoint and instance id, the
+same values `nodes/dev/node.env` carries; `GRAFANA_TRACES_TOKEN` is a token with `traces:write`.
+Supply them to the host's Alloy the way it gets its existing Grafana credentials, or write them in
+directly if that is how the host's configuration holds the others.
+
 The receiver listens on every interface because Piri reaches it from the `filone` network through
 the host gateway. UFW, not the bind address, keeps it off the public interface, so confirm that
 `ufw status verbose` shows incoming traffic denied by default before adding it. Bootstrap permits
@@ -359,7 +404,8 @@ the `filone` subnet to reach 4318; a host bootstrapped before that rule existed 
 ufw allow from 172.18.0.0/16 to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
 ```
 
-Piri's series then arrive in Grafana under `job="piri"`; `docs/observability.md` has the queries.
+Piri's series then arrive in Grafana under `job="piri"`, and its traces under `service.name="piri"`;
+`docs/observability.md` has the queries.
 
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
@@ -401,10 +447,14 @@ portal, on the Loki tile and the Prometheus tile, and they differ from each othe
 tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
 the cluster its stack sits on, so another stack pushes elsewhere.
 
-Those four lines are per node, and a node whose host already runs Alloy leaves all four out. The
+Traces go to the stack's OTLP endpoint. Its URL and its user id, which is the stack's own instance
+id and differs from the two above, are on the same page's OpenTelemetry tile, and belong in
+`GRAFANA_TRACES_URL` and `GRAFANA_TRACES_USER`.
+
+Those six lines are per node, and a node whose host already runs Alloy leaves all six out. The
 staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
 and the host
-scripts then neither ask for a Grafana push token nor render an Alloy config. It is all four or
+scripts then neither ask for a Grafana push token nor render an Alloy config. It is all six or
 none. A node.env that sets some of them stops the deploy, because a node missing one id would
 otherwise deploy green and ship nothing.
 
@@ -504,8 +554,8 @@ It asks for the root token, enables the transit engine, creates `region-us-east-
 lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
 overwrites the old one.
 
-The Grafana Cloud token is an access policy token scoped to the stack with `logs:write` and
-`metrics:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
+The Grafana Cloud token is an access policy token scoped to the stack with `logs:write`,
+`metrics:write` and `traces:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
 needs Admin on the org, so ask whoever holds it if the page tells you to.
 
 Certificates are issued on Caddy's first start. If the DNS records have not propagated yet, Caddy

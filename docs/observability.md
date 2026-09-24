@@ -25,9 +25,11 @@ network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy con
 mount, and container health there is read from the journal and the deploy stamp instead.
 Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds.
 
+**Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's OTLP
+endpoint unchanged apart from the node's identity.
+
 **Not shipped.** Ingot's own application metrics; the network interface collector, which
-inside the Alloy container would report the container's namespace rather than the host's; traces.
-Piri has no trace collector configured.
+inside the Alloy container would report the container's namespace rather than the host's.
 
 ## Where to look
 
@@ -35,6 +37,7 @@ Piri has no trace collector configured.
 | ------- | -------------------------------------- | -------------- |
 | Logs    | `grafanacloud-filecoinfoundation-logs` | LogQL          |
 | Metrics | `grafanacloud-filecoinfoundation-prom` | PromQL         |
+| Traces  | the stack's Tempo data source          | TraceQL        |
 
 Both are in Explore. Pick the data source, paste a query below, set the time range.
 
@@ -273,6 +276,22 @@ When each project last deployed, per node:
 ```promql
 deploy_last_success_timestamp{project=~"apps|platform"}
 ```
+
+## Traces
+
+Piri pushes its spans to the same Alloy receiver as its metrics. Alloy does not relabel them into
+Prometheus series; it adds `node`, `region` and `appliance` as resource attributes, under the same
+names and values as the labels above, and sends them on over OTLP. `service.name` stays `piri`, as
+Piri sets it, and `service.instance.id` stays Piri's DID.
+
+Every Piri trace from the staging appliance:
+
+```traceql
+{ resource.service.name = "piri" && resource.node = "staging/eu-central-3" }
+```
+
+Piri records a span only when the request that reached it carries a sampled trace context, so an
+empty result can mean no caller started a trace rather than a broken pipeline.
 
 ## Is the pipeline itself healthy
 

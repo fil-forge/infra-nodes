@@ -1,5 +1,5 @@
 // Telemetry out of the node: journald, container logs, host metrics, the
-// deploy stamp and Piri's OTLP metrics, all pushed to Grafana Cloud.
+// deploy stamp and Piri's OTLP metrics and traces, all pushed to Grafana Cloud.
 //
 // Push-only credentials, so this is a one-way pipe: nothing in Grafana Cloud
 // can reach back into the node.
@@ -208,9 +208,10 @@ prometheus.relabel "caddy" {
 	}
 }
 
-// Piri's application metrics, pushed over OTLP/HTTP to this receiver on the
+// Piri's metrics and traces, pushed over OTLP/HTTP to this receiver on the
 // filone network. compose.yml publishes no port for it, so nothing outside that
-// network reaches it. Piri pushes every 30 seconds; the base config says where.
+// network reaches it. Piri pushes metrics every 30 seconds; the base config says
+// where.
 otelcol.receiver.otlp "apps" {
 	http {
 		endpoint = "0.0.0.0:4318"
@@ -218,13 +219,48 @@ otelcol.receiver.otlp "apps" {
 
 	output {
 		metrics = [otelcol.processor.batch.apps.input]
+		traces  = [otelcol.processor.transform.traces.input]
+	}
+}
+
+// Metrics get their labels from the Prometheus relabel below. Traces stay
+// OTLP all the way to Grafana Cloud, so they carry the node's identity as
+// resource attributes instead, under the same names as the labels.
+otelcol.processor.transform "traces" {
+	error_mode = "ignore"
+
+	trace_statements {
+		context    = "resource"
+		statements = [
+			string.format("set(resource.attributes[\"node\"], %q)", sys.env("FILONE_NODE")),
+			string.format("set(resource.attributes[\"region\"], %q)", sys.env("REGION_LABEL")),
+			string.format("set(resource.attributes[\"appliance\"], %q)", sys.env("APPLIANCE_LABEL")),
+		]
+	}
+
+	output {
+		traces = [otelcol.processor.batch.apps.input]
 	}
 }
 
 otelcol.processor.batch "apps" {
 	output {
 		metrics = [otelcol.exporter.prometheus.apps.input]
+		traces  = [otelcol.exporter.otlphttp.grafana_cloud.input]
 	}
+}
+
+// The stack's OTLP endpoint. The exporter appends /v1/traces to the URL.
+otelcol.exporter.otlphttp "grafana_cloud" {
+	client {
+		endpoint = sys.env("GRAFANA_TRACES_URL")
+		auth     = otelcol.auth.basic.grafana_cloud.handler
+	}
+}
+
+otelcol.auth.basic "grafana_cloud" {
+	username = sys.env("GRAFANA_TRACES_USER")
+	password = sys.env("GRAFANA_PUSH_TOKEN")
 }
 
 // The OTLP-to-Prometheus conversion maps service.name to job and

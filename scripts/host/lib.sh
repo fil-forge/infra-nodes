@@ -96,16 +96,17 @@ require_configured() {
 }
 
 # Whether this node ships its own telemetry, from whether its node.env carries
-# the Grafana Cloud endpoints. A node whose host owns Alloy leaves all four out
+# the Grafana Cloud endpoints. A node whose host owns Alloy leaves all six out
 # and needs no push token; a node that runs Alloy in the platform project has
-# all four and does.
+# all six and does.
 #
-# All four or none. A node.env missing one of them would otherwise deploy as if
+# All six or none. A node.env missing one of them would otherwise deploy as if
 # it shipped nothing, and the operator's first sign of it would be a template
 # complaining about GRAFANA_PUSH_TOKEN several steps later.
 node_ships_telemetry() {
   local name set_names="" unset_names=""
-  for name in GRAFANA_LOGS_URL GRAFANA_LOGS_USER GRAFANA_METRICS_URL GRAFANA_METRICS_USER; do
+  for name in GRAFANA_LOGS_URL GRAFANA_LOGS_USER GRAFANA_METRICS_URL GRAFANA_METRICS_USER \
+    GRAFANA_TRACES_URL GRAFANA_TRACES_USER; do
     if [ -n "${!name:-}" ]; then
       set_names+=" $name"
     else
@@ -116,7 +117,7 @@ node_ships_telemetry() {
   [ -n "$set_names" ] || return 1
   [ -n "$unset_names" ] &&
     die "$FILONE_NODE_DIR/node.env sets$set_names but not$unset_names.
-       Alloy needs all four to push, or none of them for a node whose host ships
+       Alloy needs all six to push, or none of them for a node whose host ships
        its telemetry instead."
   return 0
 }

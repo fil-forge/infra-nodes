@@ -19,10 +19,14 @@ usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 did = "${SPRUE_DID}"
 url = "${SPRUE_URL}"
 
-# OTLP metrics go to the host's Alloy, reached the same way as Lotus. The host
+# OTLP metrics and traces go to the host's Alloy, reached the same way as Lotus. The host
 # Alloy's receiver is configured outside this repository; docs/RUNBOOK.md says
 # what it needs.
 [[telemetry.metrics]]
 endpoint = "host.docker.internal:4318"
 insecure = true
 publish_interval = "30s"
+
+[[telemetry.traces]]
+endpoint = "host.docker.internal:4318"
+insecure = true

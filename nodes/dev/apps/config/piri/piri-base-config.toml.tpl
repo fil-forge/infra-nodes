@@ -38,11 +38,15 @@ usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 did = "${SPRUE_DID}"
 url = "${SPRUE_URL}"
 
-# Piri's OTLP metrics go to the platform project's Alloy, which relabels them and
-# pushes them to Grafana Cloud with everything else this node ships. `alloy` is
-# its Compose service name on the shared filone network; the port is not
-# published. Plain HTTP, because the hop never leaves that network.
+# Piri's OTLP metrics and traces go to the platform project's Alloy, which
+# labels them and pushes them to Grafana Cloud with everything else this node
+# ships. `alloy` is its Compose service name on the shared filone network; the
+# port is not published. Plain HTTP, because the hop never leaves that network.
 [[telemetry.metrics]]
 endpoint = "alloy:4318"
 insecure = true
 publish_interval = "30s"
+
+[[telemetry.traces]]
+endpoint = "alloy:4318"
+insecure = true
