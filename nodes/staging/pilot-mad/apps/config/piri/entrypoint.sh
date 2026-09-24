@@ -6,9 +6,9 @@
 # into the data directory, and `piri serve full` runs from that. This runs init
 # once and serve from then on.
 #
-# Adapted from smelt's staging entrypoint. Same shape, one node instead of a
-# numbered one, and the chain endpoint is the hosted RPC provider from node.env,
-# authenticated with the bearer token the container gets in its environment.
+# Adapted from smelt's staging entrypoint. Same shape, and the chain endpoint is
+# the hosted RPC provider from node.env, authenticated with the bearer token the
+# container gets in its environment.
 set -e
 
 KEY_FILE="/keys/piri.pem"

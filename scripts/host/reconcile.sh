@@ -120,6 +120,31 @@ deploy_apps=0
 if project_is_stale platform "$shared_paths|^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
 if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
 
+# A reboot empties the secrets tmpfs, and no git diff says so. Piri and Ingot
+# bind their keys, their configs and hilt's delegation straight out of it, so
+# the project has to be rendered and recreated again whether or not a commit
+# touched it. Without this the node stays down until the next apps commit.
+#
+# apps.env is the marker: compose cannot run this project without it, and
+# nothing bind-mounts it, so Docker never leaves a directory in its place.
+#
+# The recorded revision goes with it. Rendering happens at the start of the
+# deploy, so the marker is back before the gate, the recreate and the health
+# check have run, and a recovery that fails after that point would look complete
+# to the next pass: the marker is there and no commit has moved, so there would
+# be nothing left to diff. Dropping the revision makes every pass deploy until
+# one of them stamps success.
+#
+# The platform project needs no equivalent. Its containers carry their
+# environment from the moment they were created and come back on their own, and
+# the two env files on the tmpfs are read only by the deploy scripts that write
+# them.
+if [ ! -f "$FILONE_SECRETS_DIR/apps.env" ]; then
+  echo "  the secrets tmpfs is empty, so apps has to be rendered again"
+  rm -f "$FILONE_REVISIONS_DIR/apps"
+  deploy_apps=1
+fi
+
 # --- 4. Renew the local OpenBao token ---------------------------------------
 
 # Every pass, including a pass that deploys nothing. deploy-platform.sh renews
