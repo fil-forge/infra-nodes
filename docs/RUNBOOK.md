@@ -17,13 +17,110 @@ applying, which infra-central's
 [appliance onboarding guide](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md)
 covers.
 
-That guide is the other half of steps 3 and 5 below. Whoever runs infra-central mints the unseal
+That guide is the other half of steps 4 and 6 below. Whoever runs infra-central mints the unseal
 token, supplies the payer address and registers the node; nothing in this repository can do any of
 that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-### The eu-central-3 staging appliance on Servers.com
+A node's host decides how it is built. Terraform creates the dev node's EC2 host, which you then
+provision over SSM. The eu-central-3 appliance is bare metal that already runs Lotus, Caddy and
+Alloy; Terraform only points DNS at it. Each stage has one node today, so step 3 names both — but
+hosting is what decides, not stage.
+
+Steps 1 and 2 are the same for any node. Step 3 is where they differ. Steps 4 to 7 are one
+procedure run with the values step 3 establishes.
+
+### 1. The state bucket, once per account
+
+```sh
+cd terraform/envs/bootstrap/nonprod
+```
+
+This root keeps its state in the bucket it creates, so the first apply cannot use the S3 backend.
+Comment out the `backend "s3"` block in `versions.tofu`, apply against the local backend, restore the
+block, and migrate:
+
+```sh
+tofu init
+tofu apply
+# restore the backend block, then:
+tofu init -migrate-state
+```
+
+Every root after this one is ordinary: `tofu init` and go.
+
+### 2. The node.env values
+
+`nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
+those accounts rather than anything in this repository. They are set for dev. A node added later
+needs its own copy of them, and the deploys in steps 5 and 6 refuse to run while any is still the
+placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
+`origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
+
+`GRAFANA_LOGS_USER` and `GRAFANA_METRICS_USER` are the Loki and Prometheus instance ids of the
+Grafana Cloud stack the node ships to. Both are on the stack's details page in the Grafana Cloud
+portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
+tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
+the cluster its stack sits on, so another stack pushes elsewhere.
+
+Traces go to the stack's Tempo, which accepts OTLP over HTTP on its own host. Its user id is
+Tempo's instance id, which differs from the two above and belongs in `GRAFANA_TRACES_USER`. Without
+portal access it can be read from Grafana itself: the stack's traces data source, under
+**Connections -> Data sources**, shows it as the basic authentication user, and its URL names the
+Tempo host. `GRAFANA_TRACES_URL` is that host on port 443 with no path, as in
+`https://tempo-us-central1.grafana.net:443`; the exporter appends `/v1/traces`.
+
+Those six lines are per node, and a node whose host already runs Alloy leaves all six out. The
+staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
+and the host
+scripts then neither ask for a Grafana push token nor render an Alloy config. It is all six or
+none. A node.env that sets some of them stops the deploy, because a node missing one id would
+otherwise deploy green and ship nothing.
+
+`PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
+Only the central account can read it, so ask whoever runs infra-central; their runbook says where
+they get it. It is a public address, so any channel will do.
+
+### 3. The node's host
+
+Everything before this step is the same for any node; everything after it is the same procedure run
+with this node's own values:
+
+| | dev | eu-central-3 |
+|---|---|---|
+| `STAGE` | `dev` | `staging` |
+| `REGION` | `us-east-9` | `eu-central-3` |
+| `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` |
+| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | SSH as root |
+| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
+| Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
+| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | neither: Lotus RPC is local and unauthenticated, Alloy is the host's |
+
+#### The dev node on EC2
+
+```sh
+tofu -chdir=terraform/envs/dev init
+tofu -chdir=terraform/envs/dev apply
+```
+
+This creates the VM, both volumes, the Elastic IP, the security group, the DNS records and the IAM
+role, and hands cloud-init the bootstrap script. Bootstrap takes two to three minutes after the
+apply returns.
+
+Check it finished:
+
+```sh
+scripts/operator/ssm-session.sh dev
+sudo -i
+cat /etc/fil-one/bootstrap-complete     # a timestamp; absent means bootstrap died
+tail -50 /var/log/filone-bootstrap.log
+findmnt /mnt/fil-one/control
+findmnt /mnt/fil-one/data
+docker network ls | grep filone
+```
+
+#### The eu-central-3 staging appliance on Servers.com
 
 The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
 and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
@@ -424,102 +521,13 @@ starts without a saved position and re-ships the container's retained Docker log
 once under the new labels. Once the FilOne containers run, `{service_name="appliance-staging-eu-central-3-piri"}`
 in Loki shows Piri's entries.
 
-At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
-staging `wallet_addresses` payer address and commit it to
-`nodes/staging/eu-central-3/node.env`.
-Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
-`NODE_IP=23.83.66.244`. On the host run `provision-platform.sh`, saving the
-OpenBao recovery key and root token, then provide the wrapping token. Staging
-uses its local unauthenticated Lotus RPC and the host-owned Alloy service, so it
-does not ask for a Chain.Love or Grafana token.
+At infra-central, confirm `eu-central-3` is in `appliance_regions` and get the staging
+`wallet_addresses` payer address for this node's `PAYER_ADDRESS`.
 
-Run `onboarding-request.sh`, fund its printed Piri owner wallet with
-Calibration testnet FIL, and send its DID, URL and proof to infra-central. Run
-`onboard-appliance` there for `staging/eu-central-3`, install its returned
-Ingot proof with `store-hilt-proof.sh`, then run `provision-apps.sh`. Enable
-both FilOne timers and check public Piri, Ingot, the status document and an
-OpenBao restart/unseal. Finish with:
+### 4. The unseal token
 
-```sh
-scripts/ci/smoke-test.sh staging/eu-central-3
-```
-
-`nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
-those accounts rather than anything in this repository. They are set for dev. A node added later
-needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
-placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
-`origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
-
-`GRAFANA_LOGS_USER` and `GRAFANA_METRICS_USER` are the Loki and Prometheus instance ids of the
-Grafana Cloud stack the node ships to. Both are on the stack's details page in the Grafana Cloud
-portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
-tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
-the cluster its stack sits on, so another stack pushes elsewhere.
-
-Traces go to the stack's Tempo, which accepts OTLP over HTTP on its own host. Its user id is
-Tempo's instance id, which differs from the two above and belongs in `GRAFANA_TRACES_USER`. Without
-portal access it can be read from Grafana itself: the stack's traces data source, under
-**Connections -> Data sources**, shows it as the basic authentication user, and its URL names the
-Tempo host. `GRAFANA_TRACES_URL` is that host on port 443 with no path, as in
-`https://tempo-us-central1.grafana.net:443`; the exporter appends `/v1/traces`.
-
-Those six lines are per node, and a node whose host already runs Alloy leaves all six out. The
-staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
-and the host
-scripts then neither ask for a Grafana push token nor render an Alloy config. It is all six or
-none. A node.env that sets some of them stops the deploy, because a node missing one id would
-otherwise deploy green and ship nothing.
-
-`PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
-Only the central account can read it, so ask whoever runs infra-central; their runbook says where
-they get it. It is a public address, so any channel will do.
-
-### 1. The state bucket, once per account
-
-```sh
-cd terraform/envs/bootstrap/nonprod
-```
-
-This root keeps its state in the bucket it creates, so the first apply cannot use the S3 backend.
-Comment out the `backend "s3"` block in `versions.tofu`, apply against the local backend, restore the
-block, and migrate:
-
-```sh
-tofu init
-tofu apply
-# restore the backend block, then:
-tofu init -migrate-state
-```
-
-Every root after this one is ordinary: `tofu init` and go.
-
-### 2. The node
-
-```sh
-tofu -chdir=terraform/envs/dev init
-tofu -chdir=terraform/envs/dev apply
-```
-
-This creates the VM, both volumes, the Elastic IP, the security group, the DNS records and the IAM
-role, and hands cloud-init the bootstrap script. Bootstrap takes two to three minutes after the
-apply returns.
-
-Check it finished:
-
-```sh
-scripts/operator/ssm-session.sh dev
-sudo -i
-cat /etc/fil-one/bootstrap-complete     # a timestamp; absent means bootstrap died
-tail -50 /var/log/filone-bootstrap.log
-findmnt /mnt/fil-one/control
-findmnt /mnt/fil-one/data
-docker network ls | grep filone
-```
-
-### 3. The unseal token
-
-Central mints it, and only now: the token is bound to the address the apply just allocated. The
-apply printed the Elastic IP; to read it again:
+Central mints it, and only now: the token is bound to the node's address. For the appliance that is
+its host's fixed address. For dev it is the Elastic IP the apply allocated; to read it again:
 
 ```sh
 tofu -chdir=terraform/envs/dev output -raw public_ip
@@ -528,18 +536,18 @@ tofu -chdir=terraform/envs/dev output -raw public_ip
 Send that address to whoever runs infra-central, and they run
 
 ```sh
-make mint-appliance-token STAGE=dev REGION=us-east-9 NODE_IP=<the elastic ip>
+make mint-appliance-token STAGE=<stage> REGION=<region> NODE_IP=<the address>
 ```
 
 What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
-inside the central OpenBao until the node claims it in step 4. The wrapping token can be spent once
+inside the central OpenBao until the node claims it in step 5. The wrapping token can be spent once
 and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
 better.
 
-### 4. The platform
+### 5. The platform
 
-In an SSM session on the node, as root (`sudo -i`), in the checkout at `/opt/fil-one/infra-nodes`.
-The rest of the bring-up runs in this shell.
+Open a shell on the node as root, in its checkout; step 3 gives both for each node. The rest of
+the bring-up runs in this shell.
 
 ```sh
 scripts/host/provision-platform.sh
@@ -552,8 +560,8 @@ neither, the only way back into this OpenBao is to rebuild the node and re-onboa
 
 It then asks for the root token back twice, to create the deploy token and the KV mount and then the
 region key Ingot encrypts objects under; installs the identity tooling (ucantool and cast, pinned in
-`nodes/dev/node.env`); generates the node's keys; asks for the chain.love and Grafana Cloud tokens;
-and starts Postgres, Caddy and Alloy.
+the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
+that node needs; and starts its platform services. Step 3 says which, for each node.
 
 A node provisioned before the region key existed gets it from a separate run of the same steps:
 
@@ -561,7 +569,7 @@ A node provisioned before the region key existed gets it from a separate run of 
 scripts/host/provision-regionkey.sh
 ```
 
-It asks for the root token, enables the transit engine, creates `region-us-east-9`, writes the
+It asks for the root token, enables the transit engine, creates the node's transit key (`region-us-east-9` on dev), writes the
 `ingot-regionkey` policy and mints the token Ingot holds. Re-running it is also how a revoked or
 lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
 overwrites the old one.
@@ -573,7 +581,7 @@ needs Admin on the org, so ask whoever holds it if the page tells you to.
 Certificates are issued on Caddy's first start. If the DNS records have not propagated yet, Caddy
 retries and the deploy's health gate may time out; re-running `deploy-platform.sh` is safe.
 
-### 5. Onboarding, then the apps
+### 6. Onboarding, then the apps
 
 On the node:
 
@@ -633,9 +641,9 @@ visible as it happens. Later runs skip init and print nothing extra.
 Caddy serves the node status document.
 
 It then installs the systemd units from the checkout, so the timers below exist whatever revision
-cloud-init bootstrapped the box from.
+the box was bootstrapped from.
 
-### 6. The timers
+### 7. The timers
 
 ```sh
 systemctl enable --now filone-reconcile.timer
@@ -644,7 +652,13 @@ systemctl list-timers | grep filone
 ```
 
 From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
-`/etc/fil-one/node.conf` names, which cloud-init writes as `main`.
+`/etc/fil-one/node.conf` names, which bootstrap writes as `main`.
+
+Finish with the node's smoke test:
+
+```sh
+scripts/ci/smoke-test.sh <node>          # `dev`, or `staging/eu-central-3`
+```
 
 ## Day-to-day operations
 
@@ -803,7 +817,7 @@ for a new wrapping token.
 from the delegator's allow list and to deregister or zero-weight the old provider at sprue. hilt's
 provider row is keyed by the Ingot DID, which the rebuild does not change, so it stays as it is.
 
-**3. Onboard the new Piri DID.** [Step 5](#5-onboarding-then-the-apps) again, then
+**3. Onboard the new Piri DID.** [Step 6](#6-onboarding-then-the-apps) again, then
 `provision-apps.sh` and the timers. hilt's delegation to Ingot is unchanged and central still holds
 it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and store it with
 `store-hilt-proof.sh`: the rebuilt OpenBao has no copy of it.
@@ -876,7 +890,7 @@ the address the stage's signing service pays from, and commit it to `nodes/dev/n
 
 **Piri crash-loops on `wallet balance is too low`.** The owner wallet holds less than the 5 tFIL
 provider registration sends to the registry. Fund it with at least 6, as [step
-5](#5-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
+6](#6-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
 because the 5 is the transaction's value and the gas comes out of the same wallet.
 
 **Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
