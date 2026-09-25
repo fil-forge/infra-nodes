@@ -42,10 +42,16 @@ url = "${SPRUE_URL}"
 # labels them and pushes them to Grafana Cloud with everything else this node
 # ships. `alloy` is its Compose service name on the shared filone network; the
 # port is not published. Plain HTTP, because the hop never leaves that network.
+# `environment` becomes the deployment.environment.name resource attribute, and
+# so the deployment_environment_name label on target_info. Piri otherwise takes
+# it from the configured network, which a base-config node has none of.
+[telemetry]
+environment = "${STAGE}"
+
 [[telemetry.metrics]]
 endpoint = "alloy:4318"
 insecure = true
-publish_interval = "30s"
+publish_interval = "10s"
 
 [[telemetry.traces]]
 endpoint = "alloy:4318"
