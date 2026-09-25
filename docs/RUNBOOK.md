@@ -25,9 +25,10 @@ that, and nothing in that one can read this node's keys.
 
 Two paths, and a node takes one of them. An EC2 node is built from this repository's
 Terraform and provisioned over SSM; the eu-central-3 staging appliance is bare metal whose
-host already owns Lotus, Caddy and Alloy. Both need the `node.env` values below.
+host already owns Lotus, Caddy and Alloy. Both start from a `node.env`, described below; which of
+its values a node needs depends on which path it takes.
 
-### The values every node.env needs
+### The node.env values
 
 `nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
 those accounts rather than anything in this repository. They are set for dev. A node added later
