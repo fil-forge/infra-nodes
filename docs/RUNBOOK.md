@@ -23,14 +23,12 @@ that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-Two paths, and a node takes the one its host dictates. The dev node is EC2, created by this
-repository's Terraform and provisioned over SSM; the eu-central-3 staging appliance is bare metal
-at Servers.com, whose host already owns Lotus, Caddy and Alloy and where Terraform only points DNS.
-There is one node per stage today, so the headings below name both the node and its host — but a
-node added later belongs to a section by where it is hosted, not by its stage.
+A node's host decides which path it takes. Terraform creates the dev node's EC2 host, which you
+then provision over SSM. The eu-central-3 appliance is bare metal that already runs Lotus, Caddy
+and Alloy; Terraform only points DNS at it. Each stage has one node today, so the headings name
+both — but hosting decides, not stage.
 
-Both start from a `node.env`, described below; which of its values a node needs depends on which
-path it takes.
+Both start from a `node.env`; which of its values a node needs depends on the path.
 
 ### The node.env values
 
