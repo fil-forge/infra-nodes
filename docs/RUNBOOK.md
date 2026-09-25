@@ -23,10 +23,14 @@ that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-Two paths, and a node takes one of them. An EC2 node is built from this repository's
-Terraform and provisioned over SSM; the eu-central-3 staging appliance is bare metal whose
-host already owns Lotus, Caddy and Alloy. Both start from a `node.env`, described below; which of
-its values a node needs depends on which path it takes.
+Two paths, and a node takes the one its host dictates. The dev node is EC2, created by this
+repository's Terraform and provisioned over SSM; the eu-central-3 staging appliance is bare metal
+at Servers.com, whose host already owns Lotus, Caddy and Alloy and where Terraform only points DNS.
+There is one node per stage today, so the headings below name both the node and its host — but a
+node added later belongs to a section by where it is hosted, not by its stage.
+
+Both start from a `node.env`, described below; which of its values a node needs depends on which
+path it takes.
 
 ### The node.env values
 
@@ -60,7 +64,7 @@ otherwise deploy green and ship nothing.
 Only the central account can read it, so ask whoever runs infra-central; their runbook says where
 they get it. It is a public address, so any channel will do.
 
-### An EC2 node, such as dev
+### The dev node on EC2
 
 #### 1. The state bucket, once per account
 
