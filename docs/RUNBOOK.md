@@ -17,24 +17,44 @@ applying, which infra-central's
 [appliance onboarding guide](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md)
 covers.
 
-That guide is the other half of steps 3 and 5 below. Whoever runs infra-central mints the unseal
+That guide is the other half of steps 4 and 6 below. Whoever runs infra-central mints the unseal
 token, supplies the payer address and registers the node; nothing in this repository can do any of
 that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-A node's host decides which path it takes. Terraform creates the dev node's EC2 host, which you
-then provision over SSM. The eu-central-3 appliance is bare metal that already runs Lotus, Caddy
-and Alloy; Terraform only points DNS at it. Each stage has one node today, so the headings name
-both — but hosting decides, not stage.
+A node's host decides how it is built. Terraform creates the dev node's EC2 host, which you then
+provision over SSM. The eu-central-3 appliance is bare metal that already runs Lotus, Caddy and
+Alloy; Terraform only points DNS at it. Each stage has one node today, so step 3 names both — but
+hosting is what decides, not stage.
 
-Both start from a `node.env`; which of its values a node needs depends on the path.
+Steps 1 and 2 are the same for any node. Step 3 is where they differ. Steps 4 to 7 are one
+procedure run with the values step 3 establishes.
 
-### The node.env values
+### 1. The state bucket, once per account
+
+```sh
+cd terraform/envs/bootstrap/nonprod
+```
+
+This root keeps its state in the bucket it creates, so the first apply cannot use the S3 backend.
+Comment out the `backend "s3"` block in `versions.tofu`, apply against the local backend, restore the
+block, and migrate:
+
+```sh
+tofu init
+tofu apply
+# restore the backend block, then:
+tofu init -migrate-state
+```
+
+Every root after this one is ordinary: `tofu init` and go.
+
+### 2. The node.env values
 
 `nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
 those accounts rather than anything in this repository. They are set for dev. A node added later
-needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
+needs its own copy of them, and the deploys in steps 5 and 6 refuse to run while any is still the
 placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
 `origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
 
@@ -62,28 +82,22 @@ otherwise deploy green and ship nothing.
 Only the central account can read it, so ask whoever runs infra-central; their runbook says where
 they get it. It is a public address, so any channel will do.
 
-### The dev node on EC2
+### 3. The node's host
 
-#### 1. The state bucket, once per account
+Everything before this step is the same for any node; everything after it is the same procedure run
+with this node's own values:
 
-```sh
-cd terraform/envs/bootstrap/nonprod
-```
+| | dev | eu-central-3 |
+|---|---|---|
+| `STAGE` | `dev` | `staging` |
+| `REGION` | `us-east-9` | `eu-central-3` |
+| `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` |
+| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | SSH as root |
+| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
+| Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
+| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | neither: Lotus RPC is local and unauthenticated, Alloy is the host's |
 
-This root keeps its state in the bucket it creates, so the first apply cannot use the S3 backend.
-Comment out the `backend "s3"` block in `versions.tofu`, apply against the local backend, restore the
-block, and migrate:
-
-```sh
-tofu init
-tofu apply
-# restore the backend block, then:
-tofu init -migrate-state
-```
-
-Every root after this one is ordinary: `tofu init` and go.
-
-#### 2. The node
+#### The dev node on EC2
 
 ```sh
 tofu -chdir=terraform/envs/dev init
@@ -106,137 +120,7 @@ findmnt /mnt/fil-one/data
 docker network ls | grep filone
 ```
 
-#### 3. The unseal token
-
-Central mints it, and only now: the token is bound to the address the apply just allocated. The
-apply printed the Elastic IP; to read it again:
-
-```sh
-tofu -chdir=terraform/envs/dev output -raw public_ip
-```
-
-Send that address to whoever runs infra-central, and they run
-
-```sh
-make mint-appliance-token STAGE=dev REGION=us-east-9 NODE_IP=<the elastic ip>
-```
-
-What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
-inside the central OpenBao until the node claims it in step 4. The wrapping token can be spent once
-and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
-better.
-
-#### 4. The platform
-
-In an SSM session on the node, as root (`sudo -i`), in the checkout at `/opt/fil-one/infra-nodes`.
-The rest of the bring-up runs in this shell.
-
-```sh
-scripts/host/provision-platform.sh
-```
-
-It asks for the wrapping token, exchanges it at central for the unseal token, initialises OpenBao,
-and prints **one recovery key and one root token**.
-Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
-neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
-
-It then asks for the root token back twice, to create the deploy token and the KV mount and then the
-region key Ingot encrypts objects under; installs the identity tooling (ucantool and cast, pinned in
-`nodes/dev/node.env`); generates the node's keys; asks for the chain.love and Grafana Cloud tokens;
-and starts Postgres, Caddy and Alloy.
-
-A node provisioned before the region key existed gets it from a separate run of the same steps:
-
-```sh
-scripts/host/provision-regionkey.sh
-```
-
-It asks for the root token, enables the transit engine, creates `region-us-east-9`, writes the
-`ingot-regionkey` policy and mints the token Ingot holds. Re-running it is also how a revoked or
-lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
-overwrites the old one.
-
-The Grafana Cloud token is an access policy token scoped to the stack with `logs:write`,
-`metrics:write` and `traces:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
-needs Admin on the org, so ask whoever holds it if the page tells you to.
-
-Certificates are issued on Caddy's first start. If the DNS records have not propagated yet, Caddy
-retries and the deploy's health gate may time out; re-running `deploy-platform.sh` is safe.
-
-#### 5. Onboarding, then the apps
-
-On the node:
-
-```sh
-scripts/host/onboarding-request.sh
-```
-
-It prints the node's Piri DID, its public URL and the delegation it signed with its own Piri key,
-in the form central's `make onboard-appliance` takes. Send that to whoever runs infra-central. The
-Ingot identity is not in it: central derives the same did:web from the stage's domain, so there is
-nothing to mistype. The script prints it anyway, because the node has to be configured with the
-matching string — `INGOT_DID` in `nodes/<node>/node.env`, which `deploy-apps.sh` renders into
-Ingot's `identity.service_id`. Central's delegation is addressed to that DID, and a mismatch shows
-up only when Ingot's first S3 call is refused.
-
-While central works on that, fund the node's owner wallet. Piri registers itself in the provider
-registry on its first start, and that transaction sends 5 tFIL from this wallet, so send it at least
-6 from a Calibration faucet. The address is printed by `onboarding-request.sh`, and also readable
-directly:
-
-```sh
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-  filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri
-```
-
-This is the only thing the node ever pays for. Proofs are paid by the central signing service from
-`PAYER_ADDRESS`.
-
-Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
-onboarding only central can sign. It lands on your machine, and there is no SSH on the node to copy
-it across, so pass it to `store-hilt-proof.sh` over stdin:
-
-```sh
-scripts/host/store-hilt-proof.sh -
-```
-
-Paste the delegation, press Enter, then Ctrl-D. It is a single line short enough to paste, and the
-script strips whitespace, so the extra newline does no harm. Then start the apps:
-
-```sh
-scripts/host/provision-apps.sh
-```
-
-A second onboarding run at central is safe. It performs only what is missing and returns the same
-delegation byte for byte, so a node that lost its copy can ask for it again.
-
-Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means the
-node's DID is not on the delegator's allow list, which means onboarding did not complete.
-
-That first start also registers the provider and creates the proof set, and waits for both
-transactions to land, which takes minutes. The first `provision-apps.sh` prints Piri's own log while
-it waits, prefixed `piri |`, so a registration or a proof-set transaction that never confirms is
-visible as it happens. Later runs skip init and print nothing extra.
-
-`provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
-`/readyz`, Ingot answers `/health`, both hostnames serve over HTTPS with issued certificates, and
-Caddy serves the node status document.
-
-It then installs the systemd units from the checkout, so the timers below exist whatever revision
-cloud-init bootstrapped the box from.
-
-#### 6. The timers
-
-```sh
-systemctl enable --now filone-reconcile.timer
-systemctl enable --now filone-seal-token-renew.timer
-systemctl list-timers | grep filone
-```
-
-From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
-`/etc/fil-one/node.conf` names, which cloud-init writes as `main`.
-
-### The eu-central-3 staging appliance on Servers.com
+#### The eu-central-3 staging appliance on Servers.com
 
 The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
 and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
@@ -637,24 +521,143 @@ starts without a saved position and re-ships the container's retained Docker log
 once under the new labels. Once the FilOne containers run, `{service_name="appliance-staging-eu-central-3-piri"}`
 in Loki shows Piri's entries.
 
-At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
-staging `wallet_addresses` payer address and commit it to
-`nodes/staging/eu-central-3/node.env`.
-Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
-`NODE_IP=23.83.66.244`. On the host run `provision-platform.sh`, saving the
-OpenBao recovery key and root token, then provide the wrapping token. Staging
-uses its local unauthenticated Lotus RPC and the host-owned Alloy service, so it
-does not ask for a Chain.Love or Grafana token.
+At infra-central, confirm `eu-central-3` is in `appliance_regions` and get the staging
+`wallet_addresses` payer address for this node's `PAYER_ADDRESS`.
 
-Run `onboarding-request.sh`, fund its printed Piri owner wallet with
-Calibration testnet FIL, and send its DID, URL and proof to infra-central. Run
-`onboard-appliance` there for `staging/eu-central-3`, install its returned
-Ingot proof with `store-hilt-proof.sh`, then run `provision-apps.sh`. Enable
-both FilOne timers and check public Piri, Ingot, the status document and an
-OpenBao restart/unseal. Finish with:
+### 4. The unseal token
+
+Central mints it, and only now: the token is bound to the node's address. For the appliance that is
+its host's fixed address. For dev it is the Elastic IP the apply allocated; to read it again:
 
 ```sh
-scripts/ci/smoke-test.sh staging/eu-central-3
+tofu -chdir=terraform/envs/dev output -raw public_ip
+```
+
+Send that address to whoever runs infra-central, and they run
+
+```sh
+make mint-appliance-token STAGE=<stage> REGION=<region> NODE_IP=<the address>
+```
+
+What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
+inside the central OpenBao until the node claims it in step 5. The wrapping token can be spent once
+and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
+better.
+
+### 5. The platform
+
+Open a shell on the node as root, in its checkout; step 3 gives both for each node. The rest of
+the bring-up runs in this shell.
+
+```sh
+scripts/host/provision-platform.sh
+```
+
+It asks for the wrapping token, exchanges it at central for the unseal token, initialises OpenBao,
+and prints **one recovery key and one root token**.
+Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
+neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
+
+It then asks for the root token back twice, to create the deploy token and the KV mount and then the
+region key Ingot encrypts objects under; installs the identity tooling (ucantool and cast, pinned in
+the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
+that node needs; and starts its platform services. Step 3 says which, for each node.
+
+A node provisioned before the region key existed gets it from a separate run of the same steps:
+
+```sh
+scripts/host/provision-regionkey.sh
+```
+
+It asks for the root token, enables the transit engine, creates the node's transit key (`region-us-east-9` on dev), writes the
+`ingot-regionkey` policy and mints the token Ingot holds. Re-running it is also how a revoked or
+lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
+overwrites the old one.
+
+The Grafana Cloud token is an access policy token scoped to the stack with `logs:write`,
+`metrics:write` and `traces:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
+needs Admin on the org, so ask whoever holds it if the page tells you to.
+
+Certificates are issued on Caddy's first start. If the DNS records have not propagated yet, Caddy
+retries and the deploy's health gate may time out; re-running `deploy-platform.sh` is safe.
+
+### 6. Onboarding, then the apps
+
+On the node:
+
+```sh
+scripts/host/onboarding-request.sh
+```
+
+It prints the node's Piri DID, its public URL and the delegation it signed with its own Piri key,
+in the form central's `make onboard-appliance` takes. Send that to whoever runs infra-central. The
+Ingot identity is not in it: central derives the same did:web from the stage's domain, so there is
+nothing to mistype. The script prints it anyway, because the node has to be configured with the
+matching string — `INGOT_DID` in `nodes/<node>/node.env`, which `deploy-apps.sh` renders into
+Ingot's `identity.service_id`. Central's delegation is addressed to that DID, and a mismatch shows
+up only when Ingot's first S3 call is refused.
+
+While central works on that, fund the node's owner wallet. Piri registers itself in the provider
+registry on its first start, and that transaction sends 5 tFIL from this wallet, so send it at least
+6 from a Calibration faucet. The address is printed by `onboarding-request.sh`, and also readable
+directly:
+
+```sh
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
+  filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri
+```
+
+This is the only thing the node ever pays for. Proofs are paid by the central signing service from
+`PAYER_ADDRESS`.
+
+Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
+onboarding only central can sign. It lands on your machine, and there is no SSH on the node to copy
+it across, so pass it to `store-hilt-proof.sh` over stdin:
+
+```sh
+scripts/host/store-hilt-proof.sh -
+```
+
+Paste the delegation, press Enter, then Ctrl-D. It is a single line short enough to paste, and the
+script strips whitespace, so the extra newline does no harm. Then start the apps:
+
+```sh
+scripts/host/provision-apps.sh
+```
+
+A second onboarding run at central is safe. It performs only what is missing and returns the same
+delegation byte for byte, so a node that lost its copy can ask for it again.
+
+Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means the
+node's DID is not on the delegator's allow list, which means onboarding did not complete.
+
+That first start also registers the provider and creates the proof set, and waits for both
+transactions to land, which takes minutes. The first `provision-apps.sh` prints Piri's own log while
+it waits, prefixed `piri |`, so a registration or a proof-set transaction that never confirms is
+visible as it happens. Later runs skip init and print nothing extra.
+
+`provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
+`/readyz`, Ingot answers `/health`, both hostnames serve over HTTPS with issued certificates, and
+Caddy serves the node status document.
+
+It then installs the systemd units from the checkout, so the timers below exist whatever revision
+the box was bootstrapped from.
+
+### 7. The timers
+
+```sh
+systemctl enable --now filone-reconcile.timer
+systemctl enable --now filone-seal-token-renew.timer
+systemctl list-timers | grep filone
+```
+
+From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
+`/etc/fil-one/node.conf` names, which bootstrap writes as `main`.
+
+Finish with the node's smoke test:
+
+```sh
+scripts/ci/smoke-test.sh <node>          # `dev`, or `staging/eu-central-3`
 ```
 
 ## Day-to-day operations
@@ -814,7 +817,7 @@ for a new wrapping token.
 from the delegator's allow list and to deregister or zero-weight the old provider at sprue. hilt's
 provider row is keyed by the Ingot DID, which the rebuild does not change, so it stays as it is.
 
-**3. Onboard the new Piri DID.** [Step 5](#5-onboarding-then-the-apps) again, then
+**3. Onboard the new Piri DID.** [Step 6](#6-onboarding-then-the-apps) again, then
 `provision-apps.sh` and the timers. hilt's delegation to Ingot is unchanged and central still holds
 it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and store it with
 `store-hilt-proof.sh`: the rebuilt OpenBao has no copy of it.
@@ -887,7 +890,7 @@ the address the stage's signing service pays from, and commit it to `nodes/dev/n
 
 **Piri crash-loops on `wallet balance is too low`.** The owner wallet holds less than the 5 tFIL
 provider registration sends to the registry. Fund it with at least 6, as [step
-5](#5-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
+6](#6-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
 because the 5 is the transaction's value and the gas comes out of the same wallet.
 
 **Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
