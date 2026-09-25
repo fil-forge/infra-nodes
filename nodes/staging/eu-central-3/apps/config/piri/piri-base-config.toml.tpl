@@ -22,6 +22,12 @@ url = "${SPRUE_URL}"
 # OTLP metrics and traces go to the host's Alloy, reached the same way as Lotus. The host
 # Alloy's receiver is configured outside this repository; docs/RUNBOOK.md says
 # what it needs.
+# `environment` becomes the deployment.environment.name resource attribute, and
+# so the deployment_environment_name label on target_info. Piri otherwise takes
+# it from the configured network, which a base-config node has none of.
+[telemetry]
+environment = "${STAGE}"
+
 [[telemetry.metrics]]
 endpoint = "host.docker.internal:4318"
 insecure = true
