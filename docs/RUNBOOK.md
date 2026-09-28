@@ -913,12 +913,20 @@ OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri s
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
 `docker inspect filone-piri` shows its environment.
 
-**The node rebooted.** Piri and Ingot stay down until the first reconcile pass, five minutes after
-boot, and that is expected. Their keys and rendered configs live on a tmpfs that a reboot empties,
-and Docker restarts both containers before anything has rendered them again, so each restart fails
-on a missing bind-mount source. The pass renders the files, waits for the proving window, and
-recreates both containers. If the apps are still down after it, `journalctl -u
-filone-reconcile.service -n 200` says why.
+**The node rebooted.** Piri and Ingot come back down, and stay down until an apps deploy runs. Their
+keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts both containers
+before anything has rendered them again, so each restart fails on a missing bind-mount source.
+Reconcile does not notice: it deploys a project only when a commit has touched it since the last
+deploy, and the deployed revision is on the control volume, so a reboot leaves nothing to do. The
+hourly smoke test reports the node not answering within the hour. Render and start the apps by hand:
+
+```sh
+scripts/host/deploy-apps.sh
+```
+
+The next commit that touches the apps project, an image bump included, would do the same on its own.
+Platform comes back by itself: OpenBao carries its seal token in its environment and unseals against
+central without any file from the tmpfs.
 
 A Piri that instead logs `read /keys/piri.pem: is a directory` is on a node whose compose file lets
 Docker create a missing bind-mount source. Docker puts an empty directory where the file belongs,
