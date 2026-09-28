@@ -442,8 +442,8 @@ on 4317 or 4318. All three empty is the usual case: add the whole snippet in ste
   `otelcol.receiver.otlp` block out, send the existing receiver's metrics output to
   `otelcol.processor.batch.filone.input` as well as wherever it goes now, and route its traces
   output to `otelcol.processor.transform.filone_traces.input` instead of wherever it goes now. The
-  relabel keeps only `job="piri"` and the transform only labels `service.name="piri"`, so the host's
-  other senders pass through untouched; sending traces both ways would export them twice.
+  relabel keeps only `job="piri"` and the transform only labels `service.name` `piri` and `ingot`,
+  so the host's other senders pass through untouched; sending traces both ways would export them twice.
 - **A traces exporter to Grafana Cloud is already there.** Leave the snippet's
   `otelcol.exporter.otlp` and `otelcol.auth.basic` blocks out, point the batch processor's
   `traces` output at the existing exporter, and skip step 4.
@@ -513,9 +513,9 @@ otelcol.processor.transform "filone_traces" {
   trace_statements {
     context    = "resource"
     statements = [
-      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.name"] == "piri"`,
-      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.name"] == "piri"`,
-      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.name"] == "piri"`,
+      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
+      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
+      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
     ]
   }
 
@@ -619,6 +619,13 @@ missing; `connection refused` means Alloy is not listening on 4318.
 Piri's series then arrive in Grafana under `job="piri"` and its traces under `service.name="piri"`,
 once Piri runs an image carrying [fil-forge/piri#131](https://github.com/fil-forge/piri/pull/131)
 and its generated config has a `[telemetry]` section; `docs/observability.md` has the queries.
+
+Ingot sends its traces the same way, over OTLP/HTTP to `host.docker.internal:4318`, from the
+`OTEL_EXPORTER_OTLP_ENDPOINT` in `nodes/staging/eu-central-3/apps/compose.yml`, and the transform
+labels them like Piri's; they arrive under `service.name="ingot"`. Ingot emits no metrics yet, and
+the relabel would drop them if it did: it keeps only `job="piri"`. On a host whose transform
+predates Ingot, the three statements end at `== "piri"`; extend each to the `or` form above, then
+validate and restart as in step 7.
 
 ### 4. The unseal token
 
