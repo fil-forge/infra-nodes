@@ -246,13 +246,14 @@ otelcol.processor.transform "traces" {
 otelcol.processor.batch "apps" {
 	output {
 		metrics = [otelcol.exporter.prometheus.apps.input]
-		traces  = [otelcol.exporter.otlphttp.grafana_cloud.input]
+		traces  = [otelcol.exporter.otlp.grafana_cloud.input]
 	}
 }
 
-// The stack's Tempo, which takes OTLP over HTTP. The exporter appends
-// /v1/traces to the URL.
-otelcol.exporter.otlphttp "grafana_cloud" {
+// The stack's Tempo, which takes OTLP over gRPC, with TLS, at the host and port
+// in GRAFANA_TRACES_URL. OTLP over HTTP to the same host gets a 404, which the
+// exporter reports as Unimplemented and drops without retrying.
+otelcol.exporter.otlp "grafana_cloud" {
 	client {
 		endpoint = sys.env("GRAFANA_TRACES_URL")
 		auth     = otelcol.auth.basic.grafana_cloud.handler
