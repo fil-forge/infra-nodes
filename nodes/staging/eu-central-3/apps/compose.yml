@@ -25,8 +25,8 @@ services:
       # here survives a reboot, so when Docker restarts this container at boot
       # the files are missing. create_host_path: false makes that a start that
       # fails; the default would put an empty directory where each file belongs,
-      # and every later render would land inside it. The next reconcile pass
-      # renders the files and recreates the container.
+      # and every later render would land inside it. Run deploy-apps.sh after a
+      # reboot to render the files and recreate the container.
       - type: bind
         source: /run/fil-one/secrets/piri.pem
         target: /keys/piri.pem
