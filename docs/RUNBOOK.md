@@ -387,27 +387,106 @@ prometheus.relabel "host_caddy" {
 }
 ```
 
-Piri pushes its application metrics and traces over OTLP/HTTP to `host.docker.internal:4318`, which is this
-host's Alloy; the `[telemetry]` section of `nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`
-says so. Before adding a receiver, check whether the host's Alloy already runs one, or whether
-anything else listens on 4318. `systemctl cat alloy` names the configuration file the service runs;
-a package install defaults to `/etc/alloy/config.alloy`:
+Piri's own metrics and traces also go through this Alloy, with checks of their own: [Piri's metrics
+and traces](#piris-metrics-and-traces), at the end of this subsection.
+
+Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
+reload is not enough for the log labels: on Alloy v1.17 the Docker log source
+keeps its running tailers, and their label sets, across a configuration reload,
+so entries keep arriving with the old labels. After the restart each tailer
+starts without a saved position and re-ships the container's retained Docker log
+once under the new labels. Once the FilOne containers run, `{service_name="appliance-staging-eu-central-3-piri"}`
+in Loki shows Piri's entries.
+
+At infra-central, confirm `eu-central-3` is in `appliance_regions` and get the staging
+`wallet_addresses` payer address for this node's `PAYER_ADDRESS`.
+
+##### Piri's metrics and traces
+
+Piri on the staging appliance pushes its metrics and traces over OTLP/HTTP to
+`host.docker.internal:4318`, which is the host's own Alloy; the `[telemetry]` section of
+`nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl` says so. That Alloy is
+configured by hand, outside this repository, so it has to be given a receiver for them once. On a new
+host that is part of bring-up; on a host that is already up and only lacks it, these steps stand on
+their own and nothing else in this section needs repeating. Until it is done, Piri's pushes fail and
+it logs them at `WARN` from the `telemetry` logger, backing off.
+
+Everything below runs as root on the host, over `ssh root@23.83.66.244`. The login shell is Fish;
+run `bash` first so the commands paste as written.
+
+**1. Find the configuration Alloy runs.** The unit names it:
+
+```sh
+systemctl cat alloy
+```
+
+Look for the config path on the `ExecStart` line, or in the file an `EnvironmentFile=` line points
+to (`CONFIG_FILE=` there, on a package install). A package install uses `/etc/alloy/config.alloy`,
+and the commands below assume it; substitute the real path if it differs. If it is a directory
+rather than a file, run each `grep` below with `-r` against the directory.
+
+**2. Check what is already there.** Three checks, each of which normally prints nothing:
 
 ```sh
 grep -n 'otelcol.receiver.otlp' /etc/alloy/config.alloy
+grep -nE 'otelcol\.exporter\.otlp' /etc/alloy/config.alloy
 ss -ltnp | grep -E ':431[78]\b'
 ```
 
-Check the same way for an `otelcol.exporter.otlphttp` or `otelcol.exporter.otlp` that already
-sends traces to Grafana Cloud. The receiver below needs somewhere to send traces, and a trace push
-needs a token with `traces:write`, which the host's existing Grafana credentials may not have.
+No output from a `grep` means no match, and it exits 1; no output from `ss` means nothing listens
+on 4317 or 4318. All three empty is the usual case: add the whole snippet in step 5. Otherwise:
 
-If there is a receiver already, keep it rather than adding a second one. Send its metrics output to
-the relabel below as well as wherever it goes now; the relabel's first rule keeps only `job="piri"`,
-so the host's other series are not relabelled as Piri. Route its traces output through the transform
-instead of straight to its exporter, and point the batch processor at that exporter: the transform
-only labels `service.name="piri"` and passes every other trace through unchanged, and sending traces
-both ways would export them twice. Otherwise add all of it:
+- **A receiver is already there.** Keep it rather than adding a second. Leave the snippet's
+  `otelcol.receiver.otlp` block out, send the existing receiver's metrics output to
+  `otelcol.processor.batch.filone.input` as well as wherever it goes now, and route its traces
+  output to `otelcol.processor.transform.filone_traces.input` instead of wherever it goes now. The
+  relabel keeps only `job="piri"` and the transform only labels `service.name="piri"`, so the host's
+  other senders pass through untouched; sending traces both ways would export them twice.
+- **A traces exporter to Grafana Cloud is already there.** Leave the snippet's
+  `otelcol.exporter.otlphttp` and `otelcol.auth.basic` blocks out, point the batch processor's
+  `traces` output at the existing exporter, and skip step 4.
+- **Something other than Alloy holds 4318.** Stop: the receiver cannot bind, and whatever that is
+  needs moving first.
+
+**3. Confirm the firewall denies by default.** The receiver binds every interface because Piri
+reaches it through the Docker host gateway, and it takes no authentication. UFW, not the bind
+address, is what keeps it off the public internet:
+
+```sh
+ufw status verbose
+```
+
+The `Default:` line has to start `deny (incoming)`. If it does not, stop and fix that first.
+
+**4. Give Alloy the traces token.** Traces go to the stack's Tempo, authenticated with a Grafana
+Cloud access-policy token that has `traces:write`. The dev node pushes with one from the same
+stack; reusing it means that adding `traces:write` to its access policy turns traces on here with no
+second visit. Until the policy has the scope, Tempo rejects the traces with a 401 and Alloy logs one
+`Exporting failed. Dropping data.` line per rejected batch; metrics are unaffected. The token is in
+dev's OpenBao, readable from a session on the dev node (`scripts/operator/ssm-session.sh dev`, then
+`sudo -i`). It prints the token, so copy it straight into the editor below and nowhere else:
+
+```sh
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
+  filone-openbao bao kv get -mount=filone -field=grafana_push_token external
+```
+
+The snippet reads it from `GRAFANA_TRACES_TOKEN` in Alloy's environment. If the host's config already
+reads its Grafana credentials some other way, do the same instead. Otherwise, if `systemctl cat
+alloy` showed an `EnvironmentFile=`, add a `GRAFANA_TRACES_TOKEN=<token>` line to that file with an
+editor; if it showed none, give the unit one. Use an editor rather than `echo`, so the token stays
+out of shell history:
+
+```sh
+install -m 0600 /dev/null /etc/alloy/filone-traces.env
+${EDITOR:-vi} /etc/alloy/filone-traces.env    # one line: GRAFANA_TRACES_TOKEN=<token>
+mkdir -p /etc/systemd/system/alloy.service.d
+printf '[Service]\nEnvironmentFile=/etc/alloy/filone-traces.env\n' \
+  > /etc/systemd/system/alloy.service.d/filone-traces.conf
+systemctl daemon-reload
+```
+
+**5. Add the snippet** to the configuration file, below what is there:
 
 ```alloy
 otelcol.receiver.otlp "filone" {
@@ -447,17 +526,17 @@ otelcol.processor.batch "filone" {
   }
 }
 
-// If the host already has a traces exporter to Grafana Cloud, point the batch
-// processor's traces output at it and leave these two out.
+// The stack's Tempo. Values from GRAFANA_TRACES_URL and GRAFANA_TRACES_USER in
+// nodes/dev/node.env; the token comes from the environment, step 4.
 otelcol.exporter.otlphttp "grafanacloud_traces" {
   client {
-    endpoint = sys.env("GRAFANA_TRACES_URL")
+    endpoint = "https://tempo-us-central1.grafana.net:443"
     auth     = otelcol.auth.basic.grafanacloud_traces.handler
   }
 }
 
 otelcol.auth.basic "grafanacloud_traces" {
-  username = sys.env("GRAFANA_TRACES_USER")
+  username = "233235"
   password = sys.env("GRAFANA_TRACES_TOKEN")
 }
 
@@ -496,33 +575,41 @@ prometheus.relabel "filone_piri" {
 }
 ```
 
-`GRAFANA_TRACES_URL` and `GRAFANA_TRACES_USER` are the stack's Tempo endpoint and Tempo instance
-id, the same values `nodes/dev/node.env` carries; `GRAFANA_TRACES_TOKEN` is a token with `traces:write`.
-Supply them to the host's Alloy the way it gets its existing Grafana credentials, or write them in
-directly if that is how the host's configuration holds the others.
+The relabel writes to `prometheus.remote_write.grafanacloud`, the name the host's existing metrics
+writer has; check the file for `prometheus.remote_write` and change the name if it differs.
 
-The receiver listens on every interface because Piri reaches it from the `filone` network through
-the host gateway. UFW, not the bind address, keeps it off the public interface, so confirm that
-`ufw status verbose` shows incoming traffic denied by default before adding it. Bootstrap permits
-the `filone` subnet to reach 4318; a host bootstrapped before that rule existed needs it added once:
+**6. Open 4318 to the Docker subnet.** Bootstrap adds this rule on a new host; this one was
+bootstrapped before the rule existed:
 
 ```sh
 ufw allow from 172.18.0.0/16 to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
 ```
 
-Piri's series then arrive in Grafana under `job="piri"`, and its traces under `service.name="piri"`;
-`docs/observability.md` has the queries.
+**7. Validate, then restart.** A reload is not enough on this Alloy; the restart paragraph above
+says why.
 
-Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
-reload is not enough for the log labels: on Alloy v1.17 the Docker log source
-keeps its running tailers, and their label sets, across a configuration reload,
-so entries keep arriving with the old labels. After the restart each tailer
-starts without a saved position and re-ships the container's retained Docker log
-once under the new labels. Once the FilOne containers run, `{service_name="appliance-staging-eu-central-3-piri"}`
-in Loki shows Piri's entries.
+```sh
+alloy validate /etc/alloy/config.alloy
+systemctl restart alloy
+```
 
-At infra-central, confirm `eu-central-3` is in `appliance_regions` and get the staging
-`wallet_addresses` payer address for this node's `PAYER_ADDRESS`.
+`alloy validate` prints nothing when the file is valid. After the restart, `ss -ltnp | grep 4318`
+shows `alloy` listening, and `journalctl -u alloy --since '-5 min' | grep -iE 'error|filone'` shows
+nothing from the new components.
+
+**8. Check Piri can reach it**, from inside the Piri container, through the host gateway and UFW:
+
+```sh
+docker exec filone-piri wget -q -O - --header 'Content-Type: application/json' \
+  --post-data '{}' http://host.docker.internal:4318/v1/metrics
+```
+
+It prints `{"partialSuccess":{}}`: an empty export, accepted. A timeout means the UFW rule is
+missing; `connection refused` means Alloy is not listening on 4318.
+
+Piri's series then arrive in Grafana under `job="piri"` and its traces under `service.name="piri"`,
+once Piri runs an image carrying [fil-forge/piri#131](https://github.com/fil-forge/piri/pull/131)
+and its generated config has a `[telemetry]` section; `docs/observability.md` has the queries.
 
 ### 4. The unseal token
 
