@@ -652,6 +652,35 @@ Commands in this section run from the infra-nodes checkout: `/opt/fil-one/infra-
 cloud nodes and `/root/fil-one/infra-nodes` on staging, the `FILONE_CHECKOUT` value in
 `/etc/fil-one/node.conf`.
 
+**Open a shell on a node.** The two nodes are reached differently.
+
+Dev has no SSH: no inbound port 22, no key pair, no bastion. The way in is AWS Systems Manager
+Session Manager, which works because the SSM agent on the node dials out. You need credentials for
+the filone-sandbox account, the Session Manager plugin for the AWS CLI (`brew install --cask
+session-manager-plugin`), and an initialised `terraform/envs/dev`, because the script reads the
+instance id from state rather than taking one as an argument. The node and its state bucket are in
+us-east-2, so the CLI needs that region:
+
+```sh
+tofu -chdir=terraform/envs/dev init      # once
+AWS_REGION=us-east-2 scripts/operator/ssm-session.sh dev
+sudo -i
+cd /opt/fil-one/infra-nodes
+```
+
+The session starts as `ssm-user`; the secrets tmpfs, the token files and the docker socket are
+root's, hence `sudo -i`.
+
+Staging is a bare-metal host and takes SSH as root. Your public key has to be in root's
+`authorized_keys` on the host, which someone who already has access adds:
+
+```sh
+ssh root@23.83.66.244
+cd /root/fil-one/infra-nodes
+```
+
+The host owns the Lotus, Caddy and Alloy running there. FilOne leaves them alone.
+
 **Deploy a new image.** Nothing to do. Piri and Ingot dispatch their new digest here when they
 publish a `:main` image, `bump-deployed-image.yml` opens the pull request that rewrites
 `nodes/dev/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and `compose` pass.
@@ -883,6 +912,26 @@ because the 5 is the transaction's value and the gas comes out of the same walle
 OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri sends the token
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
 `docker inspect filone-piri` shows its environment.
+
+**The node rebooted.** Piri and Ingot stay down until the first reconcile pass, five minutes after
+boot, and that is expected. Their keys and rendered configs live on a tmpfs that a reboot empties,
+and Docker restarts both containers before anything has rendered them again, so each restart fails
+on a missing bind-mount source. The pass renders the files, waits for the proving window, and
+recreates both containers. If the apps are still down after it, `journalctl -u
+filone-reconcile.service -n 200` says why.
+
+A Piri that instead logs `read /keys/piri.pem: is a directory` is on a node whose compose file lets
+Docker create a missing bind-mount source. Docker puts an empty directory where the file belongs,
+every later render lands inside it, and every pass fails its health wait without stamping. Stop the
+timer, clear the directories, deploy by hand, and start the timer again:
+
+```sh
+systemctl stop filone-reconcile.timer
+docker stop filone-piri filone-ingot
+find /run/fil-one/secrets -mindepth 1 -type d -exec rm -rf {} +
+scripts/host/deploy-apps.sh
+systemctl start filone-reconcile.timer
+```
 
 **The proving gate never lets a deploy through.** `pdp-gate.sh` waits 45 minutes by default. If Piri
 reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it after

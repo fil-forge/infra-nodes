@@ -21,9 +21,30 @@ services:
       PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri?sslmode=disable
       PIRI_BLOB_BACKEND: filesystem
     volumes:
-      - /run/fil-one/secrets/piri.pem:/keys/piri.pem:ro
-      - /run/fil-one/secrets/piri-owner-wallet.hex:/keys/owner-wallet.hex:ro
-      - /run/fil-one/secrets/piri-base-config.toml:/config/piri-base-config.toml:ro
+      # Rendered from OpenBao into a root-only tmpfs by deploy-apps.sh. Nothing
+      # here survives a reboot, so when Docker restarts this container at boot
+      # the files are missing. create_host_path: false makes that a start that
+      # fails; the default would put an empty directory where each file belongs,
+      # and every later render would land inside it. The next reconcile pass
+      # renders the files and recreates the container.
+      - type: bind
+        source: /run/fil-one/secrets/piri.pem
+        target: /keys/piri.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/fil-one/secrets/piri-owner-wallet.hex
+        target: /keys/owner-wallet.hex
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/fil-one/secrets/piri-base-config.toml
+        target: /config/piri-base-config.toml
+        read_only: true
+        bind:
+          create_host_path: false
       - ./config/piri/entrypoint.sh:/entrypoint.sh:ro
       - /mnt/data/fil-one/data/piri:/data/piri
     healthcheck:
@@ -43,9 +64,25 @@ services:
     command: ["serve", "--config", "/etc/ingot/config.yaml"]
     ports: ["127.0.0.1:15200:9000"]
     volumes:
-      - /run/fil-one/secrets/ingot.pem:/keys/ingot.pem:ro
-      - /run/fil-one/secrets/ingot-config.yaml:/etc/ingot/config.yaml:ro
-      - /run/fil-one/secrets/hilt-ingot-proof.txt:/proofs/hilt-ingot-proof.txt:ro
+      # Same tmpfs, same create_host_path reason, as Piri's mounts above.
+      - type: bind
+        source: /run/fil-one/secrets/ingot.pem
+        target: /keys/ingot.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/fil-one/secrets/ingot-config.yaml
+        target: /etc/ingot/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/fil-one/secrets/hilt-ingot-proof.txt
+        target: /proofs/hilt-ingot-proof.txt
+        read_only: true
+        bind:
+          create_host_path: false
       - /run/fil-one/bao:/run/openbao
       - /mnt/data/fil-one/data/ingot:/data
     healthcheck:
