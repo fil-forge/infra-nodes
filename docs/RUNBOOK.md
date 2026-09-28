@@ -456,12 +456,14 @@ portal, on the Loki tile and the Prometheus tile, and they differ from each othe
 tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
 the cluster its stack sits on, so another stack pushes elsewhere.
 
-Traces go to the stack's Tempo, which accepts OTLP over HTTP on its own host. Its user id is
+Traces go to the stack's Tempo, which accepts OTLP over gRPC on its own host. Its user id is
 Tempo's instance id, which differs from the two above and belongs in `GRAFANA_TRACES_USER`. Without
 portal access it can be read from Grafana itself: the stack's traces data source, under
 **Connections -> Data sources**, shows it as the basic authentication user, and its URL names the
-Tempo host. `GRAFANA_TRACES_URL` is that host on port 443 with no path, as in
-`https://tempo-us-central1.grafana.net:443`; the exporter appends `/v1/traces`.
+Tempo host. `GRAFANA_TRACES_URL` is that host and port 443, with no scheme and no path, as in
+`tempo-us-central1.grafana.net:443`. OTLP over HTTP to the same host answers 404 at every path
+tried, `/v1/traces`, `/tempo/v1/traces` and `/otlp/v1/traces` alike, and the exporter drops each
+batch as `Unimplemented`.
 
 Those six lines are per node, and a node whose host already runs Alloy leaves all six out. The
 staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
