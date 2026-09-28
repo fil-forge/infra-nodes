@@ -458,54 +458,36 @@ ufw status verbose
 
 The `Default:` line has to start `deny (incoming)`. If it does not, stop and fix that first.
 
-**4. Give Alloy the traces token.** Do this step even while the token cannot push traces yet. The
-snippet's `otelcol.auth.basic` block needs a password to start, and without one Alloy fails its
-initial load and restarts in a loop, taking the host's logs and metrics down with it.
-
-Traces go to the stack's Tempo, authenticated with a Grafana Cloud access-policy token that has
-`traces:write`. The dev node pushes with one from the same stack; reusing it means that adding
-`traces:write` to its access policy turns traces on here with no second visit. Until the policy has
-the scope, Tempo rejects the traces with a 401 and Alloy logs one `Exporting failed. Dropping data.`
-line per rejected batch; metrics are unaffected.
-
-The token is in **dev's** OpenBao, so read it on the dev node, not on this host. This host's
-OpenBao has no copy: provisioning only asks for a push token on a node that ships its own telemetry,
-and here the host's Alloy does that. Run on this host, the command below prints `No value found at
-filone/data/external`. On dev, from a session opened with `scripts/operator/ssm-session.sh dev`, then
-`sudo -i`:
+**4. Check the host pushes to dev's stack.** Traces go to the stack's Tempo, authenticated with
+a Grafana Cloud access-policy token that has `traces:write`. The snippet reuses the token the host's
+Alloy already pushes metrics with, which it reads from `GRAFANA_PROM_PASSWORD`; that only works if
+the host pushes to the same stack as dev. See how the host's metrics writer authenticates, without
+printing the password:
 
 ```sh
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-  filone-openbao bao kv get -mount=filone -field=grafana_push_token external
+grep -nA12 'prometheus.remote_write "grafanacloud"' /etc/alloy/config.alloy \
+  | grep -E 'username|password' | sed -E 's/(password *= *)"[^"]*"/\1"<literal>"/'
 ```
 
-It prints the token, so copy it straight into the editor below and nowhere else.
-
-Back on this host: the snippet reads the token from `GRAFANA_TRACES_TOKEN` in Alloy's environment.
-If the host's config already reads its Grafana credentials some other way, do the same instead.
-Otherwise, if `systemctl cat alloy` showed an `EnvironmentFile=`, add a `GRAFANA_TRACES_TOKEN=<token>`
-line to that file with an editor; if it showed none, give the unit one. Use an editor rather than
-`echo`, so the token stays out of shell history:
-
-```sh
-install -m 0600 /dev/null /etc/alloy/filone-traces.env
-${EDITOR:-vi} /etc/alloy/filone-traces.env    # one line: GRAFANA_TRACES_TOKEN=<token>
-mkdir -p /etc/systemd/system/alloy.service.d
-printf '[Service]\nEnvironmentFile=/etc/alloy/filone-traces.env\n' \
-  > /etc/systemd/system/alloy.service.d/filone-traces.conf
-systemctl daemon-reload
-```
-
-Then check that Alloy will see it, without printing the token:
+On this host it reads `sys.env("GRAFANA_PROM_USER")` and `sys.env("GRAFANA_PROM_PASSWORD")`. The
+username is the stack's Prometheus instance id, and it is in the unit's environment file; print
+only that line, since the file also holds the password:
 
 ```sh
 systemctl show alloy -p EnvironmentFiles
-grep -c '^GRAFANA_TRACES_TOKEN=.' /etc/alloy/filone-traces.env
+grep -h '^GRAFANA_PROM_USER=' <each file listed above>
 ```
 
-The first lists `/etc/alloy/filone-traces.env`; the second prints `1`. A `0` means the line is
-missing, empty, or has something before the name or a space before the `=`, any of which systemd
-will not read.
+`GRAFANA_PROM_USER=475506` is dev's stack, `GRAFANA_METRICS_USER` in `nodes/dev/node.env`, and the
+snippet as written is right. If the password comes from somewhere other than
+`GRAFANA_PROM_PASSWORD`, change the snippet's `password` to match. Any other username is a different
+stack: the snippet's Tempo endpoint and user are wrong for it, so leave out the two
+`grafanacloud_traces` blocks and the batch processor's `traces` output until that stack's Tempo
+details are known.
+
+Until that token's access policy has `traces:write`, Tempo rejects the traces with a 401 and Alloy
+logs one `Exporting failed. Dropping data.` line per rejected batch; metrics are unaffected. Adding
+the scope turns traces on with no second visit here.
 
 **5. Add the snippet** to the configuration file, below what is there:
 
@@ -548,7 +530,7 @@ otelcol.processor.batch "filone" {
 }
 
 // The stack's Tempo. Values from GRAFANA_TRACES_URL and GRAFANA_TRACES_USER in
-// nodes/dev/node.env; the token comes from the environment, step 4.
+// nodes/dev/node.env. The password is the host's own push token, step 4.
 otelcol.exporter.otlphttp "grafanacloud_traces" {
   client {
     endpoint = "https://tempo-us-central1.grafana.net:443"
@@ -558,7 +540,7 @@ otelcol.exporter.otlphttp "grafanacloud_traces" {
 
 otelcol.auth.basic "grafanacloud_traces" {
   username = "233235"
-  password = sys.env("GRAFANA_TRACES_TOKEN")
+  password = sys.env("GRAFANA_PROM_PASSWORD")
 }
 
 otelcol.exporter.prometheus "filone" {
@@ -615,7 +597,9 @@ systemctl restart alloy
 ```
 
 `alloy validate` prints nothing when the file is valid. It does not read the environment, so it
-passes even when the token is missing; step 4's check is what catches that. After the restart, `ss -ltnp | grep 4318`
+passes even when a variable the file reads with `sys.env` is unset in the service's. Alloy then
+fails its initial load, with `no password provided` for an empty password, and restarts in a loop
+that takes the host's logs and metrics down too; undo the snippet to recover. After the restart, `ss -ltnp | grep 4318`
 shows `alloy` listening, and `journalctl -u alloy --since '-5 min' | grep -iE 'error|filone'` shows
 nothing from the new components.
 
