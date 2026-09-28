@@ -26,7 +26,11 @@ PDP_GATE_TIMEOUT="${PDP_GATE_TIMEOUT:-2700}"
 PDP_GATE_INTERVAL="${PDP_GATE_INTERVAL:-30}"
 PIRI_CONTAINER=filone-piri
 PIRI_CONFIG=/data/piri/piri-config.toml
-# Written by `piri init` once it has finished. See the config probe below.
+# Written by the entrypoint once `piri init` has returned. See the config probe
+# below. The stamp replaced the snapshot; a node that has not re-run init since
+# still has only the snapshot, and the entrypoint deletes it only after writing
+# the stamp, so a node where init has ever completed has at least one of them.
+PIRI_INIT_STAMP=/data/piri/piri-init.stamp
 PIRI_BASE_SNAPSHOT=/data/piri/piri-base-config.applied.toml
 
 # Nothing to interrupt. A node that has not started Piri yet, or whose Piri is
@@ -60,13 +64,14 @@ set -e
 case "$config_probe" in
   0) ;;
   1)
-    # `piri init` copies the base config it merged from to PIRI_BASE_SNAPSHOT as
-    # its last step, so the snapshot exists only on a node where init has once
-    # returned. No snapshot and no config is the state a first deploy is in:
-    # nothing on chain, nothing to miss, and interrupting init costs nothing
-    # because init is safe to re-run.
+    # The entrypoint writes PIRI_INIT_STAMP (PIRI_BASE_SNAPSHOT, before it) as
+    # its last step after `piri init` returns, so one exists only on a node where
+    # init has once completed. Neither, and no config, is the state a first
+    # deploy is in: nothing on chain, nothing to miss, and interrupting init
+    # costs nothing because init is safe to re-run.
     set +e
-    docker exec -i "$PIRI_CONTAINER" sh -c 'test -f "$1"' sh "$PIRI_BASE_SNAPSHOT" >/dev/null 2>&1
+    docker exec -i "$PIRI_CONTAINER" sh -c 'test -f "$1" || test -f "$2"' sh \
+      "$PIRI_INIT_STAMP" "$PIRI_BASE_SNAPSHOT" >/dev/null 2>&1
     snapshot_probe=$?
     set -e
 
@@ -76,14 +81,14 @@ case "$config_probe" in
         exit 0
         ;;
       0)
-        die "$PIRI_CONFIG is gone but $PIRI_BASE_SNAPSHOT is still there, so init has
+        die "$PIRI_CONFIG is gone but init's stamp is still there, so init has
        completed on this node before and Piri may hold a proof set and owe a proof.
        The deploy stops rather than restarting it. Restore the config, or if this node
        is being decommissioned, 'docker stop filone-piri' and re-run: a Piri that is
        already down has no proof in flight."
         ;;
       *)
-        die "could not look for $PIRI_BASE_SNAPSHOT in $PIRI_CONTAINER (docker exec exited $snapshot_probe).
+        die "could not look for init's stamp in $PIRI_CONTAINER (docker exec exited $snapshot_probe).
        Whether Piri owes a proof is unknown, so the deploy stops rather than restarting it."
         ;;
     esac
