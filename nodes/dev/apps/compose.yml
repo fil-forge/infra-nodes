@@ -74,6 +74,14 @@ services:
     container_name: filone-ingot
     user: "0:0" # same reason as piri: 0400 key files, root-owned data directory
     command: ["serve", "--config", "/etc/ingot/config.yaml"]
+    environment:
+      # Ingot exports traces over OTLP/HTTP only when an OTLP endpoint is set,
+      # and logs "tracing off" otherwise. This one is the node's Alloy, on the
+      # filone network.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4318
+      # Piri sets the same attribute from its base config's [telemetry]
+      # environment, so one TraceQL filter tells the stages apart for both.
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=${STAGE}
     volumes:
       - /run/fil-one/secrets/ingot.pem:/keys/ingot.pem:ro
       # Embeds the Postgres DSN and the region-key token, so it is a secret
