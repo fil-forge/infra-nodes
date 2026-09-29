@@ -275,12 +275,15 @@ otelcol.exporter.prometheus "apps" {
 prometheus.relabel "apps" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 
-	// Named from job, which is the sender's service.name, so a second service
-	// pushing to this receiver gets its own service_name rather than Piri's.
-	// Piri's service.name is `piri`, matching its Compose service name.
+	// Named from job, so a second service pushing to this receiver gets its own
+	// service_name rather than Piri's. job is the sender's service.name, after
+	// its service.namespace and a slash when it sets one: Forge's services set
+	// `forge`, so Piri's job is `forge/piri`. The name alone is kept, matching
+	// the Compose service name the log labels use; a job without a namespace
+	// is taken whole.
 	rule {
 		source_labels = ["job"]
-		regex         = "(.+)"
+		regex         = "(?:[^/]+/)?(.+)"
 		replacement   = sys.env("SERVICE_NAME_PREFIX") + "-$1"
 		target_label  = "service_name"
 	}
