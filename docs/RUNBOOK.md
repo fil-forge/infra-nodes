@@ -292,9 +292,11 @@ prometheus.relabel "host_caddy" {
 
 Piri pushes its application metrics and traces over OTLP/HTTP to `host.docker.internal:4318`, which is this
 host's Alloy; the `[telemetry]` section of `nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`
-says so. Before adding a receiver, check whether the host's Alloy already runs one, or whether
-anything else listens on 4318. `systemctl cat alloy` names the configuration file the service runs;
-a package install defaults to `/etc/alloy/config.alloy`:
+says so. Ingot sends its traces to the same place, from the `OTEL_EXPORTER_OTLP_ENDPOINT` that
+`nodes/staging/eu-central-3/apps/compose.yml` sets for it. Before adding a receiver, check whether
+the host's Alloy already runs one, or whether anything else listens on 4318. `systemctl cat alloy`
+names the configuration file the service runs; a package install defaults to
+`/etc/alloy/config.alloy`:
 
 ```sh
 grep -n 'otelcol.receiver.otlp' /etc/alloy/config.alloy
@@ -309,8 +311,8 @@ If there is a receiver already, keep it rather than adding a second one. Send it
 the relabel below as well as wherever it goes now; the relabel's first rule keeps only `job="piri"`,
 so the host's other series are not relabelled as Piri. Route its traces output through the transform
 instead of straight to its exporter, and point the batch processor at that exporter: the transform
-only labels `service.name="piri"` and passes every other trace through unchanged, and sending traces
-both ways would export them twice. Otherwise add all of it:
+only labels `service.name="piri"` and `service.name="ingot"` and passes every other trace through
+unchanged, and sending traces both ways would export them twice. Otherwise add all of it:
 
 ```alloy
 otelcol.receiver.otlp "filone" {
@@ -332,9 +334,9 @@ otelcol.processor.transform "filone_traces" {
   trace_statements {
     context    = "resource"
     statements = [
-      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.name"] == "piri"`,
-      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.name"] == "piri"`,
-      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.name"] == "piri"`,
+      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
+      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
+      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
     ]
   }
 
@@ -404,9 +406,9 @@ id, the same values `nodes/dev/node.env` carries; `GRAFANA_TRACES_TOKEN` is a to
 Supply them to the host's Alloy the way it gets its existing Grafana credentials, or write them in
 directly if that is how the host's configuration holds the others.
 
-The receiver listens on every interface because Piri reaches it from the `filone` network through
-the host gateway. UFW, not the bind address, keeps it off the public interface, so confirm that
-`ufw status verbose` shows incoming traffic denied by default before adding it. Bootstrap permits
+The receiver listens on every interface because Piri and Ingot reach it from the `filone` network
+through the host gateway. UFW, not the bind address, keeps it off the public interface, so confirm
+that `ufw status verbose` shows incoming traffic denied by default before adding it. Bootstrap permits
 the `filone` subnet to reach 4318; a host bootstrapped before that rule existed needs it added once:
 
 ```sh
@@ -414,7 +416,12 @@ ufw allow from 172.18.0.0/16 to any port 4318 proto tcp comment 'FilOne Docker t
 ```
 
 Piri's series then arrive in Grafana under `job="piri"`, and its traces under `service.name="piri"`;
-`docs/observability.md` has the queries.
+`docs/observability.md` has the queries. Ingot sends traces only, which arrive under
+`service.name="ingot"`.
+
+A host set up when the transform matched only `"piri"` needs its three `where` clauses extended to
+`ingot` as above, then an Alloy restart. Until then Ingot's traces still arrive, without `node`,
+`region` and `appliance`.
 
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
