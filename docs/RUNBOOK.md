@@ -451,7 +451,7 @@ on 4317 or 4318. All three empty is the usual case: add the whole snippet in ste
   needs moving first.
 
 **3. Confirm the firewall denies by default.** The receiver binds every interface because Piri
-reaches it through the Docker host gateway, and it takes no authentication. UFW, not the bind
+and Ingot reach it through the Docker host gateway, and it takes no authentication. UFW, not the bind
 address, is what keeps it off the public internet:
 
 ```sh
