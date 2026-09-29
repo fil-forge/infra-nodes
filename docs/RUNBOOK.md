@@ -294,11 +294,13 @@ Forge's services push their metrics and traces over OTLP/HTTP to `host.docker.in
 is this host's Alloy: Piri from the `[telemetry]` section of
 `nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`, and Ingot from the
 `OTEL_EXPORTER_OTLP_ENDPOINT` that `nodes/staging/eu-central-3/apps/compose.yml` sets for it. Each
-reports `service.namespace` `forge`, which is what the configuration below selects them by, so a
-Forge service added later needs no change here. Before adding a receiver, check whether
-the host's Alloy already runs one, or whether anything else listens on 4318. `systemctl cat alloy`
-names the configuration file the service runs; a package install defaults to
-`/etc/alloy/config.alloy`:
+reports `service.namespace="forge"`, which is what the configuration below selects them by, so a
+Forge service added later needs no change here. It needs Piri at or after fil-forge/piri#146 and
+Ingot at or after fil-forge/ingot#195, the first to report the namespace.
+
+Before adding a receiver, check whether the host's Alloy already runs one, or whether anything else
+listens on 4318. `systemctl cat alloy` names the configuration file the service runs; a package
+install defaults to `/etc/alloy/config.alloy`:
 
 ```sh
 grep -n 'otelcol.receiver.otlp' /etc/alloy/config.alloy
@@ -423,16 +425,44 @@ the `filone` subnet to reach 4318; a host bootstrapped before that rule existed 
 ufw allow from 172.18.0.0/16 to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
 ```
 
-Each service's series then arrive in Grafana under `job="forge/<service>"`, Piri's as
-`job="forge/piri"`, and its traces under `service.name="<service>"` with `service.namespace="forge"`;
-`docs/observability.md` has the queries. Ingot sends traces only, so far.
+Each service's series then arrive in Grafana under `job="forge/<service>"` (Piri's as
+`job="forge/piri"`), and each service's traces under `service.name="<service>"` with
+`service.namespace="forge"`; `docs/observability.md` has the queries. Ingot sends traces only, so
+far.
 
 A host set up from an earlier version of this snippet selects Forge's services by name instead: its
-`where` clauses match `service.name` `piri` (and `ingot`), and its relabel is `filone_piri`, keeping
-`job="piri"` with a fixed `service_name`. Replace the transform's three statements, and the relabel
-with the `filone_forge` one above, renaming the exporter's `forward_to` to match; then restart Alloy.
-Do this only once both Piri and Ingot on this host report the namespace: before that the new
-configuration drops Piri's series and leaves both services' traces unlabelled.
+`where` clauses match `service.name="piri"` (and `"ingot"`), and its relabel is `filone_piri`,
+keeping `job="piri"` with a fixed `service_name`. Neither configuration works across the image
+change: the old one drops Piri's series once Piri reports the namespace, and the new one drops them
+until it does. Traces keep arriving either way; only their `node`, `region` and `appliance` depend
+on the match. So switch in two steps, validating and restarting Alloy after each as below:
+
+1. **Before promoting** Piri and Ingot images that report the namespace to this host, make the old
+   configuration accept both forms. Each `where` clause becomes
+   `where resource.attributes["service.namespace"] == "forge" or resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
+   and in `filone_piri` the `keep` rule and the fixed `service_name` rule become:
+
+   ```alloy
+   rule {
+     source_labels = ["job"]
+     regex         = "piri|forge/.+"
+     action        = "keep"
+   }
+   rule {
+     source_labels = ["job"]
+     regex         = "(?:forge/)?(.+)"
+     replacement   = "appliance-staging-eu-central-3-$1"
+     target_label  = "service_name"
+   }
+   ```
+
+2. **Once both services on this host report the namespace**, replace the transform's statements and
+   the relabel with the snippet above, and point every `forward_to` that names
+   `prometheus.relabel.filone_piri` at `prometheus.relabel.filone_forge`. On a host that reuses an
+   existing receiver, that may be the host's own exporter as well as this snippet's.
+
+Saved queries, dashboards and alerts that select `job="piri"` stop matching once Piri reports the
+namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every Forge service.
 
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source

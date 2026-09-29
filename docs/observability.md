@@ -236,10 +236,10 @@ sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-c
 Piri pushes its metrics over OTLP/HTTP to Alloy on port 4318: on dev to the platform Alloy at
 `alloy:4318` on the filone network, on staging to the host's Alloy at `host.docker.internal:4318`.
 The `[telemetry]` section of Piri's base config sets the address. Alloy converts the metrics to Prometheus
-series under `job="forge/piri"` and `service_name="appliance-<stage>-<region>-piri"`, with `instance` set
-to the node name rather than the DID Piri reports. The conversion builds `job` from Piri's
-`service.namespace` and `service.name`: every Forge service reports the namespace `forge`, so
-`job=~"forge/.+"` selects all of them.
+series under `job="forge/piri"` and `service_name="appliance-<stage>-<region>-piri"`, with
+`instance` set to the node name rather than the DID Piri reports. The conversion builds `job` from
+Piri's `service.namespace` and `service.name`: every Forge service reports
+`service.namespace="forge"`, so `job=~"forge/.+"` selects all of them.
 
 The conversion keeps each metric's own attributes as labels, but not Piri's resource attributes.
 Those land on one `target_info` series per node, which is where Piri's version is read from:
@@ -299,9 +299,10 @@ Every Forge trace from the staging appliance, whichever service it came from:
 { resource.service.namespace = "forge" && resource.node = "staging/eu-central-3" }
 ```
 
-Both services start a trace for every request that arrives without one, and follow the caller's
-sampling decision when it sends one. Neither traces its health check (Piri's `/healthz`, `/livez`
-and `/readyz`, Ingot's `/health`), so a node with no other traffic shows no traces.
+Both services start a trace for every request that arrives without one (Ingot at its default
+sampling ratio of 1), and follow the caller's sampling decision when it sends one. Neither traces
+its health check (Piri's `/healthz`, `/livez` and `/readyz`, Ingot's `/health`), so a node that
+only answers health checks shows few or no traces.
 
 ## Is the pipeline itself healthy
 
