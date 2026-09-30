@@ -236,14 +236,16 @@ sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-c
 Piri pushes its metrics over OTLP/HTTP to Alloy on port 4318: on dev to the platform Alloy at
 `alloy:4318` on the filone network, on staging to the host's Alloy at `host.docker.internal:4318`.
 The `[telemetry]` section of Piri's base config sets the address. Alloy converts the metrics to Prometheus
-series under `job="piri"` and `service_name="appliance-<stage>-<region>-piri"`, with `instance` set
-to the node name rather than the DID Piri reports.
+series under `job="forge/piri"` and `service_name="appliance-<stage>-<region>-piri"`, with
+`instance` set to the node name rather than the DID Piri reports. The conversion builds `job` from
+Piri's `service.namespace` and `service.name`: every Forge service reports
+`service.namespace="forge"`, so `job=~"forge/.+"` selects all of them.
 
 The conversion keeps each metric's own attributes as labels, but not Piri's resource attributes.
 Those land on one `target_info` series per node, which is where Piri's version is read from:
 
 ```promql
-target_info{job="piri"}
+target_info{job="forge/piri"}
 ```
 
 Everything Piri ships on one node:
@@ -256,7 +258,7 @@ A Piri that stops pushing leaves no `up` series to go to zero, since nothing scr
 is the signal:
 
 ```promql
-absent(target_info{job="piri", node="staging/eu-central-3"})
+absent(target_info{job="forge/piri", node="staging/eu-central-3"})
 ```
 
 ### The deploy stamp
@@ -279,10 +281,11 @@ deploy_last_success_timestamp{project=~"apps|platform"}
 
 ## Traces
 
-Piri pushes its spans to the same Alloy receiver as its metrics. Alloy does not relabel them into
-Prometheus series; it adds `node`, `region` and `appliance` as resource attributes, under the same
-names and values as the labels above, and sends them on over OTLP. `service.name` stays `piri`, as
-Piri sets it, and `service.instance.id` stays Piri's DID.
+Piri and Ingot push their spans to the same Alloy receiver as Piri's metrics. Alloy does not
+relabel them into Prometheus series; it adds `node`, `region` and `appliance` as resource
+attributes, under the same names and values as the labels above, and sends them on over OTLP.
+`service.name` stays `piri` or `ingot` and `service.namespace` stays `forge`, as each service sets
+them, and Piri's `service.instance.id` stays its DID.
 
 Every Piri trace from the staging appliance:
 
@@ -290,8 +293,16 @@ Every Piri trace from the staging appliance:
 { resource.service.name = "piri" && resource.node = "staging/eu-central-3" }
 ```
 
-Piri records a span only when the request that reached it carries a sampled trace context, so an
-empty result can mean no caller started a trace rather than a broken pipeline.
+Every Forge trace from the staging appliance, whichever service it came from:
+
+```traceql
+{ resource.service.namespace = "forge" && resource.node = "staging/eu-central-3" }
+```
+
+Both services start a trace for every request that arrives without one (Ingot at its default
+sampling ratio of 1), and follow the caller's sampling decision when it sends one. Neither traces
+its health check (Piri's `/healthz`, `/livez` and `/readyz`, Ingot's `/health`), so a node that
+only answers health checks shows few or no traces.
 
 ## Is the pipeline itself healthy
 
