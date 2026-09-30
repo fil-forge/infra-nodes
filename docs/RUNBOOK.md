@@ -405,9 +405,13 @@ At infra-central, confirm `eu-central-3` is in `appliance_regions` and get the s
 
 ##### Piri's metrics and traces
 
-Piri on the staging appliance pushes its metrics and traces over OTLP/HTTP to
-`host.docker.internal:4318`, which is the host's own Alloy; the `[telemetry]` section of
-`nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl` says so. That Alloy is
+Forge's services push their metrics and traces over OTLP/HTTP to `host.docker.internal:4318`, which
+is the host's own Alloy: Piri from the `[telemetry]` section of
+`nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`, and Ingot from the
+`OTEL_EXPORTER_OTLP_ENDPOINT` that `nodes/staging/eu-central-3/apps/compose.yml` sets for it. Each
+reports `service.namespace="forge"`, which is what the configuration below selects them by, so a
+Forge service added later needs no change here. It needs Piri at or after fil-forge/piri#146 and
+Ingot at or after fil-forge/ingot#195, the first to report the namespace. That Alloy is
 configured by hand, outside this repository, so it has to be given a receiver for them once. On a new
 host that is part of bring-up; on a host that is already up and only lacks it, these steps stand on
 their own and nothing else in this section needs repeating. Until it is done, Piri's pushes fail and
@@ -442,16 +446,16 @@ on 4317 or 4318. All three empty is the usual case: add the whole snippet in ste
   `otelcol.receiver.otlp` block out, send the existing receiver's metrics output to
   `otelcol.processor.batch.filone.input` as well as wherever it goes now, and route its traces
   output to `otelcol.processor.transform.filone_traces.input` instead of wherever it goes now. The
-  relabel keeps only `job="piri"` and the transform only labels `service.name` `piri` and `ingot`,
-  so the host's other senders pass through untouched; sending traces both ways would export them twice.
+  relabel keeps only the `forge/` jobs and the transform only labels traces whose
+  `service.namespace` is `forge`, so the host's other senders pass through untouched; sending traces both ways would export them twice.
 - **A traces exporter to Grafana Cloud is already there.** Leave the snippet's
   `otelcol.exporter.otlp` and `otelcol.auth.basic` blocks out, point the batch processor's
   `traces` output at the existing exporter, and skip step 4.
 - **Something other than Alloy holds 4318.** Stop: the receiver cannot bind, and whatever that is
   needs moving first.
 
-**3. Confirm the firewall denies by default.** The receiver binds every interface because Piri
-and Ingot reach it through the Docker host gateway, and it takes no authentication. UFW, not the bind
+**3. Confirm the firewall denies by default.** The receiver binds every interface because Forge's
+services reach it through the Docker host gateway, and it takes no authentication. UFW, not the bind
 address, is what keeps it off the public internet:
 
 ```sh
@@ -513,9 +517,9 @@ otelcol.processor.transform "filone_traces" {
   trace_statements {
     context    = "resource"
     statements = [
-      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
-      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
-      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
+      `set(resource.attributes["node"], "staging/eu-central-3") where resource.attributes["service.namespace"] == "forge"`,
+      `set(resource.attributes["region"], "eu-central-3") where resource.attributes["service.namespace"] == "forge"`,
+      `set(resource.attributes["appliance"], "staging-eu-central-3") where resource.attributes["service.namespace"] == "forge"`,
     ]
   }
 
@@ -547,22 +551,28 @@ otelcol.auth.basic "grafanacloud_traces" {
 }
 
 otelcol.exporter.prometheus "filone" {
-  forward_to = [prometheus.relabel.filone_piri.receiver]
+  forward_to = [prometheus.relabel.filone_forge.receiver]
 }
 
-prometheus.relabel "filone_piri" {
+prometheus.relabel "filone_forge" {
   forward_to = [prometheus.remote_write.grafanacloud.receiver]
 
-  // Only Piri's series. Anything else reaching this relabel through a shared
-  // receiver has its own path and must not be labelled as Piri.
+  // Only Forge's series. The conversion builds job as namespace/name, so every
+  // Forge service's job starts forge/. Anything else reaching this relabel
+  // through a shared receiver has its own path and must not be labelled as
+  // Forge's.
   rule {
     source_labels = ["job"]
-    regex         = "piri"
+    regex         = "forge/.+"
     action        = "keep"
   }
+  // Named for the service, as the log labels are: forge/piri becomes
+  // appliance-staging-eu-central-3-piri.
   rule {
-    target_label = "service_name"
-    replacement  = "appliance-staging-eu-central-3-piri"
+    source_labels = ["job"]
+    regex         = "forge/(.+)"
+    replacement   = "appliance-staging-eu-central-3-$1"
+    target_label  = "service_name"
   }
   rule {
     target_label = "node"
@@ -616,16 +626,44 @@ docker exec filone-piri wget -q -O - --header 'Content-Type: application/json' \
 It prints `{"partialSuccess":{}}`: an empty export, accepted. A timeout means the UFW rule is
 missing; `connection refused` means Alloy is not listening on 4318.
 
-Piri's series then arrive in Grafana under `job="piri"` and its traces under `service.name="piri"`,
-once Piri runs an image carrying [fil-forge/piri#131](https://github.com/fil-forge/piri/pull/131)
-and its generated config has a `[telemetry]` section; `docs/observability.md` has the queries.
+Each service's series then arrive in Grafana under `job="forge/<service>"` (Piri's as
+`job="forge/piri"`), and each service's traces under `service.name="<service>"` with
+`service.namespace="forge"`; `docs/observability.md` has the queries. Ingot sends traces only, so
+far.
 
-Ingot sends its traces the same way, over OTLP/HTTP to `host.docker.internal:4318`, from the
-`OTEL_EXPORTER_OTLP_ENDPOINT` in `nodes/staging/eu-central-3/apps/compose.yml`, and the transform
-labels them like Piri's; they arrive under `service.name="ingot"`. Ingot emits no metrics yet, and
-the relabel would drop them if it did: it keeps only `job="piri"`. On a host whose transform
-predates Ingot, the three statements end at `== "piri"`; extend each to the `or` form above, then
-validate and restart as in step 7.
+A host set up from an earlier version of this snippet selects Forge's services by name instead: its
+`where` clauses match `service.name="piri"` (and `"ingot"`), and its relabel is `filone_piri`,
+keeping `job="piri"` with a fixed `service_name`. Neither configuration works across the image
+change: the old one drops Piri's series once Piri reports the namespace, and the new one drops them
+until it does. Traces keep arriving either way; only their `node`, `region` and `appliance` depend
+on the match. So switch in two steps, validating and restarting after each as in step 7:
+
+1. **Before promoting** Piri and Ingot images that report the namespace to this host, make the old
+   configuration accept both forms. Each `where` clause becomes
+   `where resource.attributes["service.namespace"] == "forge" or resource.attributes["service.name"] == "piri" or resource.attributes["service.name"] == "ingot"`,
+   and in `filone_piri` the `keep` rule and the fixed `service_name` rule become:
+
+   ```alloy
+   rule {
+     source_labels = ["job"]
+     regex         = "piri|forge/.+"
+     action        = "keep"
+   }
+   rule {
+     source_labels = ["job"]
+     regex         = "(?:forge/)?(.+)"
+     replacement   = "appliance-staging-eu-central-3-$1"
+     target_label  = "service_name"
+   }
+   ```
+
+2. **Once both services on this host report the namespace**, replace the transform's statements and
+   the relabel with the snippet in step 5, and point every `forward_to` that names
+   `prometheus.relabel.filone_piri` at `prometheus.relabel.filone_forge`. On a host that reuses an
+   existing receiver, that may be the host's own exporter as well as this snippet's.
+
+Saved queries, dashboards and alerts that select `job="piri"` stop matching once Piri reports the
+namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every Forge service.
 
 ### 4. The unseal token
 
