@@ -831,7 +831,19 @@ scripts/ci/set-node-pin.sh piri "$(crane digest ghcr.io/fil-forge/piri:main)"
 
 `set-node-pin.sh` is the only thing that knows how a pin is written, so both routes and the workflow
 produce the same line. It prints `changed=true` or `changed=false` and fails on an unknown service, a
-malformed digest or a pin somebody moved to another tag.
+malformed digest or a pin somebody moved to another tag. It pins dev unless `--node` names another
+node, as in `--node staging/eu-central-3`.
+
+**Promote to staging.** Merge the open "Promote dev's images to staging" pull request.
+`promote-staging.yml` keeps it on every push to `main`: it sets each of staging's pins to what dev
+pins, lists what each service brings over staging's current pin, and closes itself once the two
+match. It never enables auto-merge, and disables one enabled for an earlier head, since a new head
+is a new set of images. Staging then deploys as dev does, on its next reconcile pass and after the
+proving window.
+
+To hold one service back, push to `bot/promote-staging` yourself: while its pull request is open,
+the workflow leaves a branch it did not last push alone. Or promote by hand in a branch of your own,
+with `set-node-pin.sh --node staging/eu-central-3`.
 
 A deploy that fails is retried on the next pass. Each project records the revision it was last
 deployed from, so reconcile compares against that rather than against the previous HEAD; the failed
