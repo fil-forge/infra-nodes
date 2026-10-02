@@ -954,9 +954,10 @@ same way, most often because the chain RPC is unreachable.
 **The gate says `piri-config.toml` is missing.** The container is running but the file is not there
 yet, which is where a node sits while `piri init` is still working and where it stays if init died.
 `docker logs filone-piri` says which of the two it is. The gate lets the deploy through only when
-`piri-base-config.applied.toml` is missing too, because init writes that file last and a node that
-has never got that far holds no proof set. A missing config next to a present snapshot aborts the
-deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
+init's stamp is missing too: `piri-init.stamp`, or `piri-base-config.applied.toml` on a node that
+has not re-run init since the stamp replaced it. The entrypoint writes the stamp once init returns,
+so a node that has never got that far holds no proof set. A missing config next to a present stamp
+aborts the deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
 `docker stop filone-piri` if the node is being decommissioned.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
