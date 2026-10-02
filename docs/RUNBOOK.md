@@ -467,12 +467,11 @@ ufw status verbose
 
 The `Default:` line has to start `deny (incoming)`. If it does not, stop and fix that first.
 
-**4. Check the host pushes to dev's stack**, the Grafana Cloud stack whose instance ids
-`nodes/dev/node.env` carries. Traces go to the stack's Tempo, authenticated with
-a Grafana Cloud access-policy token that has `traces:write`. The snippet reuses the token the host's
-Alloy already pushes metrics with, which it reads from `GRAFANA_PROM_PASSWORD`; that only works if
-the host pushes to the same stack as dev. See how the host's metrics writer authenticates, without
-printing the password:
+**4. Check the host pushes to the stack the snippet's Tempo values belong to.** The snippet writes
+in one Grafana Cloud stack's Tempo endpoint and user, and authenticates with the token the host's
+Alloy already pushes metrics with, which it reads from `GRAFANA_PROM_PASSWORD`. Tempo accepts it
+only from an access policy on that stack with `traces:write`, so the host's metrics have to go to
+the same stack. See how the host's metrics writer authenticates, without printing the password:
 
 ```sh
 grep -nA12 'prometheus.remote_write "grafanacloud"' /etc/alloy/config.alloy \
@@ -488,8 +487,8 @@ systemctl show alloy -p EnvironmentFiles
 grep -h '^GRAFANA_PROM_USER=' <each file listed above>
 ```
 
-`GRAFANA_PROM_USER=475506` is dev's stack, `GRAFANA_METRICS_USER` in `nodes/dev/node.env`, and the
-snippet as written is right. If the password comes from somewhere other than
+`GRAFANA_PROM_USER=475506` is that stack (it's the `GRAFANA_METRICS_USER` in `nodes/dev/node.env`),
+and the snippet as written is right. If the password comes from somewhere other than
 `GRAFANA_PROM_PASSWORD`, change the snippet's `password` to match. Any other username is a different
 stack: the snippet's Tempo endpoint and user are wrong for it, so leave out the two
 `grafanacloud_traces` blocks and the batch processor's `traces` output until that stack's Tempo
