@@ -37,9 +37,10 @@ procedure run with the values step 3 establishes.
 cd terraform/envs/bootstrap/nonprod
 ```
 
-This root keeps its state in the bucket it creates, so the first apply cannot use the S3 backend.
-Comment out the `backend "s3"` block in `versions.tofu`, apply against the local backend, restore the
-block, and migrate:
+Every node's root keeps its state in a bucket this root creates, one per AWS account, so dev and
+staging, which share an account, share it. The `bootstrap/nonprod` root keeps its own state there
+too, so its first apply cannot use the S3 backend. Comment out the `backend "s3"` block in
+`versions.tofu`, apply against the local backend, restore the block, and migrate:
 
 ```sh
 tofu init
@@ -48,7 +49,7 @@ tofu apply
 tofu init -migrate-state
 ```
 
-Every root after this one is ordinary: `tofu init` and go.
+Every node's root after this one is ordinary: `tofu init` and go.
 
 ### 2. The node.env values
 
@@ -94,7 +95,7 @@ with this node's own values:
 | `STAGE` | `dev` | `staging` |
 | `REGION` | `us-east-9` | `eu-central-3` |
 | `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` |
-| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | SSH as root |
+| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` |
 | Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
 | Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
 | `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | neither: Lotus RPC is local and unauthenticated, Alloy is the host's |
@@ -390,7 +391,7 @@ prometheus.relabel "host_caddy" {
 ```
 
 Piri's own metrics and traces also go through this Alloy, with checks of their own: [Piri's metrics
-and traces](#piris-metrics-and-traces), at the end of this subsection.
+and traces in eu-central-3](#piris-metrics-and-traces-in-eu-central-3), at the end of this subsection.
 
 Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
 reload is not enough for the log labels: on Alloy v1.17 the Docker log source
@@ -403,7 +404,7 @@ in Loki shows Piri's entries.
 At infra-central, confirm `eu-central-3` is in `appliance_regions` and get the staging
 `wallet_addresses` payer address for this node's `PAYER_ADDRESS`.
 
-##### Piri's metrics and traces
+##### Piri's metrics and traces in eu-central-3
 
 Forge's services push their metrics and traces over OTLP/HTTP to `host.docker.internal:4318`, which
 is the host's own Alloy: Piri from the `[telemetry]` section of
@@ -411,11 +412,13 @@ is the host's own Alloy: Piri from the `[telemetry]` section of
 `OTEL_EXPORTER_OTLP_ENDPOINT` that `nodes/staging/eu-central-3/apps/compose.yml` sets for it. Each
 reports `service.namespace="forge"`, which is what the configuration below selects them by, so a
 Forge service added later needs no change here. It needs Piri at or after fil-forge/piri#146 and
-Ingot at or after fil-forge/ingot#195, the first to report the namespace. That Alloy is
-configured by hand, outside this repository, so it has to be given a receiver for them once. On a new
-host that is part of bring-up; on a host that is already up and only lacks it, these steps stand on
-their own and nothing else in this section needs repeating. Until it is done, Piri's pushes fail and
-it logs them at `WARN` from the `telemetry` logger, backing off.
+Ingot at or after fil-forge/ingot#195, the first to report the namespace.
+
+The Alloy service is configured by hand, outside this repository, so it has to be given a receiver
+for Forge's services once. On a new host that is part of bring-up; on a host that is already up and
+only lacks it, these steps stand on their own and nothing else in this section needs repeating.
+Until it is done, Piri's pushes fail and it logs them at `WARN` from the `telemetry` logger, backing
+off.
 
 Everything below runs as root on the host, over `ssh root@23.83.66.244`. The login shell is Fish;
 run `bash` first so the commands paste as written.
@@ -464,7 +467,8 @@ ufw status verbose
 
 The `Default:` line has to start `deny (incoming)`. If it does not, stop and fix that first.
 
-**4. Check the host pushes to dev's stack.** Traces go to the stack's Tempo, authenticated with
+**4. Check the host pushes to dev's stack**, the Grafana Cloud stack whose instance ids
+`nodes/dev/node.env` carries. Traces go to the stack's Tempo, authenticated with
 a Grafana Cloud access-policy token that has `traces:write`. The snippet reuses the token the host's
 Alloy already pushes metrics with, which it reads from `GRAFANA_PROM_PASSWORD`; that only works if
 the host pushes to the same stack as dev. See how the host's metrics writer authenticates, without
@@ -704,16 +708,15 @@ region key Ingot encrypts objects under; installs the identity tooling (ucantool
 the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
 that node needs; and starts its platform services. Step 3 says which, for each node.
 
-A node provisioned before the region key existed gets it from a separate run of the same steps:
+A lapsed or revoked Ingot region-key token is replaced by a separate run of the same steps:
 
 ```sh
 scripts/host/provision-regionkey.sh
 ```
 
 It asks for the root token, enables the transit engine, creates the node's transit key (`region-us-east-9` on dev), writes the
-`ingot-regionkey` policy and mints the token Ingot holds. Re-running it is also how a revoked or
-lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
-overwrites the old one.
+`ingot-regionkey` policy and mints the token Ingot holds. Whatever already exists is left alone, so
+on a provisioned node only the token is new, and it overwrites the old one.
 
 The Grafana Cloud token is an access policy token scoped to the stack with `logs:write`,
 `metrics:write` and `traces:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
