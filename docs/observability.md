@@ -23,13 +23,14 @@ metrics, also every minute: counts, durations and sizes per site, handler, metho
 which is where the public error rate is read from. Staging also ships per-container CPU, memory,
 network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
 mount, and container health there is read from the journal and the deploy stamp instead.
-Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds.
+Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds, and
+Ingot's, which it pushes the same way every minute.
 
 **Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's Tempo
 unchanged apart from the node's identity.
 
-**Not shipped.** Ingot's own application metrics; the network interface collector, which
-inside the Alloy container would report the container's namespace rather than the host's.
+**Not shipped.** The network interface collector, which inside the Alloy container would report
+the container's namespace rather than the host's.
 
 ## Where to look
 
@@ -148,7 +149,8 @@ built on them works on one node only.
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
 Caddy's `caddy_http_*` family, and `deploy_last_success_timestamp`. Every series carries the four
 labels above plus `instance`, which is the node name, and `job`, which is `integrations/unix` for
-the host, `cadvisor` for containers, `caddy` for Caddy and `piri` for Piri.
+the host, `cadvisor` for containers, `caddy` for Caddy, and `forge/piri` and `forge/ingot` for Piri
+and Ingot.
 
 Free space on the dev appliance's filesystems:
 
@@ -260,6 +262,120 @@ is the signal:
 ```promql
 absent(target_info{job="forge/piri", node="staging/eu-central-3"})
 ```
+
+### Ingot
+
+Ingot pushes its metrics the same way as Piri, to the same receiver, from the same
+`OTEL_EXPORTER_OTLP_ENDPOINT` that already carries its traces, so they arrive under
+`job="forge/ingot"` and `service_name="appliance-<stage>-<region>-ingot"` with no change to Alloy. It
+exports every minute, the OpenTelemetry SDK's default.
+
+Its metrics today are about local blob storage: the two directories under Ingot's `data_dir` where
+object bodies wait for upload (`spool`) and stay for fast reads once the provider holds them
+(`cache`). Ingot's README, in its "Local disk" section, says what each holds and how
+`local_blob_max_bytes` bounds them. The conversion adds Prometheus' unit and `_total` suffixes to
+the OpenTelemetry names:
+
+| Metric                                   | Labels   | Meaning                                                                                                   |
+| ---------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
+| `ingot_local_blobs_usage_bytes`          | `dir`    | Bytes held, by `dir`: `spool` (writes in progress and bodies awaiting upload, which eviction cannot touch) or `cache`. |
+| `ingot_local_blobs_budget_bytes`         |          | `local_blob_max_bytes`. Zero means no budget, and the cache grows with every live object.               |
+| `ingot_local_blobs_removals_total`       | `reason` | Files removed, by `reason`: `released`, `parked`, `budget`, `budget_forced`, `orphan`, `accepted`.        |
+| `ingot_local_blobs_removed_bytes_total`  | `reason` | The bytes those removals freed.                                                                           |
+| `ingot_local_blobs_reads_total`          | `tier`   | Body reads, by the `tier` that served them: `local` or `network`.                                        |
+
+The removal reasons: `released` is an object deleted or overwritten; `parked` a multipart part
+handed to its provider; `budget` the sweeper evicting the oldest cached bodies to stay under the
+budget; `budget_forced` the sweeper evicting inside its retention windows because the oldest were
+not enough; `orphan` a leftover file no upload names; `accepted` a body dropped as soon as the
+provider accepted it, under `cache_writes: false`.
+
+Bytes held on one node, by directory, against the budget:
+
+```promql
+sum by (dir) (ingot_local_blobs_usage_bytes{node="dev"})
+```
+
+```promql
+ingot_local_blobs_budget_bytes{node="dev"}
+```
+
+Usage as a share of the budget, per node, for nodes that set one:
+
+```promql
+sum by (node) (ingot_local_blobs_usage_bytes)
+/
+max by (node) (ingot_local_blobs_budget_bytes > 0)
+```
+
+Files removed per second, by reason:
+
+```promql
+sum by (node, reason) (rate(ingot_local_blobs_removals_total[5m]))
+```
+
+The share of body reads served from local disk, which is what the cache is for:
+
+```promql
+sum by (node) (rate(ingot_local_blobs_reads_total{tier="local"}[15m]))
+/
+sum by (node) (rate(ingot_local_blobs_reads_total[15m]))
+```
+
+Free space on the filesystem holding Ingot's `data_dir`, which Piri's data shares. The host path is
+`/mnt/fil-one/data` on dev and under `/mnt/data` on staging:
+
+```promql
+node_filesystem_avail_bytes{node="dev", mountpoint="/mnt/fil-one/data"}
+```
+
+A stopped Ingot leaves its series where they were, so, as for Piri, absence is the signal:
+
+```promql
+absent(target_info{job="forge/ingot", node="staging/eu-central-3"})
+```
+
+#### Alerts
+
+Proposed, for local blob storage. Each is the expression and how long it must hold:
+
+- **Over budget.** Usage stays over a set budget. The sweeper should bring it back within a minute;
+  if it cannot, what is left is bodies it may not evict: uploads in flight, or uploads that failed.
+  Fifteen minutes.
+
+  ```promql
+  sum by (node) (ingot_local_blobs_usage_bytes)
+  > max by (node) (ingot_local_blobs_budget_bytes > 0)
+  ```
+
+- **Spool not draining.** The spool holds only bodies the provider does not have yet. Under steady
+  traffic it rises and falls; holding above a floor for hours means uploads are failing and leaving
+  their bodies behind. A stand-in until Ingot reports those bytes on their own. Six hours.
+
+  ```promql
+  min_over_time(ingot_local_blobs_usage_bytes{dir="spool"}[6h]) > 10 * 1024 * 1024 * 1024
+  ```
+
+- **Evicting inside the retention windows.** The budget is too small for the ingest rate and read
+  working set, so recent writes and hot reads go to the network. Informational: it costs latency,
+  not data. One hour.
+
+  ```promql
+  sum by (node) (increase(ingot_local_blobs_removals_total{reason="budget_forced"}[1h])) > 0
+  ```
+
+- **Data filesystem filling.** The hard limit, whatever Ingot's budget says. Ten minutes.
+
+  ```promql
+  node_filesystem_avail_bytes{mountpoint=~"/mnt/fil-one/data|/mnt/data.*"}
+  / node_filesystem_size_bytes{mountpoint=~"/mnt/fil-one/data|/mnt/data.*"} < 0.10
+  ```
+
+- **Ingot not reporting.** Fifteen minutes.
+
+  ```promql
+  absent(target_info{job="forge/ingot", node="staging/eu-central-3"})
+  ```
 
 ### The deploy stamp
 
