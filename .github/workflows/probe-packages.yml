@@ -1,0 +1,69 @@
+# Scratch: can the tokens promote-staging.sh has read ghcr.io package versions?
+# Not for merging.
+name: Probe package access
+
+on:
+  pull_request:
+    paths: [.github/workflows/probe-packages.yml]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Mint fil-forge-bot token, as promote-staging.yml does
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
+      # Fails if the app was not granted Packages: Read.
+      - name: Mint fil-forge-bot token asking for packages read
+        id: bot_packages
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+          permission-packages: read
+
+      - name: Look up each pinned digest's package version
+        env:
+          BOT_TOKEN: ${{ steps.bot.outputs.token }}
+          BOT_PACKAGES_TOKEN: ${{ steps.bot_packages.outputs.token }}
+          WORKFLOW_TOKEN: ${{ github.token }}
+        run: |
+          failed=0
+          probe() {
+            local label=$1 token=$2 package=$3 digest=$4 out
+            if [ -z "$token" ]; then
+              echo "| $label | $package | no token |" >>"$GITHUB_STEP_SUMMARY"
+              failed=1
+              return
+            fi
+            if out=$(GH_TOKEN=$token gh api "orgs/fil-forge/packages/container/$package/versions?per_page=100" --paginate \
+                --jq ".[] | select(.name == \"$digest\") | \"\\(.id) \\(.html_url)\"" 2>&1); then
+              echo "| $label | $package | ok: $out |" >>"$GITHUB_STEP_SUMMARY"
+            else
+              echo "| $label | $package | failed: ${out//$'\n'/ } |" >>"$GITHUB_STEP_SUMMARY"
+              failed=1
+            fi
+          }
+          echo "| token | package | result |" >>"$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- |" >>"$GITHUB_STEP_SUMMARY"
+          for package in piri ingot; do
+            key=$(tr '[:lower:]' '[:upper:]' <<<"$package")_IMAGE
+            digest=$(sed -nE "s|^${key}=[^@]+@(sha256:[0-9a-f]{64}).*|\1|p" nodes/dev/apps/versions.env)
+            echo "$package: $digest"
+            probe "fil-forge-bot (default)" "$BOT_TOKEN" "$package" "$digest"
+            probe "fil-forge-bot (packages: read)" "$BOT_PACKAGES_TOKEN" "$package" "$digest"
+            probe "GITHUB_TOKEN (packages: read)" "$WORKFLOW_TOKEN" "$package" "$digest"
+          done
+          cat "$GITHUB_STEP_SUMMARY"
+          exit $failed
