@@ -67,3 +67,35 @@ jobs:
           done
           cat "$GITHUB_STEP_SUMMARY"
           exit $failed
+
+  # The whole message, as #136's promote-staging.sh would write it, with the
+  # token and gh CLI the real workflow uses. --dry-run pushes nothing.
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint fil-forge-bot token, as promote-staging.yml does
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # An untracked copy: the script checks out main, which would swap the
+      # tracked one for main's while bash is still reading it.
+      - name: Dry-run #136's promote-staging.sh
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          APP_SLUG: ${{ steps.bot.outputs.app-slug }}
+          GIT_AUTHOR_NAME: probe
+          GIT_AUTHOR_EMAIL: probe@example.invalid
+          GIT_COMMITTER_NAME: probe
+          GIT_COMMITTER_EMAIL: probe@example.invalid
+        run: |
+          git fetch --quiet origin claude/happy-bell-cfh5qb-promote-links
+          git show FETCH_HEAD:scripts/ci/promote-staging.sh >scripts/ci/probe-promote-staging.sh
+          bash scripts/ci/probe-promote-staging.sh --dry-run
