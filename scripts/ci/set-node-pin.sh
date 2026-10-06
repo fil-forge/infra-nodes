@@ -6,10 +6,11 @@
 # to the file's shape lands in one place rather than three.
 #
 # Usage:
-#   scripts/ci/set-node-pin.sh <service> <sha256:...>
+#   scripts/ci/set-node-pin.sh [--node <node>] <service> <sha256:...>
 #
 # Example:
 #   scripts/ci/set-node-pin.sh piri "$(crane digest ghcr.io/fil-forge/piri:main)"
+#   scripts/ci/set-node-pin.sh --node staging/eu-central-3 piri sha256:...
 #
 # Prints `changed=true` on stdout when the file was rewritten and
 # `changed=false` when the service was already pinned there, and exits 0 either
@@ -18,22 +19,28 @@
 # malformed digest, a pin the pattern did not fit, or an edit that touched more
 # than the one line.
 #
-# The node is dev, hardcoded, because dev is the only node there is.
+# The node is a directory under nodes/, dev unless --node names another. The
+# bump workflow pins dev; the staging promotion pins staging/eu-central-3.
 #
 # Prerequisites:
 #   - a git work tree, because the one-line assertion reads `git diff`
 #   - no credentials, and nothing outside versions.env is written
 set -euo pipefail
 
+USAGE="usage: scripts/ci/set-node-pin.sh [--node <node>] <service> <sha256:...>"
+NODE=dev
 case "${1-}" in
-  -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  "")        echo "usage: scripts/ci/set-node-pin.sh <service> <sha256:...>" >&2; exit 2 ;;
+  -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --node)    NODE="${2-}"; shift 2 2>/dev/null || { echo "$USAGE" >&2; exit 2; } ;;
+esac
+case "${1-}" in
+  "")        echo "$USAGE" >&2; exit 2 ;;
   -*)        echo "unknown option: $1" >&2; exit 2 ;;
 esac
 
 SERVICE="$1"
 DIGEST="${2-}"
-shift 2 2>/dev/null || { echo "usage: scripts/ci/set-node-pin.sh <service> <sha256:...>" >&2; exit 2; }
+shift 2 2>/dev/null || { echo "$USAGE" >&2; exit 2; }
 [ $# -eq 0 ] || { echo "ERROR: unexpected argument: $1" >&2; exit 2; }
 
 # The variable each service is pinned through, and the image reference that
@@ -50,9 +57,16 @@ esac
   exit 1
 }
 
+# A node is a directory, so the name must not climb out of nodes/.
+[[ "$NODE" =~ ^[a-z0-9-]+(/[a-z0-9-]+)?$ ]] || {
+  echo "ERROR: malformed node '$NODE'" >&2
+  exit 1
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FILE="nodes/dev/apps/versions.env"
+FILE="nodes/$NODE/apps/versions.env"
 cd "$ROOT"
+[ -f "$FILE" ] || { echo "ERROR: no $FILE for node '$NODE'" >&2; exit 1; }
 
 # A pin carries the tag alongside the digest, and only the digest is rewritten.
 # The tag is part of the pattern rather than part of the replacement, so a pin

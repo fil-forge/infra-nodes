@@ -17,13 +17,113 @@ applying, which infra-central's
 [appliance onboarding guide](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md)
 covers.
 
-That guide is the other half of steps 3 and 5 below. Whoever runs infra-central mints the unseal
+That guide is the other half of steps 4 and 6 below. Whoever runs infra-central mints the unseal
 token, supplies the payer address and registers the node; nothing in this repository can do any of
 that, and nothing in that one can read this node's keys.
 
 ## Bringing up a node
 
-### The eu-central-3 staging appliance on Servers.com
+A node's host decides how it is built. Terraform creates the dev node's EC2 host, which you then
+provision over SSM. The eu-central-3 appliance is bare metal that already runs Lotus, Caddy and
+Alloy; Terraform only points DNS at it. Each stage has one node today, so step 3 names both — but
+hosting is what decides, not stage.
+
+Steps 1 and 2 are the same for any node. Step 3 is where they differ. Steps 4 to 7 are one
+procedure run with the values step 3 establishes.
+
+### 1. The state bucket, once per account
+
+```sh
+cd terraform/envs/bootstrap/nonprod
+```
+
+Every node's root keeps its state in a bucket this root creates, one per AWS account, so dev and
+staging, which share an account, share it. The `bootstrap/nonprod` root keeps its own state there
+too, so its first apply cannot use the S3 backend. Comment out the `backend "s3"` block in
+`versions.tofu`, apply against the local backend, restore the block, and migrate:
+
+```sh
+tofu init
+tofu apply
+# restore the backend block, then:
+tofu init -migrate-state
+```
+
+Every node's root after this one is ordinary: `tofu init` and go.
+
+### 2. The node.env values
+
+`nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
+those accounts rather than anything in this repository. They are set for dev. A node added later
+needs its own copy of them, and the deploys in steps 5 and 6 refuse to run while any is still the
+placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
+`origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
+
+`GRAFANA_LOGS_USER` and `GRAFANA_METRICS_USER` are the Loki and Prometheus instance ids of the
+Grafana Cloud stack the node ships to. Both are on the stack's details page in the Grafana Cloud
+portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
+tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
+the cluster its stack sits on, so another stack pushes elsewhere.
+
+Traces go to the stack's Tempo, which accepts OTLP over gRPC on its own host. Its user id is
+Tempo's instance id, which differs from the two above and belongs in `GRAFANA_TRACES_USER`. Without
+portal access it can be read from Grafana itself: the stack's traces data source, under
+**Connections -> Data sources**, shows it as the basic authentication user, and its URL names the
+Tempo host. `GRAFANA_TRACES_URL` is that host and port 443, with no scheme and no path, as in
+`tempo-us-central1.grafana.net:443`. OTLP over HTTP to the same host answers 404 at every path
+tried, `/v1/traces`, `/tempo/v1/traces` and `/otlp/v1/traces` alike, and the exporter drops each
+batch as `Unimplemented`.
+
+Those six lines are per node, and a node whose host already runs Alloy leaves all six out. The
+staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
+and the host
+scripts then neither ask for a Grafana push token nor render an Alloy config. It is all six or
+none. A node.env that sets some of them stops the deploy, because a node missing one id would
+otherwise deploy green and ship nothing.
+
+`PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
+Only the central account can read it, so ask whoever runs infra-central; their runbook says where
+they get it. It is a public address, so any channel will do.
+
+### 3. The node's host
+
+Everything before this step is the same for any node; everything after it is the same procedure run
+with this node's own values:
+
+| | dev | eu-central-3 |
+|---|---|---|
+| `STAGE` | `dev` | `staging` |
+| `REGION` | `us-east-9` | `eu-central-3` |
+| `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` |
+| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` |
+| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
+| Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
+| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | neither: Lotus RPC is local and unauthenticated, Alloy is the host's |
+
+#### The dev node on EC2
+
+```sh
+tofu -chdir=terraform/envs/dev init
+tofu -chdir=terraform/envs/dev apply
+```
+
+This creates the VM, both volumes, the Elastic IP, the security group, the DNS records and the IAM
+role, and hands cloud-init the bootstrap script. Bootstrap takes two to three minutes after the
+apply returns.
+
+Check it finished:
+
+```sh
+scripts/operator/ssm-session.sh dev
+sudo -i
+cat /etc/fil-one/bootstrap-complete     # a timestamp; absent means bootstrap died
+tail -50 /var/log/filone-bootstrap.log
+findmnt /mnt/fil-one/control
+findmnt /mnt/fil-one/data
+docker network ls | grep filone
+```
+
+#### The eu-central-3 staging appliance on Servers.com
 
 The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
 and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
@@ -290,33 +390,115 @@ prometheus.relabel "host_caddy" {
 }
 ```
 
+Piri's own metrics and traces also go through this Alloy, with checks of their own: [Piri's metrics
+and traces in eu-central-3](#piris-metrics-and-traces-in-eu-central-3), at the end of this subsection.
+
+Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
+reload is not enough for the log labels: on Alloy v1.17 the Docker log source
+keeps its running tailers, and their label sets, across a configuration reload,
+so entries keep arriving with the old labels. After the restart each tailer
+starts without a saved position and re-ships the container's retained Docker log
+once under the new labels. Once the FilOne containers run, `{service_name="appliance-staging-eu-central-3-piri"}`
+in Loki shows Piri's entries.
+
+At infra-central, confirm `eu-central-3` is in `appliance_regions` and get the staging
+`wallet_addresses` payer address for this node's `PAYER_ADDRESS`.
+
+##### Piri's metrics and traces in eu-central-3
+
 Forge's services push their metrics and traces over OTLP/HTTP to `host.docker.internal:4318`, which
-is this host's Alloy: Piri from the `[telemetry]` section of
+is the host's own Alloy: Piri from the `[telemetry]` section of
 `nodes/staging/eu-central-3/apps/config/piri/piri-base-config.toml.tpl`, and Ingot from the
 `OTEL_EXPORTER_OTLP_ENDPOINT` that `nodes/staging/eu-central-3/apps/compose.yml` sets for it. Each
 reports `service.namespace="forge"`, which is what the configuration below selects them by, so a
 Forge service added later needs no change here. It needs Piri at or after fil-forge/piri#146 and
 Ingot at or after fil-forge/ingot#195, the first to report the namespace.
 
-Before adding a receiver, check whether the host's Alloy already runs one, or whether anything else
-listens on 4318. `systemctl cat alloy` names the configuration file the service runs; a package
-install defaults to `/etc/alloy/config.alloy`:
+The Alloy service is configured by hand, outside this repository, so it has to be given a receiver
+for Forge's services once. On a new host that is part of bring-up; on a host that is already up and
+only lacks it, these steps stand on their own and nothing else in this section needs repeating.
+Until it is done, Piri's pushes fail and it logs them at `WARN` from the `telemetry` logger, backing
+off.
+
+Everything below runs as root on the host, over `ssh root@23.83.66.244`. The login shell is Fish;
+run `bash` first so the commands paste as written.
+
+**1. Find the configuration Alloy runs.** The unit names it:
+
+```sh
+systemctl cat alloy
+```
+
+Look for the config path on the `ExecStart` line, or in the file an `EnvironmentFile=` line points
+to (`CONFIG_FILE=` there, on a package install). A package install uses `/etc/alloy/config.alloy`,
+and the commands below assume it; substitute the real path if it differs. If it is a directory
+rather than a file, run each `grep` below with `-r` against the directory.
+
+**2. Check what is already there.** Three checks, each of which normally prints nothing:
 
 ```sh
 grep -n 'otelcol.receiver.otlp' /etc/alloy/config.alloy
+grep -nE 'otelcol\.exporter\.otlp' /etc/alloy/config.alloy
 ss -ltnp | grep -E ':431[78]\b'
 ```
 
-Check the same way for an `otelcol.exporter.otlphttp` or `otelcol.exporter.otlp` that already
-sends traces to Grafana Cloud. The receiver below needs somewhere to send traces, and a trace push
-needs a token with `traces:write`, which the host's existing Grafana credentials may not have.
+No output from a `grep` means no match, and it exits 1; no output from `ss` means nothing listens
+on 4317 or 4318. All three empty is the usual case: add the whole snippet in step 5. Otherwise:
 
-If there is a receiver already, keep it rather than adding a second one. Send its metrics output to
-the relabel below as well as wherever it goes now; the relabel's first rule keeps only the `forge/`
-jobs, so the host's other series are not relabelled as Forge's. Route its traces output through the
-transform instead of straight to its exporter, and point the batch processor at that exporter: the
-transform only labels traces whose `service.namespace` is `forge` and passes every other trace
-through unchanged, and sending traces both ways would export them twice. Otherwise add all of it:
+- **A receiver is already there.** Keep it rather than adding a second. Leave the snippet's
+  `otelcol.receiver.otlp` block out, send the existing receiver's metrics output to
+  `otelcol.processor.batch.filone.input` as well as wherever it goes now, and route its traces
+  output to `otelcol.processor.transform.filone_traces.input` instead of wherever it goes now. The
+  relabel keeps only the `forge/` jobs and the transform only labels traces whose
+  `service.namespace` is `forge`, so the host's other senders pass through untouched; sending traces both ways would export them twice.
+- **A traces exporter to Grafana Cloud is already there.** Leave the snippet's
+  `otelcol.exporter.otlp` and `otelcol.auth.basic` blocks out, point the batch processor's
+  `traces` output at the existing exporter, and skip step 4.
+- **Something other than Alloy holds 4318.** Stop: the receiver cannot bind, and whatever that is
+  needs moving first.
+
+**3. Confirm the firewall denies by default.** The receiver binds every interface because Forge's
+services reach it through the Docker host gateway, and it takes no authentication. UFW, not the bind
+address, is what keeps it off the public internet:
+
+```sh
+ufw status verbose
+```
+
+The `Default:` line has to start `deny (incoming)`. If it does not, stop and fix that first.
+
+**4. Check the host pushes to the stack the snippet's Tempo values belong to.** The snippet writes
+in one Grafana Cloud stack's Tempo endpoint and user, and authenticates with the token the host's
+Alloy already pushes metrics with, which it reads from `GRAFANA_PROM_PASSWORD`. Tempo accepts it
+only from an access policy on that stack with `traces:write`, so the host's metrics have to go to
+the same stack. See how the host's metrics writer authenticates, without printing the password:
+
+```sh
+grep -nA12 'prometheus.remote_write "grafanacloud"' /etc/alloy/config.alloy \
+  | grep -E 'username|password' | sed -E 's/(password *= *)"[^"]*"/\1"<literal>"/'
+```
+
+On this host it reads `sys.env("GRAFANA_PROM_USER")` and `sys.env("GRAFANA_PROM_PASSWORD")`. The
+username is the stack's Prometheus instance id, and it is in the unit's environment file; print
+only that line, since the file also holds the password:
+
+```sh
+systemctl show alloy -p EnvironmentFiles
+grep -h '^GRAFANA_PROM_USER=' <each file listed above>
+```
+
+`GRAFANA_PROM_USER=475506` is that stack (it's the `GRAFANA_METRICS_USER` in `nodes/dev/node.env`),
+and the snippet as written is right. If the password comes from somewhere other than
+`GRAFANA_PROM_PASSWORD`, change the snippet's `password` to match. Any other username is a different
+stack: the snippet's Tempo endpoint and user are wrong for it, so leave out the two
+`grafanacloud_traces` blocks and the batch processor's `traces` output until that stack's Tempo
+details are known.
+
+Until that token's access policy has `traces:write`, Tempo rejects the traces with a 401 and Alloy
+logs one `Exporting failed. Dropping data.` line per rejected batch; metrics are unaffected. Adding
+the scope turns traces on with no second visit here.
+
+**5. Add the snippet** to the configuration file, below what is there:
 
 ```alloy
 otelcol.receiver.otlp "filone" {
@@ -352,22 +534,23 @@ otelcol.processor.transform "filone_traces" {
 otelcol.processor.batch "filone" {
   output {
     metrics = [otelcol.exporter.prometheus.filone.input]
-    traces  = [otelcol.exporter.otlphttp.grafanacloud_traces.input]
+    traces  = [otelcol.exporter.otlp.grafanacloud_traces.input]
   }
 }
 
-// If the host already has a traces exporter to Grafana Cloud, point the batch
-// processor's traces output at it and leave these two out.
-otelcol.exporter.otlphttp "grafanacloud_traces" {
+// The stack's Tempo, over gRPC: OTLP over HTTP to this host gets a 404. Values
+// from GRAFANA_TRACES_URL and GRAFANA_TRACES_USER in nodes/dev/node.env. The
+// password is the host's own push token, step 4.
+otelcol.exporter.otlp "grafanacloud_traces" {
   client {
-    endpoint = sys.env("GRAFANA_TRACES_URL")
+    endpoint = "tempo-us-central1.grafana.net:443"
     auth     = otelcol.auth.basic.grafanacloud_traces.handler
   }
 }
 
 otelcol.auth.basic "grafanacloud_traces" {
-  username = sys.env("GRAFANA_TRACES_USER")
-  password = sys.env("GRAFANA_TRACES_TOKEN")
+  username = "233235"
+  password = sys.env("GRAFANA_PROM_PASSWORD")
 }
 
 otelcol.exporter.prometheus "filone" {
@@ -411,19 +594,40 @@ prometheus.relabel "filone_forge" {
 }
 ```
 
-`GRAFANA_TRACES_URL` and `GRAFANA_TRACES_USER` are the stack's Tempo endpoint and Tempo instance
-id, the same values `nodes/dev/node.env` carries; `GRAFANA_TRACES_TOKEN` is a token with `traces:write`.
-Supply them to the host's Alloy the way it gets its existing Grafana credentials, or write them in
-directly if that is how the host's configuration holds the others.
+The relabel writes to `prometheus.remote_write.grafanacloud`, the name the host's existing metrics
+writer has; check the file for `prometheus.remote_write` and change the name if it differs.
 
-The receiver listens on every interface because Forge's services reach it from the `filone` network
-through the host gateway. UFW, not the bind address, keeps it off the public interface, so confirm
-that `ufw status verbose` shows incoming traffic denied by default before adding it. Bootstrap permits
-the `filone` subnet to reach 4318; a host bootstrapped before that rule existed needs it added once:
+**6. Open 4318 to the Docker subnet.** Bootstrap adds this rule on a new host; this one was
+bootstrapped before the rule existed:
 
 ```sh
 ufw allow from 172.18.0.0/16 to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
 ```
+
+**7. Validate, then restart.** A reload is not enough on this Alloy; the restart paragraph above
+says why.
+
+```sh
+alloy validate /etc/alloy/config.alloy
+systemctl restart alloy
+```
+
+`alloy validate` prints nothing when the file is valid. It does not read the environment, so it
+passes even when a variable the file reads with `sys.env` is unset in the service's. Alloy then
+fails its initial load, with `no password provided` for an empty password, and restarts in a loop
+that takes the host's logs and metrics down too; undo the snippet to recover. After the restart, `ss -ltnp | grep 4318`
+shows `alloy` listening, and `journalctl -u alloy --since '-5 min' | grep -iE 'error|filone'` shows
+nothing from the new components.
+
+**8. Check Piri can reach it**, from inside the Piri container, through the host gateway and UFW:
+
+```sh
+docker exec filone-piri wget -q -O - --header 'Content-Type: application/json' \
+  --post-data '{}' http://host.docker.internal:4318/v1/metrics
+```
+
+It prints `{"partialSuccess":{}}`: an empty export, accepted. A timeout means the UFW rule is
+missing; `connection refused` means Alloy is not listening on 4318.
 
 Each service's series then arrive in Grafana under `job="forge/<service>"` (Piri's as
 `job="forge/piri"`), and each service's traces under `service.name="<service>"` with
@@ -435,7 +639,7 @@ A host set up from an earlier version of this snippet selects Forge's services b
 keeping `job="piri"` with a fixed `service_name`. Neither configuration works across the image
 change: the old one drops Piri's series once Piri reports the namespace, and the new one drops them
 until it does. Traces keep arriving either way; only their `node`, `region` and `appliance` depend
-on the match. So switch in two steps, validating and restarting Alloy after each as below:
+on the match. So switch in two steps, validating and restarting after each as in step 7:
 
 1. **Before promoting** Piri and Ingot images that report the namespace to this host, make the old
    configuration accept both forms. Each `where` clause becomes
@@ -457,119 +661,17 @@ on the match. So switch in two steps, validating and restarting Alloy after each
    ```
 
 2. **Once both services on this host report the namespace**, replace the transform's statements and
-   the relabel with the snippet above, and point every `forward_to` that names
+   the relabel with the snippet in step 5, and point every `forward_to` that names
    `prometheus.relabel.filone_piri` at `prometheus.relabel.filone_forge`. On a host that reuses an
    existing receiver, that may be the host's own exporter as well as this snippet's.
 
 Saved queries, dashboards and alerts that select `job="piri"` stop matching once Piri reports the
 namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every Forge service.
 
-Validate the configuration, then restart Alloy with `systemctl restart alloy`. A
-reload is not enough for the log labels: on Alloy v1.17 the Docker log source
-keeps its running tailers, and their label sets, across a configuration reload,
-so entries keep arriving with the old labels. After the restart each tailer
-starts without a saved position and re-ships the container's retained Docker log
-once under the new labels. Once the FilOne containers run, `{service_name="appliance-staging-eu-central-3-piri"}`
-in Loki shows Piri's entries.
+### 4. The unseal token
 
-At infra-central, confirm `eu-central-3` is in `appliance_regions`, get the
-staging `wallet_addresses` payer address and commit it to
-`nodes/staging/eu-central-3/node.env`.
-Mint a wrapping token with `STAGE=staging`, `REGION=eu-central-3` and
-`NODE_IP=23.83.66.244`. On the host run `provision-platform.sh`, saving the
-OpenBao recovery key and root token, then provide the wrapping token. Staging
-uses its local unauthenticated Lotus RPC and the host-owned Alloy service, so it
-does not ask for a Chain.Love or Grafana token.
-
-Run `onboarding-request.sh`, fund its printed Piri owner wallet with
-Calibration testnet FIL, and send its DID, URL and proof to infra-central. Run
-`onboard-appliance` there for `staging/eu-central-3`, install its returned
-Ingot proof with `store-hilt-proof.sh`, then run `provision-apps.sh`. Enable
-both FilOne timers and check public Piri, Ingot, the status document and an
-OpenBao restart/unseal. Finish with:
-
-```sh
-scripts/ci/smoke-test.sh staging/eu-central-3
-```
-
-`nodes/dev/node.env` describes the EC2 dev node and the accounts it talks to, and the values below name
-those accounts rather than anything in this repository. They are set for dev. A node added later
-needs its own copy of them, and the deploys in steps 4 and 5 refuse to run while any is still the
-placeholder it was committed with. Set them in the checkout, commit and merge: the node resets to
-`origin/main` on every reconcile pass, so an edit made on the box is gone within five minutes.
-
-`GRAFANA_LOGS_USER` and `GRAFANA_METRICS_USER` are the Loki and Prometheus instance ids of the
-Grafana Cloud stack the node ships to. Both are on the stack's details page in the Grafana Cloud
-portal, on the Loki tile and the Prometheus tile, and they differ from each other. Those same two
-tiles carry the push URLs, which belong in `GRAFANA_LOGS_URL` and `GRAFANA_METRICS_URL`: each names
-the cluster its stack sits on, so another stack pushes elsewhere.
-
-Traces go to the stack's Tempo, which accepts OTLP over gRPC on its own host. Its user id is
-Tempo's instance id, which differs from the two above and belongs in `GRAFANA_TRACES_USER`. Without
-portal access it can be read from Grafana itself: the stack's traces data source, under
-**Connections -> Data sources**, shows it as the basic authentication user, and its URL names the
-Tempo host. `GRAFANA_TRACES_URL` is that host and port 443, with no scheme and no path, as in
-`tempo-us-central1.grafana.net:443`. OTLP over HTTP to the same host answers 404 at every path
-tried, `/v1/traces`, `/tempo/v1/traces` and `/otlp/v1/traces` alike, and the exporter drops each
-batch as `Unimplemented`.
-
-Those six lines are per node, and a node whose host already runs Alloy leaves all six out. The
-staging appliance is such a node: `nodes/staging/eu-central-3/node.env` has no telemetry block,
-and the host
-scripts then neither ask for a Grafana push token nor render an Alloy config. It is all six or
-none. A node.env that sets some of them stops the deploy, because a node missing one id would
-otherwise deploy green and ship nothing.
-
-`PAYER_ADDRESS` is the wallet the central signing service pays from for the stage the node joins.
-Only the central account can read it, so ask whoever runs infra-central; their runbook says where
-they get it. It is a public address, so any channel will do.
-
-### 1. The state bucket, once per account
-
-```sh
-cd terraform/envs/bootstrap/nonprod
-```
-
-This root keeps its state in the bucket it creates, so the first apply cannot use the S3 backend.
-Comment out the `backend "s3"` block in `versions.tofu`, apply against the local backend, restore the
-block, and migrate:
-
-```sh
-tofu init
-tofu apply
-# restore the backend block, then:
-tofu init -migrate-state
-```
-
-Every root after this one is ordinary: `tofu init` and go.
-
-### 2. The node
-
-```sh
-tofu -chdir=terraform/envs/dev init
-tofu -chdir=terraform/envs/dev apply
-```
-
-This creates the VM, both volumes, the Elastic IP, the security group, the DNS records and the IAM
-role, and hands cloud-init the bootstrap script. Bootstrap takes two to three minutes after the
-apply returns.
-
-Check it finished:
-
-```sh
-scripts/operator/ssm-session.sh dev
-sudo -i
-cat /etc/fil-one/bootstrap-complete     # a timestamp; absent means bootstrap died
-tail -50 /var/log/filone-bootstrap.log
-findmnt /mnt/fil-one/control
-findmnt /mnt/fil-one/data
-docker network ls | grep filone
-```
-
-### 3. The unseal token
-
-Central mints it, and only now: the token is bound to the address the apply just allocated. The
-apply printed the Elastic IP; to read it again:
+Central mints it, and only now: the token is bound to the node's address. For the appliance that is
+its host's fixed address. For dev it is the Elastic IP the apply allocated; to read it again:
 
 ```sh
 tofu -chdir=terraform/envs/dev output -raw public_ip
@@ -578,18 +680,18 @@ tofu -chdir=terraform/envs/dev output -raw public_ip
 Send that address to whoever runs infra-central, and they run
 
 ```sh
-make mint-appliance-token STAGE=dev REGION=us-east-9 NODE_IP=<the elastic ip>
+make mint-appliance-token STAGE=<stage> REGION=<region> NODE_IP=<the address>
 ```
 
 What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
-inside the central OpenBao until the node claims it in step 4. The wrapping token can be spent once
+inside the central OpenBao until the node claims it in step 5. The wrapping token can be spent once
 and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
 better.
 
-### 4. The platform
+### 5. The platform
 
-In an SSM session on the node, as root (`sudo -i`), in the checkout at `/opt/fil-one/infra-nodes`.
-The rest of the bring-up runs in this shell.
+Open a shell on the node as root, in its checkout; step 3 gives both for each node. The rest of
+the bring-up runs in this shell.
 
 ```sh
 scripts/host/provision-platform.sh
@@ -602,19 +704,18 @@ neither, the only way back into this OpenBao is to rebuild the node and re-onboa
 
 It then asks for the root token back twice, to create the deploy token and the KV mount and then the
 region key Ingot encrypts objects under; installs the identity tooling (ucantool and cast, pinned in
-`nodes/dev/node.env`); generates the node's keys; asks for the chain.love and Grafana Cloud tokens;
-and starts Postgres, Caddy and Alloy.
+the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
+that node needs; and starts its platform services. Step 3 says which, for each node.
 
-A node provisioned before the region key existed gets it from a separate run of the same steps:
+A lapsed or revoked Ingot region-key token is replaced by a separate run of the same steps:
 
 ```sh
 scripts/host/provision-regionkey.sh
 ```
 
-It asks for the root token, enables the transit engine, creates `region-us-east-9`, writes the
-`ingot-regionkey` policy and mints the token Ingot holds. Re-running it is also how a revoked or
-lapsed token is replaced: the engine, the key and the policy are left alone and a fresh token
-overwrites the old one.
+It asks for the root token, enables the transit engine, creates the node's transit key (`region-us-east-9` on dev), writes the
+`ingot-regionkey` policy and mints the token Ingot holds. Whatever already exists is left alone, so
+on a provisioned node only the token is new, and it overwrites the old one.
 
 The Grafana Cloud token is an access policy token scoped to the stack with `logs:write`,
 `metrics:write` and `traces:write`, created under **Security -> Access Policies** in the Grafana Cloud portal. That page
@@ -623,7 +724,7 @@ needs Admin on the org, so ask whoever holds it if the page tells you to.
 Certificates are issued on Caddy's first start. If the DNS records have not propagated yet, Caddy
 retries and the deploy's health gate may time out; re-running `deploy-platform.sh` is safe.
 
-### 5. Onboarding, then the apps
+### 6. Onboarding, then the apps
 
 On the node:
 
@@ -683,9 +784,9 @@ visible as it happens. Later runs skip init and print nothing extra.
 Caddy serves the node status document.
 
 It then installs the systemd units from the checkout, so the timers below exist whatever revision
-cloud-init bootstrapped the box from.
+the box was bootstrapped from.
 
-### 6. The timers
+### 7. The timers
 
 ```sh
 systemctl enable --now filone-reconcile.timer
@@ -694,7 +795,13 @@ systemctl list-timers | grep filone
 ```
 
 From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
-`/etc/fil-one/node.conf` names, which cloud-init writes as `main`.
+`/etc/fil-one/node.conf` names, which bootstrap writes as `main`.
+
+Finish with the node's smoke test:
+
+```sh
+scripts/ci/smoke-test.sh <node>          # `dev`, or `staging/eu-central-3`
+```
 
 ## Day-to-day operations
 
@@ -723,7 +830,19 @@ scripts/ci/set-node-pin.sh piri "$(crane digest ghcr.io/fil-forge/piri:main)"
 
 `set-node-pin.sh` is the only thing that knows how a pin is written, so both routes and the workflow
 produce the same line. It prints `changed=true` or `changed=false` and fails on an unknown service, a
-malformed digest or a pin somebody moved to another tag.
+malformed digest or a pin somebody moved to another tag. It pins dev unless `--node` names another
+node, as in `--node staging/eu-central-3`.
+
+**Promote to staging.** Merge the open "Promote dev's images to staging" pull request.
+`promote-staging.yml` keeps it on every push to `main`: it sets each of staging's pins to what dev
+pins, lists what each service brings over staging's current pin, and closes itself once the two
+match. It never enables auto-merge, and disables one enabled for an earlier head, since a new head
+is a new set of images. Staging then deploys as dev does, on its next reconcile pass and after the
+proving window.
+
+To hold one service back, push to `bot/promote-staging` yourself: while its pull request is open,
+the workflow leaves a branch it did not last push alone. Or promote by hand in a branch of your own,
+with `set-node-pin.sh --node staging/eu-central-3`.
 
 A deploy that fails is retried on the next pass. Each project records the revision it was last
 deployed from, so reconcile compares against that rather than against the previous HEAD; the failed
@@ -853,7 +972,7 @@ for a new wrapping token.
 from the delegator's allow list and to deregister or zero-weight the old provider at sprue. hilt's
 provider row is keyed by the Ingot DID, which the rebuild does not change, so it stays as it is.
 
-**3. Onboard the new Piri DID.** [Step 5](#5-onboarding-then-the-apps) again, then
+**3. Onboard the new Piri DID.** [Step 6](#6-onboarding-then-the-apps) again, then
 `provision-apps.sh` and the timers. hilt's delegation to Ingot is unchanged and central still holds
 it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and store it with
 `store-hilt-proof.sh`: the rebuilt OpenBao has no copy of it.
@@ -926,7 +1045,7 @@ the address the stage's signing service pays from, and commit it to `nodes/dev/n
 
 **Piri crash-loops on `wallet balance is too low`.** The owner wallet holds less than the 5 tFIL
 provider registration sends to the registry. Fund it with at least 6, as [step
-5](#5-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
+6](#6-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
 because the 5 is the transaction's value and the gas comes out of the same wallet.
 
 **Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
