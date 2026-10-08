@@ -82,13 +82,16 @@ source_commit() {
 
 # What a service brings between two of its commits, one line per commit, oldest
 # first. Squash-merged titles end in "(#123)", which here would link to this
-# repository's pull request 123; each is qualified with the service's
-# repository instead.
+# repository's pull request 123; each becomes a link to the service's pull
+# request instead. The links are explicit, because GitHub renders a bare
+# reference as the title of what it names, which the line already starts with,
+# and does not link a bare commit hash from another repository at all.
 changes() {
   local repo=$1 from=$2 to=$3
   gh api "repos/$repo/compare/$from...$to" \
-    --jq '.commits[] | "- " + (.commit.message | split("\n")[0]) + " (" + .sha[0:7] + ")"' \
-    | sed -E "s|\(#([0-9]+)\)|($repo#\1)|g"
+    --jq '.commits[] | "- " + (.commit.message | split("\n")[0])
+      + " ([" + .sha[0:7] + "](https://github.com/'"$repo"'/commit/" + .sha + "))"' \
+    | sed -E "s|\(#([0-9]+)\)|([$repo#\1](https://github.com/$repo/pull/\1))|g"
 }
 
 git fetch --quiet --force origin main "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
