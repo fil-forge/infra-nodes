@@ -86,11 +86,21 @@ source_commit() {
     | head -n 1
 }
 
-# A digest, shortened, linked to the pull request that bumped dev to it, where
-# its source commit and publish run are. Plain if no bump on main carried it.
+# A digest, shortened, linked to its version's page on ghcr.io. Failing that,
+# to the pull request that bumped dev to it, which names its source commit and
+# publish run; plain if no bump on main carried it either.
 digest_link() {
-  local short="\`sha256:${1:7:7}\`" bump pr
-  bump=$(bump_of "$1")
+  local service=$1 digest=$2 short="\`sha256:${2:7:7}\`" owner page bump pr
+  owner=$(repo_of "$service")
+  # On an error, gh prints the response body where the page would be.
+  if page=$(gh api --paginate "orgs/${owner%%/*}/packages/container/$service/versions?per_page=100" \
+      --jq ".[] | select(.name == \"$digest\") | .html_url" 2>/dev/null) \
+    && [ -n "$page" ]; then
+    page=$(head -n 1 <<<"$page")
+    echo "[$short]($page)"
+    return
+  fi
+  bump=$(bump_of "$digest")
   if [ -z "$bump" ]; then
     echo "$short"
     return
@@ -161,7 +171,7 @@ for service in "${SERVICES[@]}"; do
     echo
     echo "## $service"
     echo
-    echo "$(digest_link "$staging_digest") → $(digest_link "$dev_digest")"
+    echo "$(digest_link "$service" "$staging_digest") → $(digest_link "$service" "$dev_digest")"
     echo
     if [ -n "$from" ] && [ -n "$to" ]; then
       echo "What $repo brings over staging's pin, [\`${from:0:7}..${to:0:7}\`](https://github.com/$repo/compare/$from...$to):"
