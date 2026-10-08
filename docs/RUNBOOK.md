@@ -271,7 +271,54 @@ Route that scrape through a `prometheus.relabel` component that sets
 does for dev. Route the cAdvisor scrape through a `prometheus.relabel` component
 with the rules above; on cAdvisor series the Compose labels arrive as
 `container_label_com_docker_compose_project` and
-`container_label_com_docker_compose_service`. Give the reconcile journal source
+`container_label_com_docker_compose_service`.
+
+**The cAdvisor component needs `node`, `region` and `instance` as static rules
+as well**, alongside the Compose-label rules. Those rules read labels that
+belong to a container, and `up` is one series per *scrape target*, not per
+container, so none of them matches it. Without the static rules `up` for that
+scrape arrives carrying only `appliance`, `job` and a raw `instance`:
+
+```
+up{appliance="staging-eu-central-3", instance="ff", job="cadvisor"}
+```
+
+That matters because `appliance` is `<stage>-<region>` and so cannot tell two
+boxes in one region apart — `node` is the fleet's per-box identity, and anything
+that cannot see it can only work per region. Normalising `instance` to
+`staging/eu-central-3` matters for the same reason: the host scrape already
+reports it that way, so until both agree nothing can join across the two.
+
+```alloy
+rule {
+    replacement  = "staging/eu-central-3"
+    target_label = "node"
+}
+
+rule {
+    replacement  = "eu-central-3"
+    target_label = "region"
+}
+
+rule {
+    replacement  = "staging/eu-central-3"
+    target_label = "instance"
+}
+```
+
+A rule with a `replacement` and no `source_labels` sets the label on every
+series the component sees, which is the point: the Compose-label rules above
+still give each container its `service_name`, and these give the scrape's own
+series — `up` included — the identity of the box they came from. The host's
+other containers on that machine pick up `node` and `region` too, which is
+accurate: they are on that node. They still carry no `service_name`, which is
+what keeps them out of the appliance rules.
+
+`Appliance telemetry is missing its node label`, in `infra-central`'s
+`terraform/envs/grafana/alerts.tf`, fires while this is not done and goes quiet
+once it is — so this does not depend on anyone remembering to check.
+
+Give the reconcile journal source
 the same `service_name`, `node`, `region` and `appliance` as static labels, plus the shared
 journal relabel rules so the unit lands on its own label.
 
