@@ -49,6 +49,8 @@ NODE=staging/eu-central-3
 DEV_FILE=nodes/dev/apps/versions.env
 STAGING_FILE=nodes/$NODE/apps/versions.env
 SUBJECT="Promote dev's images to staging"
+# This repository, which Actions names; for links in the message.
+SELF=${GITHUB_REPOSITORY:-fil-forge/infra-nodes}
 
 # The services a node pins, and the repository each publishes from, mirroring
 # set-node-pin.sh and bump-deployed-image.yml.
@@ -67,31 +69,55 @@ pin_at() {
   git show "$1:$2" | sed -nE "s|^${key}=[^@]+@(sha256:[0-9a-f]{64})[[:blank:]]*\$|\1|p"
 }
 
-# The commit a digest was built from, empty if unknown. Every digest a node runs
-# reached dev first, through a bump whose message names the commit it was
-# published from; the oldest commit on main that put the digest in dev's file
-# is that bump. A digest dispatched by hand has no commit.
+# The bump on main that first put a digest in dev's file, empty if none did.
+# Every digest a node runs reached dev first, through a bump pull request.
+bump_of() {
+  git log --reverse --format=%H -S "$1" origin/main -- "$DEV_FILE" | head -n 1
+}
+
+# The commit a digest was built from, empty if unknown. The bump that carried it
+# names the commit it was published from; a digest dispatched by hand has none.
 source_commit() {
-  local service=$1 digest=$2 bump
-  bump=$(git log --reverse --format=%H -S "$digest" origin/main -- "$DEV_FILE" | head -n 1)
+  local service=$1 bump
+  bump=$(bump_of "$2")
   [ -n "$bump" ] || return 0
   git log -1 --format=%B "$bump" \
     | sed -nE "s|^- Commit: https://github\.com/$(repo_of "$service")/commit/([0-9a-f]{40})\$|\1|p" \
     | head -n 1
 }
 
+# A digest, shortened, linked to the pull request that bumped dev to it, where
+# its source commit and publish run are. Plain if no bump on main carried it.
+digest_link() {
+  local short="\`sha256:${1:7:7}\`" bump pr
+  bump=$(bump_of "$1")
+  if [ -z "$bump" ]; then
+    echo "$short"
+    return
+  fi
+  pr=$(git log -1 --format=%s "$bump" | sed -nE 's|.*\(#([0-9]+)\)$|\1|p')
+  if [ -n "$pr" ]; then
+    echo "[$short](https://github.com/$SELF/pull/$pr)"
+  else
+    echo "[$short](https://github.com/$SELF/commit/$bump)"
+  fi
+}
+
 # What a service brings between two of its commits, one line per commit, oldest
-# first. Squash-merged titles end in "(#123)", which here would link to this
-# repository's pull request 123; each becomes a link to the service's pull
-# request instead. The links are explicit, because GitHub renders a bare
-# reference as the title of what it names, which the line already starts with,
-# and does not link a bare commit hash from another repository at all.
+# first, each linked. A squash-merged commit, whose title ends in "(#123)", is
+# written as a bare reference to the service's pull request, which GitHub
+# renders as that pull request's title. Other commits keep their own title, with
+# any "(#123)" in it qualified with the service's repository.
 changes() {
-  local repo=$1 from=$2 to=$3
-  gh api "repos/$repo/compare/$from...$to" \
-    --jq '.commits[] | "- " + (.commit.message | split("\n")[0])
-      + " ([" + .sha[0:7] + "](https://github.com/'"$repo"'/commit/" + .sha + "))"' \
-    | sed -E "s|\(#([0-9]+)\)|([$repo#\1](https://github.com/$repo/pull/\1))|g"
+  local from=$2 to=$3
+  # $title and $pr are jq's; the repository reaches jq through the environment.
+  # shellcheck disable=SC2016
+  REPO=$1 gh api "repos/$1/compare/$from...$to" --jq '.commits[]
+    | (.commit.message | split("\n")[0]) as $title
+    | ([$title | capture("\\(#(?<n>[0-9]+)\\)$").n][0]) as $pr
+    | "- " + (if $pr then env.REPO + "#" + $pr
+             else $title | gsub("\\(#(?<n>[0-9]+)\\)"; "(\(env.REPO)#\(.n))") end)
+      + " ([" + .sha[0:7] + "](https://github.com/\(env.REPO)/commit/\(.sha)))"'
 }
 
 git fetch --quiet --force origin main "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
@@ -135,10 +161,10 @@ for service in "${SERVICES[@]}"; do
     echo
     echo "## $service"
     echo
-    echo "\`sha256:${staging_digest:7:7}\` → \`sha256:${dev_digest:7:7}\`"
+    echo "$(digest_link "$staging_digest") → $(digest_link "$dev_digest")"
     echo
     if [ -n "$from" ] && [ -n "$to" ]; then
-      echo "What $repo brings over staging's pin, \`${from:0:7}..${to:0:7}\`:"
+      echo "What $repo brings over staging's pin, [\`${from:0:7}..${to:0:7}\`](https://github.com/$repo/compare/$from...$to):"
       echo
       # A change list the API will not give is no reason to hold the promotion.
       changes "$repo" "$from" "$to" \
