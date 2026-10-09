@@ -86,17 +86,32 @@ source_commit() {
     | head -n 1
 }
 
+# Each version a service has published on ghcr.io, as "<digest> <page>" lines,
+# fetched once per service: the list only grows, and every moving service needs
+# two lookups in it. Loaded here rather than in digest_link, whose callers run
+# it in a subshell that would lose what it fetched. Empty, with a warning, if
+# the packages API will not give it.
+declare -A VERSIONS
+load_versions() {
+  local service=$1 owner
+  owner=$(repo_of "$service")
+  # On an error, gh prints the response body where the list would be, and its
+  # message on stderr; keep the message and drop the body.
+  if ! VERSIONS[$service]=$(gh api --paginate \
+      "orgs/${owner%%/*}/packages/container/$service/versions?per_page=100" \
+      --jq '.[] | "\(.name) \(.html_url)"'); then
+    echo "::warning::could not list $service's versions on ghcr.io; linking its digests to their bump pull requests instead" >&2
+    VERSIONS[$service]=""
+  fi
+}
+
 # A digest, shortened, linked to its version's page on ghcr.io. Failing that,
 # to the pull request that bumped dev to it, which names its source commit and
 # publish run; plain if no bump on main carried it either.
 digest_link() {
-  local service=$1 digest=$2 short="\`sha256:${2:7:7}\`" owner page bump pr
-  owner=$(repo_of "$service")
-  # On an error, gh prints the response body where the page would be.
-  if page=$(gh api --paginate "orgs/${owner%%/*}/packages/container/$service/versions?per_page=100" \
-      --jq ".[] | select(.name == \"$digest\") | .html_url" 2>/dev/null) \
-    && [ -n "$page" ]; then
-    page=$(head -n 1 <<<"$page")
+  local service=$1 digest=$2 short="\`sha256:${2:7:7}\`" page bump pr
+  page=$(awk -v d="$digest" '$1 == d { print $2; exit }' <<<"${VERSIONS[$service]-}")
+  if [ -n "$page" ]; then
     echo "[$short]($page)"
     return
   fi
@@ -116,18 +131,26 @@ digest_link() {
 # What a service brings between two of its commits, one line per commit, oldest
 # first, each linked. A squash-merged commit, whose title ends in "(#123)", is
 # written as a bare reference to the service's pull request, which GitHub
-# renders as that pull request's title. Other commits keep their own title, with
-# any "(#123)" in it qualified with the service's repository.
+# renders as that pull request's title. Any other commit's title goes in a code
+# span, so nothing in it is read as a reference, a mention, a closing keyword or
+# formatting. Says so when the compare API cut the list short.
 changes() {
   local from=$2 to=$3
-  # $title and $pr are jq's; the repository reaches jq through the environment.
+  # $title, $pr and $c are jq's; the repository reaches jq through the
+  # environment.
   # shellcheck disable=SC2016
-  REPO=$1 gh api "repos/$1/compare/$from...$to" --jq '.commits[]
-    | (.commit.message | split("\n")[0]) as $title
-    | ([$title | capture("\\(#(?<n>[0-9]+)\\)$").n][0]) as $pr
-    | "- " + (if $pr then env.REPO + "#" + $pr
-             else $title | gsub("\\(#(?<n>[0-9]+)\\)"; "(\(env.REPO)#\(.n))") end)
-      + " ([" + .sha[0:7] + "](https://github.com/\(env.REPO)/commit/\(.sha)))"'
+  REPO=$1 gh api "repos/$1/compare/$from...$to" --jq '
+    (.commits[]
+      | (.commit.message | split("\n")[0] | rtrimstr("\r")) as $title
+      | ([$title | capture("\\(#(?<n>[0-9]+)\\)$").n][0]) as $pr
+      | "- " + (if $pr then env.REPO + "#" + $pr
+               else "`" + ($title | gsub("`"; "\u0027")) + "`" end)
+        + " ([" + .sha[0:7] + "](https://github.com/\(env.REPO)/commit/\(.sha)))"),
+    ((.commits | length) as $c
+      | if $c == 0 then "- No commits: both pins were built from the same commit."
+        elif .total_commits > $c
+        then "- …and \(.total_commits - $c) more, which the compare API leaves out."
+        else empty end)'
 }
 
 git fetch --quiet --force origin main "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
@@ -165,6 +188,7 @@ for service in "${SERVICES[@]}"; do
   moving+=("$service:$dev_digest")
 
   repo=$(repo_of "$service")
+  load_versions "$service"
   from=$(source_commit "$service" "$staging_digest")
   to=$(source_commit "$service" "$dev_digest")
   {
@@ -177,8 +201,13 @@ for service in "${SERVICES[@]}"; do
       echo "What $repo brings over staging's pin, [\`${from:0:7}..${to:0:7}\`](https://github.com/$repo/compare/$from...$to):"
       echo
       # A change list the API will not give is no reason to hold the promotion.
-      changes "$repo" "$from" "$to" \
-        || echo "The change list could not be fetched; see https://github.com/$repo/compare/$from...$to."
+      # On an error gh prints the response body on stdout, so the list is only
+      # written once the call has succeeded.
+      if list=$(changes "$repo" "$from" "$to"); then
+        echo "$list"
+      else
+        echo "The change list could not be fetched; see https://github.com/$repo/compare/$from...$to."
+      fi
     else
       # A digest dispatched by hand names no commit.
       echo "No change list: the commit $( [ -n "$from" ] && echo "dev's" || echo "staging's" ) digest was built from is unknown."
