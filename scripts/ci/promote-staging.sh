@@ -148,15 +148,16 @@ changes() {
                elif $title == "" then "(no title)"
                else "`" + ($title | gsub("`"; "\u0027")) + "`" end)
         + " ([" + .sha[0:7] + "](https://github.com/\(env.REPO)/commit/\(.sha)))"),
-    (if .status == "identical" then "- No commits: both pins were built from the same commit."
-     elif .status == "behind"
-     then "- No commits forward: dev\u2019s pin is \(.behind_by) commits behind staging\u2019s, so merging this rolls staging back."
-     elif .status == "diverged"
-     then "- Staging\u2019s pin also has \(.behind_by) commits that dev\u2019s lacks, which merging this drops."
-     else empty end),
     ((.commits | length) as $c
       | if .total_commits > $c
         then "- …and \(.total_commits - $c) more, which the compare API leaves out."
+        else empty end),
+    (.behind_by as $n | "\($n) commit\(if $n == 1 then "" else "s" end)" as $commits
+      | if .status == "identical" then "- No commits: both pins were built from the same commit."
+        elif .status == "behind"
+        then "- No commits forward: dev\u2019s pin is \($commits) behind staging\u2019s, so merging this rolls staging back."
+        elif .status == "diverged"
+        then "- Staging\u2019s pin also has \($commits) that dev\u2019s lacks, which merging this drops."
         else empty end)'
 }
 
