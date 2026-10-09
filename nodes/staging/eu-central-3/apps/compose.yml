@@ -20,6 +20,8 @@ services:
       PIRI_DB_BACKEND: postgres
       PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri?sslmode=disable
       PIRI_BLOB_BACKEND: filesystem
+      # Seconds a re-run of `piri init` may take; override in node.env.
+      PIRI_INIT_TIMEOUT: ${PIRI_INIT_TIMEOUT:-300}
     volumes:
       - /run/fil-one/secrets/piri.pem:/keys/piri.pem:ro
       - /run/fil-one/secrets/piri-owner-wallet.hex:/keys/owner-wallet.hex:ro

@@ -1108,10 +1108,56 @@ same way, most often because the chain RPC is unreachable.
 **The gate says `piri-config.toml` is missing.** The container is running but the file is not there
 yet, which is where a node sits while `piri init` is still working and where it stays if init died.
 `docker logs filone-piri` says which of the two it is. The gate lets the deploy through only when
-`piri-base-config.applied.toml` is missing too, because init writes that file last and a node that
-has never got that far holds no proof set. A missing config next to a present snapshot aborts the
-deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
+init's stamp is missing too: `piri-init.stamp`, or `piri-base-config.applied.toml` on a node that
+has not re-run init since the stamp replaced it. The entrypoint writes the stamp once init returns,
+so a node that has never got that far holds no proof set. A missing config next to a present stamp
+aborts the deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
 `docker stop filone-piri` if the node is being decommissioned.
+
+**Piri logs `WARNING: init failed; serving the existing config version N`.** Piri's entrypoint
+re-runs `piri init` whenever one of init's inputs changes: the base config, a `node.env` value init
+takes as a flag (public URL, chain endpoint, registrar, PLC directory, operator email), the Postgres
+URL, so a rotation of Piri's database password too, the chain RPC token on dev, or a Piri image that
+writes a different config version, which a rollback to an older image does as well as an upgrade. It
+happens on the next recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump
+or such a `node.env` edit costs one init run, not just a restart. A re-run that fails, or does not
+finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a whole
+number without leading zeros falls back to 300 with a warning), ends in this warning when it is safe
+to carry on: the image writes a different config version, it is the first start since the stamp
+replaced the snapshot and the old snapshot still matches the base config, or init timed out. Piri
+then serves the config already on disk, which holds its proof set; `N` is that config's version. A
+preceding `did not finish within` line means init was killed with SIGKILL (exit 137): usually by the
+timeout, but the kernel's OOM killer exits the same way, and `dmesg` on the host tells the two
+apart. The first-start case can hide a `node.env` or token change that lands in the same deploy: the
+config served lacks it until init next succeeds. Any other failure of a re-run still exits, and
+Docker restarts the container into the same init. The lines before the warning in `docker logs
+filone-piri` carry init's own error, most often the registrar or chain RPC being unreachable. A kill
+partway through init is harmless: the wallet import is idempotent and the key files are mounted
+read-only, so the next run recovers.
+
+**Piri logs `WARNING: skipping init: it already failed for this Piri and these inputs`.** After the
+warning above, the entrypoint writes `piri-init.failed` beside `piri-config.toml`, holding the Piri
+binary's hash, the config version it tried to write and the hash of init's inputs. While all three
+still match, every later start, whether a gated recreate, a crash, a reboot or a Docker restart,
+skips init and serves the existing config straight away, rather than holding off proving for another
+failed run each time. Until init succeeds the node serves the older config, which is safe but misses
+whatever the re-run was for. A new Piri image or a change to any of init's inputs retries on its
+own, a start that needs no init deletes the file, and so does a successful init. To retry with
+nothing changed, fix the cause, then wait for the gate, delete the file and restart Piri, in that
+order and straight away, so the restart lands in the window the gate found. Run it from the
+checkout, holding the deploy lock so a reconcile can neither reset the checkout under the gate nor
+recreate Piri around the restart:
+
+```sh
+cd /opt/fil-one/infra-nodes
+sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh \
+  && rm /mnt/fil-one/data/piri/piri-init.failed \
+  && docker restart filone-piri'
+```
+
+Those are dev's checkout and data directory; staging's are `/root/fil-one/infra-nodes` and
+`/mnt/data/fil-one/data/piri/`. Deleting the file without the restart retries on the next start of
+any kind, gated or not; `deploy-apps.sh` does not recreate Piri when nothing has changed.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
