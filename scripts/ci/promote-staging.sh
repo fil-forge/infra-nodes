@@ -99,7 +99,7 @@ load_versions() {
   # message on stderr; keep the message and drop the body.
   if ! VERSIONS[$service]=$(gh api --paginate \
       "orgs/${owner%%/*}/packages/container/$service/versions?per_page=100" \
-      --jq '.[] | "\(.name) \(.html_url)"'); then
+      --jq '.[] | select(.html_url) | "\(.name) \(.html_url)"'); then
     echo "::warning::could not list $service's versions on ghcr.io; linking its digests to their bump pull requests instead" >&2
     VERSIONS[$service]=""
   fi
@@ -133,7 +133,8 @@ digest_link() {
 # written as a bare reference to the service's pull request, which GitHub
 # renders as that pull request's title. Any other commit's title goes in a code
 # span, so nothing in it is read as a reference, a mention, a closing keyword or
-# formatting. Says so when the compare API cut the list short.
+# formatting. Says so when there is nothing to list, when dev's pin is behind
+# or beside staging's, and when the compare API cut the list short.
 changes() {
   local from=$2 to=$3
   # $title, $pr and $c are jq's; the repository reaches jq through the
@@ -144,11 +145,17 @@ changes() {
       | (.commit.message | split("\n")[0] | rtrimstr("\r")) as $title
       | ([$title | capture("\\(#(?<n>[0-9]+)\\)$").n][0]) as $pr
       | "- " + (if $pr then env.REPO + "#" + $pr
+               elif $title == "" then "(no title)"
                else "`" + ($title | gsub("`"; "\u0027")) + "`" end)
         + " ([" + .sha[0:7] + "](https://github.com/\(env.REPO)/commit/\(.sha)))"),
+    (if .status == "identical" then "- No commits: both pins were built from the same commit."
+     elif .status == "behind"
+     then "- No commits forward: dev\u2019s pin is \(.behind_by) commits behind staging\u2019s, so merging this rolls staging back."
+     elif .status == "diverged"
+     then "- Staging\u2019s pin also has \(.behind_by) commits that dev\u2019s lacks, which merging this drops."
+     else empty end),
     ((.commits | length) as $c
-      | if $c == 0 then "- No commits: both pins were built from the same commit."
-        elif .total_commits > $c
+      | if .total_commits > $c
         then "- …and \(.total_commits - $c) more, which the compare API leaves out."
         else empty end)'
 }
