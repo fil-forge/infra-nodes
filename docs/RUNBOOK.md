@@ -1136,15 +1136,25 @@ partway through init is harmless: the wallet import is idempotent and the key fi
 read-only, so the next run recovers.
 
 **Piri logs `WARNING: skipping init: it already failed for this Piri and these inputs`.** After the
-warning above, the entrypoint writes `piri-init.failed` beside `piri-config.toml`, holding the
-config version it tried to write and the hash of init's inputs. While both still match, every later
-start, whether a gated recreate, a crash, a reboot or a Docker restart, skips init and serves the
-existing config straight away, rather than holding off proving for another failed run each time.
-Until init succeeds the node serves the older config, which is safe but misses whatever the re-run
-was for. A new Piri image or a change to any of init's inputs retries on its own, and a successful
-init deletes the file. To retry with nothing changed, fix the cause, delete `piri-init.failed` from
-Piri's data directory, and let the next `deploy-apps.sh` that recreates Piri, behind the gate, run
-init again.
+warning above, the entrypoint writes `piri-init.failed` beside `piri-config.toml`, holding the Piri
+binary's hash, the config version it tried to write and the hash of init's inputs. While all three
+still match, every later start, whether a gated recreate, a crash, a reboot or a Docker restart,
+skips init and serves the existing config straight away, rather than holding off proving for another
+failed run each time. Until init succeeds the node serves the older config, which is safe but misses
+whatever the re-run was for. A new Piri image or a change to any of init's inputs retries on its
+own, a start that needs no init deletes the file, and so does a successful init. To retry with
+nothing changed, fix the cause, then wait for the gate, delete the file and restart Piri, in that
+order and straight away, so the restart lands in the window the gate found:
+
+```sh
+sudo scripts/host/pdp-gate.sh \
+  && sudo rm /mnt/fil-one/data/piri/piri-init.failed \
+  && sudo docker restart filone-piri
+```
+
+That is dev's data directory; staging's is `/mnt/data/fil-one/data/piri/`. Deleting the file without
+the restart retries on the next start of any kind, gated or not; `deploy-apps.sh` does not recreate
+Piri when nothing has changed.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.

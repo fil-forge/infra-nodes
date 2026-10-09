@@ -21,7 +21,7 @@ INIT_FAILED="$DATA_DIR/piri-init.failed"
 INIT_TIMEOUT="${PIRI_INIT_TIMEOUT-300}"
 case "$INIT_TIMEOUT" in
   ""|*[!0-9]*|0*)
-    echo "WARNING: PIRI_INIT_TIMEOUT='$INIT_TIMEOUT' is not a positive number of seconds; using 300" >&2
+    echo "WARNING: PIRI_INIT_TIMEOUT='$INIT_TIMEOUT' is not a whole number of seconds without leading zeros; using 300" >&2
     INIT_TIMEOUT=300 ;;
 esac
 
@@ -62,7 +62,10 @@ WANT_VERSION=$(/usr/bin/piri version --config-version 2>/dev/null || true)
 case "$WANT_VERSION" in *[!0-9]*|"") WANT_VERSION="" ;; esac
 HAVE_VERSION=$(sed -n 's/^config_version = \([0-9][0-9]*\)$/\1/p' "$CONFIG_FILE" 2>/dev/null | head -n 1)
 HAVE_VERSION="${HAVE_VERSION:-0}"
-ATTEMPT=$(printf 'config_version=%s\ninputs=%s\n' "$WANT_VERSION" "$INPUTS")
+# The binary is in the attempt, not only the config version it writes, so a
+# fixed image that writes the same version retries.
+ATTEMPT=$(printf 'binary=%s\nconfig_version=%s\ninputs=%s\n' \
+    "$(sha256sum /usr/bin/piri | cut -d' ' -f1)" "$WANT_VERSION" "$INPUTS")
 
 # A failure is not fatal for "version" (only the config's shape is behind) or
 # "migration" (the first boot under the stamp, with the old snapshot still
@@ -80,8 +83,11 @@ fi
 
 if [ -z "$REASON" ]; then
   echo "Piri config exists and is current"
+  # A start that needs no init has nothing to retry; a marker left from an
+  # earlier attempt would otherwise match again if those inputs come back.
+  rm -f "$INIT_FAILED"
 elif [ "$REASON" != "no config yet" ] && [ "$(cat "$INIT_FAILED" 2>/dev/null)" = "$ATTEMPT" ]; then
-  echo "WARNING: skipping init: it already failed for this Piri and these inputs; serving the existing config version $HAVE_VERSION. To retry, delete $INIT_FAILED and recreate the container through the proving gate" >&2
+  echo "WARNING: skipping init: it already failed for this Piri and these inputs; serving the existing config version $HAVE_VERSION. docs/RUNBOOK.md says how to retry" >&2
 else
   case "$REASON" in
     version) echo "Running piri init: this Piri writes config version $WANT_VERSION, the config on disk is $HAVE_VERSION" ;;
@@ -108,7 +114,8 @@ else
     if [ -n "$INIT_TIMED_OUT" ]; then
       echo "WARNING: init did not finish within ${INIT_TIMEOUT}s and was killed" >&2
     fi
-    printf '%s\n' "$ATTEMPT" > "$INIT_FAILED"
+    printf '%s\n' "$ATTEMPT" > "$INIT_FAILED" ||
+      echo "WARNING: could not write $INIT_FAILED; init will run again on the next start" >&2
     echo "WARNING: init failed; serving the existing config version $HAVE_VERSION. Not retrying until the image or init's inputs change, or $INIT_FAILED is deleted" >&2
   else
     echo "ERROR: init failed" >&2
