@@ -1121,9 +1121,9 @@ URL, so a rotation of Piri's database password too, the chain RPC token on dev, 
 writes a different config version, which a rollback to an older image does as well as an upgrade. It
 happens on the next recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump
 or such a `node.env` edit costs one init run, not just a restart. A re-run that fails, or does not
-finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a
-whole number without leading zeros falls back to 300 with a warning), ends in this warning when it is safe to
-carry on: the image writes a different config version, it is the first start since the stamp
+finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a whole
+number without leading zeros falls back to 300 with a warning), ends in this warning when it is safe
+to carry on: the image writes a different config version, it is the first start since the stamp
 replaced the snapshot and the old snapshot still matches the base config, or init timed out. Piri
 then serves the config already on disk, which holds its proof set; `N` is that config's version. A
 preceding `did not finish within` line means init was killed with SIGKILL (exit 137): usually by the
@@ -1156,9 +1156,8 @@ sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh \
 ```
 
 Those are dev's checkout and data directory; staging's are `/root/fil-one/infra-nodes` and
-`/mnt/data/fil-one/data/piri/`. Deleting the file without
-the restart retries on the next start of any kind, gated or not; `deploy-apps.sh` does not recreate
-Piri when nothing has changed.
+`/mnt/data/fil-one/data/piri/`. Deleting the file without the restart retries on the next start of
+any kind, gated or not; `deploy-apps.sh` does not recreate Piri when nothing has changed.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
