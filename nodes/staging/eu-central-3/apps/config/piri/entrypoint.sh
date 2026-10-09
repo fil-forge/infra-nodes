@@ -13,8 +13,8 @@ INIT_STAMP="$DATA_DIR/piri-init.stamp"
 # place so a revert, and pdp-gate.sh, still find it.
 LEGACY_SNAPSHOT="$DATA_DIR/piri-base-config.applied.toml"
 # Written when a re-run of init fails and the existing config is served: the
-# config version and inputs hash attempted. While both match, later starts skip
-# init; see the dev entrypoint.
+# binary's hash, config version and inputs hash attempted. While all three
+# match, later starts skip init; see the dev entrypoint.
 INIT_FAILED="$DATA_DIR/piri-init.failed"
 # A re-run of init is killed after this long and the existing config served.
 # KILL, because piri catches SIGTERM and init does not stop on it.
@@ -85,7 +85,7 @@ if [ -z "$REASON" ]; then
   echo "Piri config exists and is current"
   # A start that needs no init has nothing to retry; a marker left from an
   # earlier attempt would otherwise match again if those inputs come back.
-  rm -f "$INIT_FAILED"
+  rm -f "$INIT_FAILED" 2>/dev/null || true
 elif [ "$REASON" != "no config yet" ] && [ "$(cat "$INIT_FAILED" 2>/dev/null)" = "$ATTEMPT" ]; then
   echo "WARNING: skipping init: it already failed for this Piri and these inputs; serving the existing config version $HAVE_VERSION. docs/RUNBOOK.md says how to retry" >&2
 else
@@ -108,7 +108,7 @@ else
   fi
   if [ "$INIT_STATUS" -eq 0 ]; then
     printf '%s\n' "$INPUTS" > "$INIT_STAMP"
-    rm -f "$INIT_FAILED"
+    rm -f "$INIT_FAILED" 2>/dev/null || true
   elif { [ "$REASON" = "version" ] || [ "$REASON" = "migration" ] || [ -n "$INIT_TIMED_OUT" ]; } &&
        grep -q proof_set "$CONFIG_FILE" 2>/dev/null; then
     if [ -n "$INIT_TIMED_OUT" ]; then

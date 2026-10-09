@@ -1122,7 +1122,7 @@ writes a different config version, which a rollback to an older image does as we
 happens on the next recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump
 or such a `node.env` edit costs one init run, not just a restart. A re-run that fails, or does not
 finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a
-positive whole number falls back to 300 with a warning), ends in this warning when it is safe to
+whole number without leading zeros falls back to 300 with a warning), ends in this warning when it is safe to
 carry on: the image writes a different config version, it is the first start since the stamp
 replaced the snapshot and the old snapshot still matches the base config, or init timed out. Piri
 then serves the config already on disk, which holds its proof set; `N` is that config's version. A
@@ -1144,15 +1144,19 @@ failed run each time. Until init succeeds the node serves the older config, whic
 whatever the re-run was for. A new Piri image or a change to any of init's inputs retries on its
 own, a start that needs no init deletes the file, and so does a successful init. To retry with
 nothing changed, fix the cause, then wait for the gate, delete the file and restart Piri, in that
-order and straight away, so the restart lands in the window the gate found:
+order and straight away, so the restart lands in the window the gate found. Run it from the
+checkout, holding the deploy lock so a reconcile can neither reset the checkout under the gate nor
+recreate Piri around the restart:
 
 ```sh
-sudo scripts/host/pdp-gate.sh \
-  && sudo rm /mnt/fil-one/data/piri/piri-init.failed \
-  && sudo docker restart filone-piri
+cd /opt/fil-one/infra-nodes
+sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh \
+  && rm /mnt/fil-one/data/piri/piri-init.failed \
+  && docker restart filone-piri'
 ```
 
-That is dev's data directory; staging's is `/mnt/data/fil-one/data/piri/`. Deleting the file without
+Those are dev's checkout and data directory; staging's are `/root/fil-one/infra-nodes` and
+`/mnt/data/fil-one/data/piri/`. Deleting the file without
 the restart retries on the next start of any kind, gated or not; `deploy-apps.sh` does not recreate
 Piri when nothing has changed.
 

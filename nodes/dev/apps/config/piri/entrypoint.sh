@@ -30,11 +30,11 @@ INIT_STAMP="${DATA_DIR}/piri-init.stamp"
 # it.
 LEGACY_SNAPSHOT="${DATA_DIR}/piri-base-config.applied.toml"
 # Written when a re-run of init fails and the existing config is served
-# instead. It holds what was attempted: the config version this binary writes
-# and the inputs hash. While both still match, later starts skip init rather
-# than hold off serving for another failed run on every restart. A new image or
-# a change to the inputs retries; so does deleting it. A successful init
-# removes it.
+# instead. It holds what was attempted: the binary's hash, the config version
+# it writes and the inputs hash. While all three match, later starts skip init
+# rather than hold off serving for another failed run on every restart. A new
+# image or a change to the inputs retries; so does deleting it. A successful
+# init, or a start that needs none, removes it.
 INIT_FAILED="${DATA_DIR}/piri-init.failed"
 # How long a re-run of init may take before it is killed and the existing
 # config served instead. A first init has no config to fall back to and is not
@@ -157,7 +157,7 @@ if [ -z "$REASON" ]; then
     echo "  config is current, skipping init"
     # A start that needs no init has nothing to retry; a marker left from an
     # earlier attempt would otherwise match again if those inputs come back.
-    rm -f "$INIT_FAILED"
+    rm -f "$INIT_FAILED" 2>/dev/null || true
 elif [ "$REASON" != "no config yet" ] && [ "$(cat "$INIT_FAILED" 2>/dev/null)" = "$ATTEMPT" ]; then
     echo "WARNING: skipping init: it already failed for this Piri and these inputs; serving the existing config version $HAVE_VERSION. docs/RUNBOOK.md says how to retry" >&2
 else
@@ -197,7 +197,7 @@ else
     fi
     if [ "$INIT_STATUS" -eq 0 ]; then
         printf '%s\n' "$INPUTS" > "$INIT_STAMP"
-        rm -f "$INIT_FAILED"
+        rm -f "$INIT_FAILED" 2>/dev/null || true
         echo "  init complete"
     elif { [ "$REASON" = "version" ] || [ "$REASON" = "migration" ] || [ -n "$INIT_TIMED_OUT" ]; } &&
          grep -q "proof_set" "$CONFIG_FILE" 2>/dev/null; then
