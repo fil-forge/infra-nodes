@@ -41,6 +41,15 @@ services:
     container_name: filone-ingot
     user: "0:0"
     command: ["serve", "--config", "/etc/ingot/config.yaml"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      # Ingot exports traces over OTLP/HTTP only when an OTLP endpoint is set,
+      # and logs "tracing off" otherwise. This one is the host's Alloy, through
+      # the Docker host gateway, as for Piri.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
+      # Piri sets the same attribute from its base config's [telemetry]
+      # environment, so one TraceQL filter tells the stages apart for both.
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=${STAGE}
     ports: ["127.0.0.1:15200:9000"]
     volumes:
       - /run/fil-one/secrets/ingot.pem:/keys/ingot.pem:ro

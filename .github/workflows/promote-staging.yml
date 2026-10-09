@@ -1,0 +1,51 @@
+# Keeps one pull request that promotes dev's images to staging, and never
+# merges it: merging it is how a person promotes. Built from main alone, so it
+# runs on every push there. A dev bump landing changes what it proposes; any
+# other push only moves it onto current main, which the ruleset requires before
+# it can merge.
+#
+# What it opens, refreshes and closes: scripts/ci/promote-staging.sh.
+name: Promote to staging
+
+# One at a time. Two runs would force-push the branch from two different
+# commits, and the pull request would show whichever lost.
+concurrency:
+  group: promote-staging
+  cancel-in-progress: false
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Promote dev's images to staging
+    runs-on: ubuntu-latest
+    steps:
+      # Not GITHUB_TOKEN: a pull request it opens or a push it makes starts no
+      # workflows, so the checks the pull request needs would never run.
+      - name: Mint fil-forge-bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
+      # Full history: each pin's source commit is read off the dev bump that
+      # first carried its digest.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token }}
+
+      - name: Open, refresh or close the promotion
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          APP_SLUG: ${{ steps.bot.outputs.app-slug }}
+        run: scripts/ci/promote-staging.sh
