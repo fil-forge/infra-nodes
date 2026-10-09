@@ -1116,20 +1116,35 @@ aborts the deploy: init has completed here before, so Piri may still owe a proof
 
 **Piri logs `WARNING: init failed; serving the existing config version N`.** Piri's entrypoint
 re-runs `piri init` whenever one of init's inputs changes: the base config, a `node.env` value init
-takes as a flag (public URL, chain endpoint, registrar, PLC directory, operator email), the chain
-RPC token on dev, or a Piri image that writes a newer config version. It happens on the next
-recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump or such a `node.env`
-edit costs one init run, not just a restart. A re-run that fails, or does not finish within 10
-minutes (`PIRI_INIT_TIMEOUT`, in seconds), ends in this warning when it is safe to carry on: the
-image wrote a newer config version, it is the first start since the stamp replaced the snapshot and
-the old snapshot still matches the base config, or init timed out. Piri then serves the config
-already on disk, which holds its proof set; `N` is that config's version, and a preceding `did not
-finish within` line says it timed out. Any other failure of a re-run still exits, and Docker
-restarts the container into the same init. The lines before the warning in `docker logs filone-piri`
-carry init's own error, most often the registrar or chain RPC being unreachable. Nothing retries on
-its own: init runs again only on the next recreate, or if Piri crashes and Docker restarts it. Until
-then the node serves the older config, which is safe but misses whatever the re-run was for. Fix the
-cause; the next change that `deploy-apps.sh` recreates Piri for, behind the gate, retries init.
+takes as a flag (public URL, chain endpoint, registrar, PLC directory, operator email), the Postgres
+URL, so a rotation of Piri's database password too, the chain RPC token on dev, or a Piri image that
+writes a different config version, which a rollback to an older image does as well as an upgrade. It
+happens on the next recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump
+or such a `node.env` edit costs one init run, not just a restart. A re-run that fails, or does not
+finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a
+positive whole number falls back to 300 with a warning), ends in this warning when it is safe to
+carry on: the image writes a different config version, it is the first start since the stamp
+replaced the snapshot and the old snapshot still matches the base config, or init timed out. Piri
+then serves the config already on disk, which holds its proof set; `N` is that config's version. A
+preceding `did not finish within` line means init was killed with SIGKILL (exit 137): usually by the
+timeout, but the kernel's OOM killer exits the same way, and `dmesg` on the host tells the two
+apart. The first-start case can hide a `node.env` or token change that lands in the same deploy: the
+config served lacks it until init next succeeds. Any other failure of a re-run still exits, and
+Docker restarts the container into the same init. The lines before the warning in `docker logs
+filone-piri` carry init's own error, most often the registrar or chain RPC being unreachable. A kill
+partway through init is harmless: the wallet import is idempotent and the key files are mounted
+read-only, so the next run recovers.
+
+**Piri logs `WARNING: skipping init: it already failed for this Piri and these inputs`.** After the
+warning above, the entrypoint writes `piri-init.failed` beside `piri-config.toml`, holding the
+config version it tried to write and the hash of init's inputs. While both still match, every later
+start, whether a gated recreate, a crash, a reboot or a Docker restart, skips init and serves the
+existing config straight away, rather than holding off proving for another failed run each time.
+Until init succeeds the node serves the older config, which is safe but misses whatever the re-run
+was for. A new Piri image or a change to any of init's inputs retries on its own, and a successful
+init deletes the file. To retry with nothing changed, fix the cause, delete `piri-init.failed` from
+Piri's data directory, and let the next `deploy-apps.sh` that recreates Piri, behind the gate, run
+init again.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.

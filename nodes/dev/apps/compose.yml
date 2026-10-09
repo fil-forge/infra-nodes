@@ -25,10 +25,12 @@ services:
       # Hosted RPC providers want an Authorization header, and Piri sends one
       # from this. The raw token; Piri prepends "Bearer ". The setting has no
       # CLI flag, so it comes in by environment, to init and to serve. Init
-      # does write it into the config it generates on the data volume, and
-      # echoes that config to stdout; the entrypoint discards init's stdout so
-      # the token stays out of the log Alloy ships to Grafana Cloud, and hashes
-      # the token into init's stamp so a rotation re-runs init and replaces it.
+      # does write it into the config it generates on the data volume, and can
+      # print that config to stdout (older binaries always do, newer ones when
+      # stdout is not a terminal); the entrypoint sends init's stdout to
+      # /dev/null so the token stays out of the log Alloy ships to Grafana
+      # Cloud, and hashes the token into init's stamp so a rotation re-runs init
+      # and replaces it.
       - PIRI_PDP_LOTUS_AUTH_TOKEN=${CHAIN_RPC_TOKEN}
       - PUBLIC_URL=${PIRI_PUBLIC_URL}
       - PORT=3000
@@ -46,6 +48,9 @@ services:
       # option, so the alternative is a file with the same string in it.
       - PIRI_DB_POSTGRES_URL=postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri?sslmode=disable
       - PIRI_BLOB_BACKEND=filesystem
+      # Seconds a re-run of `piri init` may take before it is killed and the
+      # existing config served. Set PIRI_INIT_TIMEOUT in node.env to change it.
+      - PIRI_INIT_TIMEOUT=${PIRI_INIT_TIMEOUT:-300}
     volumes:
       # Rendered from OpenBao into a root-only tmpfs by deploy-apps.sh. Nothing
       # here survives a reboot.

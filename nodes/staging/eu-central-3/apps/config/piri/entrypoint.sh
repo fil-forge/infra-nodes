@@ -12,9 +12,18 @@ INIT_STAMP="$DATA_DIR/piri-init.stamp"
 # Earlier versions' copy of the base config. No longer written, and left in
 # place so a revert, and pdp-gate.sh, still find it.
 LEGACY_SNAPSHOT="$DATA_DIR/piri-base-config.applied.toml"
+# Written when a re-run of init fails and the existing config is served: the
+# config version and inputs hash attempted. While both match, later starts skip
+# init; see the dev entrypoint.
+INIT_FAILED="$DATA_DIR/piri-init.failed"
 # A re-run of init is killed after this long and the existing config served.
 # KILL, because piri catches SIGTERM and init does not stop on it.
-INIT_TIMEOUT="${PIRI_INIT_TIMEOUT:-600}"
+INIT_TIMEOUT="${PIRI_INIT_TIMEOUT-300}"
+case "$INIT_TIMEOUT" in
+  ""|*[!0-9]*|0*)
+    echo "WARNING: PIRI_INIT_TIMEOUT='$INIT_TIMEOUT' is not a positive number of seconds; using 300" >&2
+    INIT_TIMEOUT=300 ;;
+esac
 
 : "${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
 : "${PUBLIC_URL:?PUBLIC_URL must be set}"
@@ -53,6 +62,7 @@ WANT_VERSION=$(/usr/bin/piri version --config-version 2>/dev/null || true)
 case "$WANT_VERSION" in *[!0-9]*|"") WANT_VERSION="" ;; esac
 HAVE_VERSION=$(sed -n 's/^config_version = \([0-9][0-9]*\)$/\1/p' "$CONFIG_FILE" 2>/dev/null | head -n 1)
 HAVE_VERSION="${HAVE_VERSION:-0}"
+ATTEMPT=$(printf 'config_version=%s\ninputs=%s\n' "$WANT_VERSION" "$INPUTS")
 
 # A failure is not fatal for "version" (only the config's shape is behind) or
 # "migration" (the first boot under the stamp, with the old snapshot still
@@ -70,6 +80,8 @@ fi
 
 if [ -z "$REASON" ]; then
   echo "Piri config exists and is current"
+elif [ "$REASON" != "no config yet" ] && [ "$(cat "$INIT_FAILED" 2>/dev/null)" = "$ATTEMPT" ]; then
+  echo "WARNING: skipping init: it already failed for this Piri and these inputs; serving the existing config version $HAVE_VERSION. To retry, delete $INIT_FAILED and recreate the container through the proving gate" >&2
 else
   case "$REASON" in
     version) echo "Running piri init: this Piri writes config version $WANT_VERSION, the config on disk is $HAVE_VERSION" ;;
@@ -90,12 +102,14 @@ else
   fi
   if [ "$INIT_STATUS" -eq 0 ]; then
     printf '%s\n' "$INPUTS" > "$INIT_STAMP"
+    rm -f "$INIT_FAILED"
   elif { [ "$REASON" = "version" ] || [ "$REASON" = "migration" ] || [ -n "$INIT_TIMED_OUT" ]; } &&
        grep -q proof_set "$CONFIG_FILE" 2>/dev/null; then
     if [ -n "$INIT_TIMED_OUT" ]; then
       echo "WARNING: init did not finish within ${INIT_TIMEOUT}s and was killed" >&2
     fi
-    echo "WARNING: init failed; serving the existing config version $HAVE_VERSION, and retrying on the next start" >&2
+    printf '%s\n' "$ATTEMPT" > "$INIT_FAILED"
+    echo "WARNING: init failed; serving the existing config version $HAVE_VERSION. Not retrying until the image or init's inputs change, or $INIT_FAILED is deleted" >&2
   else
     echo "ERROR: init failed" >&2
     exit 1

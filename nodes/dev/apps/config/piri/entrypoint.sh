@@ -29,10 +29,22 @@ INIT_STAMP="${DATA_DIR}/piri-init.stamp"
 # to that script, and the gate's check that init has completed here, still find
 # it.
 LEGACY_SNAPSHOT="${DATA_DIR}/piri-base-config.applied.toml"
+# Written when a re-run of init fails and the existing config is served
+# instead. It holds what was attempted: the config version this binary writes
+# and the inputs hash. While both still match, later starts skip init rather
+# than hold off serving for another failed run on every restart. A new image or
+# a change to the inputs retries; so does deleting it. A successful init
+# removes it.
+INIT_FAILED="${DATA_DIR}/piri-init.failed"
 # How long a re-run of init may take before it is killed and the existing
 # config served instead. A first init has no config to fall back to and is not
 # bounded. KILL, because piri catches SIGTERM and init does not stop on it.
-INIT_TIMEOUT="${PIRI_INIT_TIMEOUT:-600}"
+INIT_TIMEOUT="${PIRI_INIT_TIMEOUT-300}"
+case "$INIT_TIMEOUT" in
+    ""|*[!0-9]*|0*)
+        echo "WARNING: PIRI_INIT_TIMEOUT='$INIT_TIMEOUT' is not a positive number of seconds; using 300" >&2
+        INIT_TIMEOUT=300 ;;
+esac
 
 LOTUS_ENDPOINT="${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
 PUBLIC_URL="${PUBLIC_URL:?PUBLIC_URL must be set}"
@@ -118,6 +130,7 @@ WANT_VERSION=$(/usr/bin/piri version --config-version 2>/dev/null || true)
 case "$WANT_VERSION" in *[!0-9]*|"") WANT_VERSION="" ;; esac
 HAVE_VERSION=$(sed -n 's/^config_version = \([0-9][0-9]*\)$/\1/p' "$CONFIG_FILE" 2>/dev/null | head -n 1)
 HAVE_VERSION="${HAVE_VERSION:-0}"
+ATTEMPT=$(printf 'config_version=%s\ninputs=%s\n' "$WANT_VERSION" "$INPUTS")
 
 # Why init has to run, if it does. Two reasons make a failure not fatal, and
 # serve the config on disk instead, because it still reflects every input and
@@ -139,15 +152,18 @@ fi
 
 if [ -z "$REASON" ]; then
     echo "  config is current, skipping init"
+elif [ "$REASON" != "no config yet" ] && [ "$(cat "$INIT_FAILED" 2>/dev/null)" = "$ATTEMPT" ]; then
+    echo "WARNING: skipping init: it already failed for this Piri and these inputs; serving the existing config version $HAVE_VERSION. To retry, delete $INIT_FAILED and recreate the container through the proving gate" >&2
 else
     case "$REASON" in
         version) echo "  re-running init: this Piri writes config version $WANT_VERSION, the config on disk is $HAVE_VERSION" ;;
         migration) echo "  re-running init once to write its stamp" ;;
         *) echo "  running init: $REASON" ;;
     esac
-    # CONFIG_FILE is left in place. init truncates it when it writes, and a run
-    # that dies on a network call partway through would otherwise leave the node
-    # with no config at all.
+    # CONFIG_FILE is left in place, so a run that dies on a network call partway
+    # through still leaves the node a config to serve. Piri since
+    # fil-forge/piri#138 replaces it atomically; older binaries truncate it
+    # before writing.
     cd "$DATA_DIR"
     # A re-run is bounded; see INIT_TIMEOUT. The timeout is BusyBox's in the
     # Alpine-based Piri image.
@@ -159,11 +175,13 @@ else
     # is not on the delegator's allow list. That write is the first step of
     # onboarding, so a 403 here means onboarding has not run.
     #
-    # stdout goes nowhere. init prints the generated config there, and that
-    # config carries the chain RPC bearer token, which would land in the
-    # container log Alloy ships to Grafana Cloud. Nothing is lost: the same
-    # bytes are what init writes to CONFIG_FILE. Progress and every error go to
-    # stderr and stay on the console.
+    # stdout goes nowhere. The generated config carries the chain RPC bearer
+    # token, and the container's stdout is the log Alloy ships to Grafana Cloud.
+    # Older binaries always print the config there; since fil-forge/piri#138
+    # init prints it only when stdout is not a terminal, which /dev/null counts
+    # as, but the log pipe does not. Nothing is lost: the same bytes are what
+    # init writes to CONFIG_FILE. Progress and every error go to stderr and stay
+    # on the console.
     INIT_STATUS=0
     "$@" >/dev/null || INIT_STATUS=$?
     # 124 or 137: the timeout killed it (137 also covers any other SIGKILL).
@@ -173,13 +191,15 @@ else
     fi
     if [ "$INIT_STATUS" -eq 0 ]; then
         printf '%s\n' "$INPUTS" > "$INIT_STAMP"
+        rm -f "$INIT_FAILED"
         echo "  init complete"
     elif { [ "$REASON" = "version" ] || [ "$REASON" = "migration" ] || [ -n "$INIT_TIMED_OUT" ]; } &&
          grep -q "proof_set" "$CONFIG_FILE" 2>/dev/null; then
         if [ -n "$INIT_TIMED_OUT" ]; then
             echo "WARNING: init did not finish within ${INIT_TIMEOUT}s and was killed" >&2
         fi
-        echo "WARNING: init failed; serving the existing config version $HAVE_VERSION, and retrying on the next start" >&2
+        printf '%s\n' "$ATTEMPT" > "$INIT_FAILED"
+        echo "WARNING: init failed; serving the existing config version $HAVE_VERSION. Not retrying until the image or init's inputs change, or $INIT_FAILED is deleted" >&2
     else
         echo "ERROR: init failed" >&2
         exit 1
