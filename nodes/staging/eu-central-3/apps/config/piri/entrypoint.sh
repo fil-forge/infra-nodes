@@ -9,14 +9,20 @@ TEMP_DIR=/tmp/piri
 CONFIG_FILE="$DATA_DIR/piri-config.toml"
 # A hash of the base config and init's arguments; see the dev entrypoint.
 INIT_STAMP="$DATA_DIR/piri-init.stamp"
+# Earlier versions' copy of the base config. No longer written, and left in
+# place so a revert, and pdp-gate.sh, still find it.
 LEGACY_SNAPSHOT="$DATA_DIR/piri-base-config.applied.toml"
+# A re-run of init is killed after this long and the existing config served.
+# KILL, because piri catches SIGTERM and init does not stop on it.
+INIT_TIMEOUT="${PIRI_INIT_TIMEOUT:-600}"
 
 : "${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
 : "${PUBLIC_URL:?PUBLIC_URL must be set}"
 : "${REGISTRAR_URL:?REGISTRAR_URL must be set}"
-# Passed to both init and serve, so it reaches Piri even when a version-only
-# re-init fails and serve falls back to the existing config. `piri init`
-# ignores a `[ucan] plc_directory` in the base config.
+# Passed to both init and serve, so serve uses the current directory even when
+# a re-run of init fails or times out and serve falls back to a config written
+# before a change to it. `piri init` ignores a `[ucan] plc_directory` in the
+# base config.
 : "${PLC_DIRECTORY_URL:?PLC_DIRECTORY_URL must be set}"
 : "${OPERATOR_EMAIL:?OPERATOR_EMAIL must be set}"
 
@@ -37,18 +43,25 @@ set -- /usr/bin/piri init \
   --operator-email="$OPERATOR_EMAIL" \
   --db-type=postgres \
   --db-postgres-url="${PIRI_DB_POSTGRES_URL:?PIRI_DB_POSTGRES_URL must be set}"
+# Key and wallet contents are deliberately left out: init run with a different
+# wallet could create a new proof set on chain as a side effect of a restart.
 INPUTS=$( { cat "$BASE_CONFIG"; printf '%s\n' "$@"; } | sha256sum | cut -d' ' -f1)
 
 # Re-run init when this binary writes a different config version than the one
 # on disk. An older binary reports none; an older config counts as 0.
-WANT_VERSION=$(/usr/bin/piri version --config 2>/dev/null || true)
+WANT_VERSION=$(/usr/bin/piri version --config-version 2>/dev/null || true)
 case "$WANT_VERSION" in *[!0-9]*|"") WANT_VERSION="" ;; esac
 HAVE_VERSION=$(sed -n 's/^config_version = \([0-9][0-9]*\)$/\1/p' "$CONFIG_FILE" 2>/dev/null | head -n 1)
 HAVE_VERSION="${HAVE_VERSION:-0}"
 
+# A failure is not fatal for "version" (only the config's shape is behind) or
+# "migration" (the first boot under the stamp, with the old snapshot still
+# matching the base config): the config on disk reflects every input.
 REASON=""
 if [ ! -f "$CONFIG_FILE" ] || ! grep -q proof_set "$CONFIG_FILE" 2>/dev/null; then
   REASON="no config yet"
+elif [ ! -f "$INIT_STAMP" ] && cmp -s "$LEGACY_SNAPSHOT" "$BASE_CONFIG"; then
+  REASON="migration"
 elif [ "$(cat "$INIT_STAMP" 2>/dev/null)" != "$INPUTS" ]; then
   REASON="the base config or init's arguments changed"
 elif [ -n "$WANT_VERSION" ] && [ "$WANT_VERSION" != "$HAVE_VERSION" ]; then
@@ -58,18 +71,31 @@ fi
 if [ -z "$REASON" ]; then
   echo "Piri config exists and is current"
 else
-  if [ "$REASON" = "version" ]; then
-    echo "Running piri init: this Piri writes config version $WANT_VERSION, the config on disk is $HAVE_VERSION"
-  else
-    echo "Running piri init: $REASON"
-  fi
+  case "$REASON" in
+    version) echo "Running piri init: this Piri writes config version $WANT_VERSION, the config on disk is $HAVE_VERSION" ;;
+    migration) echo "Running piri init once to write its stamp" ;;
+    *) echo "Running piri init: $REASON" ;;
+  esac
   cd "$DATA_DIR"
-  if "$@" >/dev/null; then
+  # Only a re-run is bounded: a first init has no config to fall back to.
+  if [ "$REASON" != "no config yet" ]; then
+    set -- timeout -s KILL "$INIT_TIMEOUT" "$@"
+  fi
+  INIT_STATUS=0
+  "$@" >/dev/null || INIT_STATUS=$?
+  # 124 or 137: the timeout killed it.
+  INIT_TIMED_OUT=""
+  if [ "$REASON" != "no config yet" ]; then
+    case "$INIT_STATUS" in 124|137) INIT_TIMED_OUT=1 ;; esac
+  fi
+  if [ "$INIT_STATUS" -eq 0 ]; then
     printf '%s\n' "$INPUTS" > "$INIT_STAMP"
-    rm -f "$LEGACY_SNAPSHOT"
-  elif [ "$REASON" = "version" ] && grep -q proof_set "$CONFIG_FILE" 2>/dev/null; then
-    # Only the config's shape is behind; every input it reflects is current.
-    echo "WARNING: init failed; serving config version $HAVE_VERSION until the next start" >&2
+  elif { [ "$REASON" = "version" ] || [ "$REASON" = "migration" ] || [ -n "$INIT_TIMED_OUT" ]; } &&
+       grep -q proof_set "$CONFIG_FILE" 2>/dev/null; then
+    if [ -n "$INIT_TIMED_OUT" ]; then
+      echo "WARNING: init did not finish within ${INIT_TIMEOUT}s and was killed" >&2
+    fi
+    echo "WARNING: init failed; serving the existing config version $HAVE_VERSION, and retrying on the next start" >&2
   else
     echo "ERROR: init failed" >&2
     exit 1

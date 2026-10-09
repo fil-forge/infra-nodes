@@ -23,11 +23,12 @@ services:
     environment:
       - LOTUS_ENDPOINT=${LOTUS_RPC_URL}
       # Hosted RPC providers want an Authorization header, and Piri sends one
-      # from this. The raw token; Piri prepends "Bearer ". Passed by environment
-      # rather than written into the config, because `piri init` writes the
-      # config it generates onto the data volume and echoes it to stdout, where
-      # Alloy would ship it to Grafana Cloud. The setting has no CLI flag for
-      # the same family of reasons.
+      # from this. The raw token; Piri prepends "Bearer ". The setting has no
+      # CLI flag, so it comes in by environment, to init and to serve. Init
+      # does write it into the config it generates on the data volume, and
+      # echoes that config to stdout; the entrypoint discards init's stdout so
+      # the token stays out of the log Alloy ships to Grafana Cloud, and hashes
+      # the token into init's stamp so a rotation re-runs init and replaces it.
       - PIRI_PDP_LOTUS_AUTH_TOKEN=${CHAIN_RPC_TOKEN}
       - PUBLIC_URL=${PIRI_PUBLIC_URL}
       - PORT=3000

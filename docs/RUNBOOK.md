@@ -1114,6 +1114,23 @@ so a node that has never got that far holds no proof set. A missing config next 
 aborts the deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
 `docker stop filone-piri` if the node is being decommissioned.
 
+**Piri logs `WARNING: init failed; serving the existing config version N`.** Piri's entrypoint
+re-runs `piri init` whenever one of init's inputs changes: the base config, a `node.env` value init
+takes as a flag (public URL, chain endpoint, registrar, PLC directory, operator email), the chain
+RPC token on dev, or a Piri image that writes a newer config version. It happens on the next
+recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump or such a `node.env`
+edit costs one init run, not just a restart. A re-run that fails, or does not finish within 10
+minutes (`PIRI_INIT_TIMEOUT`, in seconds), ends in this warning when it is safe to carry on: the
+image wrote a newer config version, it is the first start since the stamp replaced the snapshot and
+the old snapshot still matches the base config, or init timed out. Piri then serves the config
+already on disk, which holds its proof set; `N` is that config's version, and a preceding `did not
+finish within` line says it timed out. Any other failure of a re-run still exits, and Docker
+restarts the container into the same init. The lines before the warning in `docker logs filone-piri`
+carry init's own error, most often the registrar or chain RPC being unreachable. Nothing retries on
+its own: init runs again only on the next recreate, or if Piri crashes and Docker restarts it. Until
+then the node serves the older config, which is safe but misses whatever the re-run was for. Fix the
+cause; the next change that `deploy-apps.sh` recreates Piri for, behind the gate, retries init.
+
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
 

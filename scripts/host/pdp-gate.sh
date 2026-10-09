@@ -29,8 +29,8 @@ PIRI_CONTAINER=filone-piri
 PIRI_CONFIG=/data/piri/piri-config.toml
 # Written by the entrypoint once `piri init` has returned. See the config probe
 # below. The stamp replaced the snapshot; a node that has not re-run init since
-# still has only the snapshot, and the entrypoint deletes it only after writing
-# the stamp, so a node where init has ever completed has at least one of them.
+# still has only the snapshot, and the entrypoint never deletes it, so a node
+# where init has ever completed has at least one of them.
 PIRI_INIT_STAMP=/data/piri/piri-init.stamp
 PIRI_BASE_SNAPSHOT=/data/piri/piri-base-config.applied.toml
 
@@ -73,10 +73,10 @@ case "$config_probe" in
     set +e
     docker exec -i "$PIRI_CONTAINER" sh -c 'test -f "$1" || test -f "$2"' sh \
       "$PIRI_INIT_STAMP" "$PIRI_BASE_SNAPSHOT" >/dev/null 2>&1
-    snapshot_probe=$?
+    init_probe=$?
     set -e
 
-    case "$snapshot_probe" in
+    case "$init_probe" in
       1)
         echo "  Piri has not run init yet; nothing to wait for"
         exit 0
@@ -89,7 +89,7 @@ case "$config_probe" in
        already down has no proof in flight."
         ;;
       *)
-        die "could not look for init's stamp in $PIRI_CONTAINER (docker exec exited $snapshot_probe).
+        die "could not look for init's stamp in $PIRI_CONTAINER (docker exec exited $init_probe).
        Whether Piri owes a proof is unknown, so the deploy stops rather than restarting it."
         ;;
     esac
