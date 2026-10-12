@@ -63,7 +63,12 @@ control port are process-wide settings.
 **PgBouncer runs in its own container.** It gives the host one fixed source address to route into
 the tunnel, and a server image bump does not drop the pool of connections to the database. Its
 transaction pool serves the daemons and commit workers. A small session pool serves the few
-connections that hold session state. The routers' lookups go through the transaction pool too. Their
+connections that hold session state, chosen by role in PgBouncer's `[users]` section
+(`pool_mode = session`), so the server's code is unchanged. `locker`, the stats server's lock,
+holds a session-level advisory lock while idle in a transaction for the whole stats dump, and a
+transaction pool would hand that backend and its lock to another client. The estate loader
+(`pandora_admin`, with temporary tables and `\copy`) and the migration tools (`pandora_migration`)
+use the session pool too. The routers' lookups go through the transaction pool too. Their
 database driver requires TLS by default, so the router containers set `PGSSLMODE=disable` for the
 hop on the `compat` network, and `binary_parameters=yes` so each lookup reaches PgBouncer as one
 batch and runs on one server connection. That second setting is inferred from the driver's source,
