@@ -246,13 +246,14 @@ otelcol.processor.transform "traces" {
 otelcol.processor.batch "apps" {
 	output {
 		metrics = [otelcol.exporter.prometheus.apps.input]
-		traces  = [otelcol.exporter.otlphttp.grafana_cloud.input]
+		traces  = [otelcol.exporter.otlp.grafana_cloud.input]
 	}
 }
 
-// The stack's Tempo, which takes OTLP over HTTP. The exporter appends
-// /v1/traces to the URL.
-otelcol.exporter.otlphttp "grafana_cloud" {
+// The stack's Tempo, which takes OTLP over gRPC, with TLS, at the host and port
+// in GRAFANA_TRACES_URL. OTLP over HTTP to the same host gets a 404, which the
+// exporter reports as Unimplemented and drops without retrying.
+otelcol.exporter.otlp "grafana_cloud" {
 	client {
 		endpoint = sys.env("GRAFANA_TRACES_URL")
 		auth     = otelcol.auth.basic.grafana_cloud.handler
@@ -274,12 +275,12 @@ otelcol.exporter.prometheus "apps" {
 prometheus.relabel "apps" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 
-	// Named from job, which is the sender's service.name, so a second service
-	// pushing to this receiver gets its own service_name rather than Piri's.
-	// Piri's service.name is `piri`, matching its Compose service name.
+	// Each sender's service_name comes from its job, which is namespace/name
+	// (forge/piri) when it sets service.namespace. Only the name is kept, to
+	// match the service_name its logs carry.
 	rule {
 		source_labels = ["job"]
-		regex         = "(.+)"
+		regex         = "(?:[^/]+/)?(.+)"
 		replacement   = sys.env("SERVICE_NAME_PREFIX") + "-$1"
 		target_label  = "service_name"
 	}

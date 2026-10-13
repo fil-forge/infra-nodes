@@ -3,7 +3,8 @@
 #
 # `piri status upgrade-check` answers this directly, by exit code:
 #   0  safe
-#   1  proving, or in a challenge window it has not proven yet
+#   1  not safe: proving, in a challenge window it has not proven yet, or in a
+#      fault state. The output says which.
 #   2  cannot tell
 #
 # It fails closed. A node that owes proofs and will not say whether one is in
@@ -132,8 +133,9 @@ while :; do
       exit 0
       ;;
     1)
-      # A definite no. Piri is proving or owes a proof this window.
-      echo "  not safe: $output"
+      # A definite no. Piri's output already says "not safe" and why, so it is
+      # printed as it is.
+      echo "  $output"
       ;;
     *)
       # Piri is up and owes proofs but will not say whether one is in flight,

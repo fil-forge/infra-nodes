@@ -177,8 +177,8 @@ delegation to it survives. Dev takes no backups, by decision.
 
 ## Before production
 
-Two things this repository should have before a node carries anything that matters, both tracked
-in Linear.
+What this repository should have before a node carries anything that matters. Each is tracked in
+Linear.
 
 **A backup strategy.** Dev runs with none. [FIL-1166][] covers snapshots of the control volume,
 OpenBao raft snapshots off the box, and a restore that has actually been run, because the failure
@@ -190,11 +190,20 @@ OpenBao's transit engine over a unix socket; everything else is still a file ren
 by the deploy scripts. [FIL-1167][] is Piri, [FIL-1168][] is Ingot, and [FIL-1183][] removes the
 rendering step once both have landed.
 
+**A decision about who owns the reverse proxy.** Dev runs Caddy in its own Compose project; staging
+imports a snippet into the host's. Production is the staging arrangement, on hardware belonging to a
+storage provider. Caddy is the only component that sees a request before Piri or Ingot, and the only
+one that sees a request they never answered, so a proxy we do not control takes certificate expiry,
+error rate and latency with it. [FIL-1385][] is the decision; [FIL-1384][] is the part worth doing
+whichever way it goes.
+
 [FIL-1166]: https://linear.app/filecoin-foundation/issue/FIL-1166
 [FIL-807]: https://linear.app/filecoin-foundation/issue/FIL-807
 [FIL-1167]: https://linear.app/filecoin-foundation/issue/FIL-1167
 [FIL-1168]: https://linear.app/filecoin-foundation/issue/FIL-1168
 [FIL-1183]: https://linear.app/filecoin-foundation/issue/FIL-1183
+[FIL-1384]: https://linear.app/filecoin-foundation/issue/FIL-1384
+[FIL-1385]: https://linear.app/filecoin-foundation/issue/FIL-1385
 
 ## Development
 
