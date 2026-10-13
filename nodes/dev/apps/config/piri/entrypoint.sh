@@ -39,6 +39,16 @@ INIT_FAILED="${DATA_DIR}/piri-init.failed"
 # How long a re-run of init may take before it is killed and the existing
 # config served instead. A first init has no config to fall back to and is not
 # bounded. KILL, because piri catches SIGTERM and init does not stop on it.
+# The config as it was before a re-run of init, kept for the length of the run
+# so the proof set check after it can put it back.
+CONFIG_BEFORE="${DATA_DIR}/piri-config.toml.before-init"
+
+# The proof set IDs a config names, sorted and on one line; empty if it names
+# none or does not exist.
+proof_sets() {
+    sed -n 's/^[[:space:]]*proof_set[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$1" 2>/dev/null |
+        sort -u | tr '\n' ' '
+}
 INIT_TIMEOUT="${PIRI_INIT_TIMEOUT-300}"
 case "$INIT_TIMEOUT" in
     ""|*[!0-9]*|0*)
@@ -92,10 +102,13 @@ echo "[2/3] Initialising"
 # service URL or flag would recreate this container and never reach the config
 # Piri actually serves from.
 #
-# Re-running it is safe. `piri init` reuses an existing provider registration
-# and an existing proof set, and skips delegator registration for a DID that is
-# already registered, so a second run re-merges and rewrites the config without
-# touching anything on chain.
+# Re-running it is safe while its database still has this node's proof set.
+# `piri init` reuses an existing provider registration, reuses the one proof set
+# its Postgres lists, and skips delegator registration for a DID that is already
+# registered, so a second run re-merges and rewrites the config without touching
+# anything on chain. If that database lists none -- it was reset, or a changed
+# DSN points init at another one -- init creates a new proof set on chain. That
+# cannot be stopped from here, so the check after init refuses to serve it.
 #
 # Built as positional parameters rather than a string run through eval, so
 # every value reaches piri as one argv entry and nothing in it can word-split
@@ -176,6 +189,13 @@ else
     if [ "$REASON" != "no config yet" ]; then
         set -- timeout -s KILL "$INIT_TIMEOUT" "$@"
     fi
+    # On a re-run, the proof set the node has been proving and a copy of the
+    # config that names it, for the check after init.
+    OLD_PROOF_SET=""
+    if [ "$REASON" != "no config yet" ]; then
+        OLD_PROOF_SET=$(proof_sets "$CONFIG_FILE")
+        cp -p "$CONFIG_FILE" "$CONFIG_BEFORE"
+    fi
 
     # init calls the registrar for approval, which returns 403 for any DID that
     # is not on the delegator's allow list. That write is the first step of
@@ -195,7 +215,27 @@ else
     if [ "$REASON" != "no config yet" ]; then
         case "$INIT_STATUS" in 124|137) INIT_TIMED_OUT=1 ;; esac
     fi
-    if [ "$INIT_STATUS" -eq 0 ]; then
+    # A re-run must leave the node on the proof set it had. If the config now
+    # names a different one, init made it -- on chain, and in the database it
+    # used -- and serving it would move the node off the proof set its data is
+    # in. The old config goes back and is served; the new proof set is left for
+    # an operator. A config left with no proof set at all (an older binary
+    # truncates before writing) is put back too, and the outcome below is
+    # decided as before.
+    PROOF_SET_CHANGED=""
+    if [ -n "$OLD_PROOF_SET" ]; then
+        NEW_PROOF_SET=$(proof_sets "$CONFIG_FILE")
+        if [ "$NEW_PROOF_SET" != "$OLD_PROOF_SET" ]; then
+            [ -n "$NEW_PROOF_SET" ] && PROOF_SET_CHANGED=1
+            mv -f "$CONFIG_BEFORE" "$CONFIG_FILE"
+        fi
+    fi
+    rm -f "$CONFIG_BEFORE" 2>/dev/null || true
+    if [ -n "$PROOF_SET_CHANGED" ]; then
+        printf '%s\n' "$ATTEMPT" > "$INIT_FAILED" ||
+        echo "WARNING: could not write $INIT_FAILED; init will run again on the next start" >&2
+        echo "ERROR: init wrote a config naming proof set ${NEW_PROOF_SET% } in place of ${OLD_PROOF_SET% }, so it created a new one on chain. Serving the previous config; docs/RUNBOOK.md says what to check before retrying" >&2
+    elif [ "$INIT_STATUS" -eq 0 ]; then
         printf '%s\n' "$INPUTS" > "$INIT_STAMP"
         rm -f "$INIT_FAILED" 2>/dev/null || true
         echo "  init complete"

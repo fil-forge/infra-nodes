@@ -18,6 +18,14 @@ LEGACY_SNAPSHOT="$DATA_DIR/piri-base-config.applied.toml"
 INIT_FAILED="$DATA_DIR/piri-init.failed"
 # A re-run of init is killed after this long and the existing config served.
 # KILL, because piri catches SIGTERM and init does not stop on it.
+# The config as it was before a re-run of init; see the dev entrypoint.
+CONFIG_BEFORE="$DATA_DIR/piri-config.toml.before-init"
+
+# The proof set IDs a config names, sorted and on one line; empty if none.
+proof_sets() {
+  sed -n 's/^[[:space:]]*proof_set[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$1" 2>/dev/null |
+    sort -u | tr '\n' ' '
+}
 INIT_TIMEOUT="${PIRI_INIT_TIMEOUT-300}"
 case "$INIT_TIMEOUT" in
   ""|*[!0-9]*|0*)
@@ -99,6 +107,13 @@ else
   if [ "$REASON" != "no config yet" ]; then
     set -- timeout -s KILL "$INIT_TIMEOUT" "$@"
   fi
+  # On a re-run, the proof set the node has been proving, for the check after
+  # init; see the dev entrypoint for why.
+  OLD_PROOF_SET=""
+  if [ "$REASON" != "no config yet" ]; then
+    OLD_PROOF_SET=$(proof_sets "$CONFIG_FILE")
+    cp -p "$CONFIG_FILE" "$CONFIG_BEFORE"
+  fi
   INIT_STATUS=0
   "$@" >/dev/null || INIT_STATUS=$?
   # 124 or 137: the timeout killed it.
@@ -106,7 +121,22 @@ else
   if [ "$REASON" != "no config yet" ]; then
     case "$INIT_STATUS" in 124|137) INIT_TIMED_OUT=1 ;; esac
   fi
-  if [ "$INIT_STATUS" -eq 0 ]; then
+  # A config naming a different proof set means init created one on chain;
+  # put the old config back and serve it. One with none is put back too.
+  PROOF_SET_CHANGED=""
+  if [ -n "$OLD_PROOF_SET" ]; then
+    NEW_PROOF_SET=$(proof_sets "$CONFIG_FILE")
+    if [ "$NEW_PROOF_SET" != "$OLD_PROOF_SET" ]; then
+      [ -n "$NEW_PROOF_SET" ] && PROOF_SET_CHANGED=1
+      mv -f "$CONFIG_BEFORE" "$CONFIG_FILE"
+    fi
+  fi
+  rm -f "$CONFIG_BEFORE" 2>/dev/null || true
+  if [ -n "$PROOF_SET_CHANGED" ]; then
+    printf '%s\n' "$ATTEMPT" > "$INIT_FAILED" ||
+      echo "WARNING: could not write $INIT_FAILED; init will run again on the next start" >&2
+    echo "ERROR: init wrote a config naming proof set ${NEW_PROOF_SET% } in place of ${OLD_PROOF_SET% }, so it created a new one on chain. Serving the previous config; docs/RUNBOOK.md says what to check before retrying" >&2
+  elif [ "$INIT_STATUS" -eq 0 ]; then
     printf '%s\n' "$INPUTS" > "$INIT_STAMP"
     rm -f "$INIT_FAILED" 2>/dev/null || true
   elif { [ "$REASON" = "version" ] || [ "$REASON" = "migration" ] || [ -n "$INIT_TIMED_OUT" ]; } &&

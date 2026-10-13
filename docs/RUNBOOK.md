@@ -1225,6 +1225,20 @@ Those are dev's checkout and data directory; staging's are `/root/fil-one/infra-
 `/mnt/data/fil-one/data/piri/`. Deleting the file without the restart retries on the next start of
 any kind, gated or not; `deploy-apps.sh` does not recreate Piri when nothing has changed.
 
+**Piri logs `ERROR: init wrote a config naming proof set N in place of M`.** A re-run of init
+came back with a config naming a different proof set from the one the node was proving. `piri init`
+reuses the one proof set listed in Piri's Postgres (`pdp_data_sets`) and creates a new one on chain
+when that table lists none, so this means the database init used had lost the node's proof set, or
+was a different database: a reset, a restore from an older backup, or a `node.env` change to the
+Postgres URL. Init has already sent the creating transaction by the time the entrypoint sees the
+config, so proof set `N` exists on chain, owned by the node's wallet, and probably in that
+database. The entrypoint puts the previous config back, serves it, and writes `piri-init.failed` as
+for the warnings above, so the node keeps proving `M` with the database and settings it had, and
+later starts skip init until the image or init's inputs change. Before retrying, find out which
+database lost the row and why, and make sure the one in `node.env` holds proof set `M`; a retry
+against a database that lists only `N` would come back with `N` again. What to do with `N` on chain
+is a decision for whoever owns the wallet, not something to do from the node.
+
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
 
