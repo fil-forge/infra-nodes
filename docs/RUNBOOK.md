@@ -652,7 +652,11 @@ Commands in this section run from the infra-nodes checkout: `/opt/fil-one/infra-
 cloud nodes and `/root/fil-one/infra-nodes` on staging, the `FILONE_CHECKOUT` value in
 `/etc/fil-one/node.conf`.
 
-**Open a shell on a node.** The two nodes are reached differently.
+### Open a shell on a node.
+
+The two nodes are reached differently.
+
+#### dev
 
 Dev has no SSH: no inbound port 22, no key pair, no bastion. The way in is AWS Systems Manager
 Session Manager, which works because the SSM agent on the node dials out. You need credentials for
@@ -670,6 +674,9 @@ cd /opt/fil-one/infra-nodes
 
 The session starts as `ssm-user`; the secrets tmpfs, the token files and the docker socket are
 root's, hence `sudo -i`.
+
+
+#### staging
 
 Staging is a bare-metal host and takes SSH as root. Your public key has to be in root's
 `authorized_keys` on the host, which someone who already has access adds:
@@ -913,7 +920,9 @@ OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri s
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
 `docker inspect filone-piri` shows its environment.
 
-**The node rebooted.** Piri and Ingot come back down, and stay down until an apps deploy runs. Their
+### The node rebooted
+
+Piri and Ingot come back down, and stay down until an apps deploy runs. Their
 keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts both containers
 before anything has rendered them again, so each restart fails on a missing bind-mount source.
 Reconcile does not notice: it deploys a project only when a commit has touched it since the last
