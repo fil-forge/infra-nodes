@@ -145,7 +145,10 @@ INPUTS=$( { cat "$BASE_CONFIG"; printf '%s\n' "$@" "${PIRI_PDP_LOTUS_AUTH_TOKEN:
 # wrote, proof set and all.
 if [ -f "$CONFIG_BEFORE" ]; then
     echo "WARNING: restoring the config from before an init that did not finish" >&2
-    mv -f "$CONFIG_BEFORE" "$CONFIG_FILE"
+    mv -f "$CONFIG_BEFORE" "$CONFIG_FILE" || {
+        echo "ERROR: could not restore $CONFIG_FILE from $CONFIG_BEFORE; not serving the config an unfinished init left" >&2
+        exit 1
+    }
 fi
 
 # The version of the config this binary's init writes, and the version of the
@@ -251,12 +254,12 @@ else
     # run is not counted as a success: its stamp would claim inputs the config
     # does not reflect.
     PROOF_SET_CHANGED=""
-    if [ -n "$OLD_PROOF_SET" ] && [ -z "$INIT_SKIPPED" ]; then
+    if [ -f "$CONFIG_BEFORE" ]; then
         NEW_PROOF_SET=$(proof_sets "$CONFIG_FILE")
-        if [ -n "$NEW_PROOF_SET" ] && [ "$NEW_PROOF_SET" != "$OLD_PROOF_SET" ]; then
+        if [ -n "$OLD_PROOF_SET" ] && [ -n "$NEW_PROOF_SET" ] && [ "$NEW_PROOF_SET" != "$OLD_PROOF_SET" ]; then
             PROOF_SET_CHANGED=1
         fi
-        if [ -n "$PROOF_SET_CHANGED" ] || [ -z "$NEW_PROOF_SET" ] || [ "$INIT_STATUS" -ne 0 ]; then
+        if [ -n "$PROOF_SET_CHANGED" ] || { [ -n "$OLD_PROOF_SET" ] && [ -z "$NEW_PROOF_SET" ]; } || [ "$INIT_STATUS" -ne 0 ]; then
             mv -f "$CONFIG_BEFORE" "$CONFIG_FILE"
             if [ "$INIT_STATUS" -eq 0 ]; then
                 [ -z "$PROOF_SET_CHANGED" ] && echo "WARNING: init exited 0 but left no proof set in the config; restored the previous one" >&2
@@ -289,7 +292,11 @@ else
             echo "WARNING: init failed; serving the existing config version $HAVE_VERSION. Not retrying until the image or init's inputs change, or $INIT_FAILED is deleted" >&2
         fi
     else
-        echo "ERROR: init failed" >&2
+        if [ -n "$INIT_SKIPPED" ]; then
+            echo "ERROR: init did not run" >&2
+        else
+            echo "ERROR: init failed" >&2
+        fi
         exit 1
     fi
 fi

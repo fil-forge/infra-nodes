@@ -1249,7 +1249,9 @@ chain is a decision for whoever owns the wallet, not something to do from the no
 container stopped during a re-run of init, after the entrypoint copied the config to
 `piri-config.toml.before-init` and before it checked what init wrote. The copy is put back before
 anything else reads the config, so this start decides from the config the node was serving, and a
-proof set that run created or adopted is caught by the check above if init runs again.
+proof set that run created or adopted is caught by the check above if init runs again. If init does
+not run again, for instance because the change to its inputs was reverted in the meantime, check the
+wallet's proof sets on chain for one the interrupted run created.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
