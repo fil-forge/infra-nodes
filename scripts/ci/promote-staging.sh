@@ -49,6 +49,8 @@ NODE=staging/eu-central-3
 DEV_FILE=nodes/dev/apps/versions.env
 STAGING_FILE=nodes/$NODE/apps/versions.env
 SUBJECT="Promote dev's images to staging"
+# This repository, which Actions names; for links in the message.
+SELF=${GITHUB_REPOSITORY:-fil-forge/infra-nodes}
 
 # The services a node pins, and the repository each publishes from, mirroring
 # set-node-pin.sh and bump-deployed-image.yml.
@@ -67,28 +69,96 @@ pin_at() {
   git show "$1:$2" | sed -nE "s|^${key}=[^@]+@(sha256:[0-9a-f]{64})[[:blank:]]*\$|\1|p"
 }
 
-# The commit a digest was built from, empty if unknown. Every digest a node runs
-# reached dev first, through a bump whose message names the commit it was
-# published from; the oldest commit on main that put the digest in dev's file
-# is that bump. A digest dispatched by hand has no commit.
+# The bump on main that first put a digest in dev's file, empty if none did.
+# Every digest a node runs reached dev first, through a bump pull request.
+bump_of() {
+  git log --reverse --format=%H -S "$1" origin/main -- "$DEV_FILE" | head -n 1
+}
+
+# The commit a digest was built from, empty if unknown. The bump that carried it
+# names the commit it was published from; a digest dispatched by hand has none.
 source_commit() {
-  local service=$1 digest=$2 bump
-  bump=$(git log --reverse --format=%H -S "$digest" origin/main -- "$DEV_FILE" | head -n 1)
+  local service=$1 bump
+  bump=$(bump_of "$2")
   [ -n "$bump" ] || return 0
   git log -1 --format=%B "$bump" \
     | sed -nE "s|^- Commit: https://github\.com/$(repo_of "$service")/commit/([0-9a-f]{40})\$|\1|p" \
     | head -n 1
 }
 
+# Each version a service has published on ghcr.io, as "<digest> <page>" lines,
+# fetched once per service: the list only grows, and every moving service needs
+# two lookups in it. Loaded here rather than in digest_link, whose callers run
+# it in a subshell that would lose what it fetched. Empty, with a warning, if
+# the packages API will not give it.
+declare -A VERSIONS
+load_versions() {
+  local service=$1 owner
+  owner=$(repo_of "$service")
+  # On an error, gh prints the response body where the list would be, and its
+  # message on stderr; keep the message and drop the body.
+  if ! VERSIONS[$service]=$(gh api --paginate \
+      "orgs/${owner%%/*}/packages/container/$service/versions?per_page=100" \
+      --jq '.[] | select(.html_url) | "\(.name) \(.html_url)"'); then
+    echo "::warning::could not list $service's versions on ghcr.io; linking its digests to their bump pull requests instead" >&2
+    VERSIONS[$service]=""
+  fi
+}
+
+# A digest, shortened, linked to its version's page on ghcr.io. Failing that,
+# to the pull request that bumped dev to it, which names its source commit and
+# publish run; plain if no bump on main carried it either.
+digest_link() {
+  local service=$1 digest=$2 short="\`sha256:${2:7:7}\`" page bump pr
+  page=$(awk -v d="$digest" '$1 == d { print $2; exit }' <<<"${VERSIONS[$service]-}")
+  if [ -n "$page" ]; then
+    echo "[$short]($page)"
+    return
+  fi
+  bump=$(bump_of "$digest")
+  if [ -z "$bump" ]; then
+    echo "$short"
+    return
+  fi
+  pr=$(git log -1 --format=%s "$bump" | sed -nE 's|.*\(#([0-9]+)\)$|\1|p')
+  if [ -n "$pr" ]; then
+    echo "[$short](https://github.com/$SELF/pull/$pr)"
+  else
+    echo "[$short](https://github.com/$SELF/commit/$bump)"
+  fi
+}
+
 # What a service brings between two of its commits, one line per commit, oldest
-# first. Squash-merged titles end in "(#123)", which here would link to this
-# repository's pull request 123; each is qualified with the service's
-# repository instead.
+# first, each linked. A squash-merged commit, whose title ends in "(#123)", is
+# written as a bare reference to the service's pull request, which GitHub
+# renders as that pull request's title. Any other commit's title goes in a code
+# span, so nothing in it is read as a reference, a mention, a closing keyword or
+# formatting. Says so when there is nothing to list, when dev's pin is behind
+# or beside staging's, and when the compare API cut the list short.
 changes() {
-  local repo=$1 from=$2 to=$3
-  gh api "repos/$repo/compare/$from...$to" \
-    --jq '.commits[] | "- " + (.commit.message | split("\n")[0]) + " (" + .sha[0:7] + ")"' \
-    | sed -E "s|\(#([0-9]+)\)|($repo#\1)|g"
+  local from=$2 to=$3
+  # $title, $pr and $c are jq's; the repository reaches jq through the
+  # environment.
+  # shellcheck disable=SC2016
+  REPO=$1 gh api "repos/$1/compare/$from...$to" --jq '
+    (.commits[]
+      | (.commit.message | split("\n")[0] | rtrimstr("\r")) as $title
+      | ([$title | capture("\\(#(?<n>[0-9]+)\\)$").n][0]) as $pr
+      | "- " + (if $pr then env.REPO + "#" + $pr
+               elif $title == "" then "(no title)"
+               else "`" + ($title | gsub("`"; "\u0027")) + "`" end)
+        + " ([" + .sha[0:7] + "](https://github.com/\(env.REPO)/commit/\(.sha)))"),
+    ((.commits | length) as $c
+      | if .total_commits > $c
+        then "- …and \(.total_commits - $c) more, which the compare API leaves out."
+        else empty end),
+    (.behind_by as $n | "\($n) commit\(if $n == 1 then "" else "s" end)" as $commits
+      | if .status == "identical" then "- No commits: both pins were built from the same commit."
+        elif .status == "behind"
+        then "- No commits forward: dev\u2019s pin is \($commits) behind staging\u2019s, so merging this rolls staging back."
+        elif .status == "diverged"
+        then "- Staging\u2019s pin also has \($commits) that dev\u2019s lacks, which merging this drops."
+        else empty end)'
 }
 
 git fetch --quiet --force origin main "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
@@ -126,20 +196,26 @@ for service in "${SERVICES[@]}"; do
   moving+=("$service:$dev_digest")
 
   repo=$(repo_of "$service")
+  load_versions "$service"
   from=$(source_commit "$service" "$staging_digest")
   to=$(source_commit "$service" "$dev_digest")
   {
     echo
     echo "## $service"
     echo
-    echo "\`sha256:${staging_digest:7:7}\` → \`sha256:${dev_digest:7:7}\`"
+    echo "$(digest_link "$service" "$staging_digest") → $(digest_link "$service" "$dev_digest")"
     echo
     if [ -n "$from" ] && [ -n "$to" ]; then
-      echo "What $repo brings over staging's pin, \`${from:0:7}..${to:0:7}\`:"
+      echo "What $repo brings over staging's pin, [\`${from:0:7}..${to:0:7}\`](https://github.com/$repo/compare/$from...$to):"
       echo
       # A change list the API will not give is no reason to hold the promotion.
-      changes "$repo" "$from" "$to" \
-        || echo "The change list could not be fetched; see https://github.com/$repo/compare/$from...$to."
+      # On an error gh prints the response body on stdout, so the list is only
+      # written once the call has succeeded.
+      if list=$(changes "$repo" "$from" "$to"); then
+        echo "$list"
+      else
+        echo "The change list could not be fetched; see https://github.com/$repo/compare/$from...$to."
+      fi
     else
       # A digest dispatched by hand names no commit.
       echo "No change list: the commit $( [ -n "$from" ] && echo "dev's" || echo "staging's" ) digest was built from is unknown."
