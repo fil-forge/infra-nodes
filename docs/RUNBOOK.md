@@ -1227,17 +1227,29 @@ any kind, gated or not; `deploy-apps.sh` does not recreate Piri when nothing has
 
 **Piri logs `ERROR: init wrote a config naming proof set N in place of M`.** A re-run of init
 came back with a config naming a different proof set from the one the node was proving. `piri init`
-reuses the one proof set listed in Piri's Postgres (`pdp_data_sets`) and creates a new one on chain
-when that table lists none, so this means the database init used had lost the node's proof set, or
-was a different database: a reset, a restore from an older backup, or a `node.env` change to the
-Postgres URL. Init has already sent the creating transaction by the time the entrypoint sees the
-config, so proof set `N` exists on chain, owned by the node's wallet, and probably in that
-database. The entrypoint puts the previous config back, serves it, and writes `piri-init.failed` as
-for the warnings above, so the node keeps proving `M` with the database and settings it had, and
-later starts skip init until the image or init's inputs change. Before retrying, find out which
-database lost the row and why, and make sure the one in `node.env` holds proof set `M`; a retry
-against a database that lists only `N` would come back with `N` again. What to do with `N` on chain
-is a decision for whoever owns the wallet, not something to do from the node.
+reuses the one proof set listed in Piri's Postgres (`pdp_data_sets`), and creates a new one on chain
+when that table lists none. So the database init used either had lost the node's proof set or was a
+different database: a reset, a restore from an older backup, or a `node.env` change to the Postgres
+URL. A different database that already lists a proof set is adopted rather than created, and that
+proof set need not be this node's. Either way, by the time the entrypoint sees the config, init has
+already done it. The entrypoint puts the previous config back, serves it, and writes
+`piri-init.failed` as for the warnings above, so later starts skip init until the image or init's
+inputs change.
+
+What that leaves depends on the cause. `serve` reads the database URL from the config, not from
+`node.env`, so after a URL change the restored config points Piri back at the database it had, and
+the node keeps proving `M`; put the URL in `node.env` back, or decide to move. After a reset or an
+older restore of the same database, the restored config names `M` but the database no longer
+holds it: Piri cannot add roots to `M` or prove it, and it will fault. Restoring that database is
+then urgent. In both cases, make sure the database `node.env` points at holds proof set `M` before
+retrying; a retry against one that lists only `N` comes back with `N` again. What to do with `N` on
+chain is a decision for whoever owns the wallet, not something to do from the node.
+
+**Piri logs `WARNING: restoring the config from before an init that did not finish`.** The
+container stopped during a re-run of init, after the entrypoint copied the config to
+`piri-config.toml.before-init` and before it checked what init wrote. The copy is put back before
+anything else reads the config, so this start decides from the config the node was serving, and a
+proof set that run created or adopted is caught by the check above if init runs again.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.

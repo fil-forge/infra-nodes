@@ -36,11 +36,10 @@ LEGACY_SNAPSHOT="${DATA_DIR}/piri-base-config.applied.toml"
 # image or a change to the inputs retries; so does deleting it. A successful
 # init, or a start that needs none, removes it.
 INIT_FAILED="${DATA_DIR}/piri-init.failed"
-# How long a re-run of init may take before it is killed and the existing
-# config served instead. A first init has no config to fall back to and is not
-# bounded. KILL, because piri catches SIGTERM and init does not stop on it.
 # The config as it was before a re-run of init, kept for the length of the run
-# so the proof set check after it can put it back.
+# so the proof set check after it can put it back. One still here at the next
+# start is from a run that never finished, and is put back before anything
+# else reads the config.
 CONFIG_BEFORE="${DATA_DIR}/piri-config.toml.before-init"
 
 # The proof set IDs a config names, sorted and on one line; empty if it names
@@ -49,6 +48,10 @@ proof_sets() {
     sed -n 's/^[[:space:]]*proof_set[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$1" 2>/dev/null |
         sort -u | tr '\n' ' '
 }
+
+# How long a re-run of init may take before it is killed and the existing
+# config served instead. A first init has no config to fall back to and is not
+# bounded. KILL, because piri catches SIGTERM and init does not stop on it.
 INIT_TIMEOUT="${PIRI_INIT_TIMEOUT-300}"
 case "$INIT_TIMEOUT" in
     ""|*[!0-9]*|0*)
@@ -136,6 +139,15 @@ set -- /usr/bin/piri init \
 INPUTS=$( { cat "$BASE_CONFIG"; printf '%s\n' "$@" "${PIRI_PDP_LOTUS_AUTH_TOKEN:-}"; } |
     sha256sum | cut -d' ' -f1)
 
+# A copy left by a re-run that never finished -- the container was killed after
+# init wrote its config but before the check below ran -- goes back first.
+# Otherwise this start would read, and copy as its baseline, whatever that run
+# wrote, proof set and all.
+if [ -f "$CONFIG_BEFORE" ]; then
+    echo "WARNING: restoring the config from before an init that did not finish" >&2
+    mv -f "$CONFIG_BEFORE" "$CONFIG_FILE"
+fi
+
 # The version of the config this binary's init writes, and the version of the
 # one on disk. A binary too old to report one prints nothing and is left out of
 # the decision; a config written before the field existed counts as 0.
@@ -191,10 +203,17 @@ else
     fi
     # On a re-run, the proof set the node has been proving and a copy of the
     # config that names it, for the check after init.
+    # Without the copy the check has nothing to put back, so init does not run
+    # and the outcome is decided as for a failed run.
     OLD_PROOF_SET=""
+    INIT_SKIPPED=""
     if [ "$REASON" != "no config yet" ]; then
         OLD_PROOF_SET=$(proof_sets "$CONFIG_FILE")
-        cp -p "$CONFIG_FILE" "$CONFIG_BEFORE"
+        if ! cp -p "$CONFIG_FILE" "$CONFIG_BEFORE"; then
+            rm -f "$CONFIG_BEFORE" 2>/dev/null || true
+            echo "WARNING: could not copy $CONFIG_FILE before init, so init did not run" >&2
+            INIT_SKIPPED=1
+        fi
     fi
 
     # init calls the registrar for approval, which returns 403 for any DID that
@@ -209,32 +228,47 @@ else
     # init writes to CONFIG_FILE. Progress and every error go to stderr and stay
     # on the console.
     INIT_STATUS=0
-    "$@" >/dev/null || INIT_STATUS=$?
+    if [ -n "$INIT_SKIPPED" ]; then
+        INIT_STATUS=1
+    else
+        "$@" >/dev/null || INIT_STATUS=$?
+    fi
     # 124 or 137: the timeout killed it (137 also covers any other SIGKILL).
     INIT_TIMED_OUT=""
     if [ "$REASON" != "no config yet" ]; then
         case "$INIT_STATUS" in 124|137) INIT_TIMED_OUT=1 ;; esac
     fi
     # A re-run must leave the node on the proof set it had. If the config now
-    # names a different one, init made it -- on chain, and in the database it
-    # used -- and serving it would move the node off the proof set its data is
-    # in. The old config goes back and is served; the new proof set is left for
-    # an operator. A config left with no proof set at all (an older binary
-    # truncates before writing) is put back too, and the outcome below is
-    # decided as before.
+    # names a different one, init created or adopted it -- on chain, or from the
+    # database it used -- and serving it would move the node off the proof set
+    # its data is in. The old config goes back and is served; the new proof set
+    # is left for an operator.
+    #
+    # The copy also goes back after any run that did not succeed, and after one
+    # that exited 0 but left no proof set (an older binary truncates the config
+    # before writing it, and returns 0 when the write fails). Either way the
+    # config on disk is not one init finished, so it is not served, and such a
+    # run is not counted as a success: its stamp would claim inputs the config
+    # does not reflect.
     PROOF_SET_CHANGED=""
-    if [ -n "$OLD_PROOF_SET" ]; then
+    if [ -n "$OLD_PROOF_SET" ] && [ -z "$INIT_SKIPPED" ]; then
         NEW_PROOF_SET=$(proof_sets "$CONFIG_FILE")
-        if [ "$NEW_PROOF_SET" != "$OLD_PROOF_SET" ]; then
-            [ -n "$NEW_PROOF_SET" ] && PROOF_SET_CHANGED=1
+        if [ -n "$NEW_PROOF_SET" ] && [ "$NEW_PROOF_SET" != "$OLD_PROOF_SET" ]; then
+            PROOF_SET_CHANGED=1
+        fi
+        if [ -n "$PROOF_SET_CHANGED" ] || [ -z "$NEW_PROOF_SET" ] || [ "$INIT_STATUS" -ne 0 ]; then
             mv -f "$CONFIG_BEFORE" "$CONFIG_FILE"
+            if [ "$INIT_STATUS" -eq 0 ]; then
+                [ -z "$PROOF_SET_CHANGED" ] && echo "WARNING: init exited 0 but left no proof set in the config; restored the previous one" >&2
+                INIT_STATUS=1
+            fi
         fi
     fi
     rm -f "$CONFIG_BEFORE" 2>/dev/null || true
     if [ -n "$PROOF_SET_CHANGED" ]; then
         printf '%s\n' "$ATTEMPT" > "$INIT_FAILED" ||
         echo "WARNING: could not write $INIT_FAILED; init will run again on the next start" >&2
-        echo "ERROR: init wrote a config naming proof set ${NEW_PROOF_SET% } in place of ${OLD_PROOF_SET% }, so it created a new one on chain. Serving the previous config; docs/RUNBOOK.md says what to check before retrying" >&2
+        echo "ERROR: init wrote a config naming proof set ${NEW_PROOF_SET% } in place of ${OLD_PROOF_SET% }, so it created or adopted another one. Serving the previous config; docs/RUNBOOK.md says what to check before retrying" >&2
     elif [ "$INIT_STATUS" -eq 0 ]; then
         printf '%s\n' "$INPUTS" > "$INIT_STAMP"
         rm -f "$INIT_FAILED" 2>/dev/null || true
@@ -244,9 +278,16 @@ else
         if [ -n "$INIT_TIMED_OUT" ]; then
             echo "WARNING: init did not finish within ${INIT_TIMEOUT}s and was killed" >&2
         fi
-        printf '%s\n' "$ATTEMPT" > "$INIT_FAILED" ||
-        echo "WARNING: could not write $INIT_FAILED; init will run again on the next start" >&2
-        echo "WARNING: init failed; serving the existing config version $HAVE_VERSION. Not retrying until the image or init's inputs change, or $INIT_FAILED is deleted" >&2
+        # No marker when init never ran: the next start should try again.
+        if [ -z "$INIT_SKIPPED" ]; then
+            printf '%s\n' "$ATTEMPT" > "$INIT_FAILED" ||
+            echo "WARNING: could not write $INIT_FAILED; init will run again on the next start" >&2
+        fi
+        if [ -n "$INIT_SKIPPED" ]; then
+            echo "WARNING: serving the existing config version $HAVE_VERSION; init will run on the next start" >&2
+        else
+            echo "WARNING: init failed; serving the existing config version $HAVE_VERSION. Not retrying until the image or init's inputs change, or $INIT_FAILED is deleted" >&2
+        fi
     else
         echo "ERROR: init failed" >&2
         exit 1
