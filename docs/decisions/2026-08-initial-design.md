@@ -354,6 +354,17 @@ when that project deploys, and a pin comparison is only meaningful against the s
 digests off the containers rather than out of `versions.env` is what makes the comparison mean
 anything: a pin the node never applied shows up as a mismatch instead of as agreement with itself.
 
+Health endpoints and matching digests still leave the write path unproven, so after the smoke test
+passes the same job runs an end-to-end test: it creates a tenant through central's Hilt and a bucket
+on the node, uploads one object with PutObject and one with a multipart upload, reads both back, and
+deletes everything it created. It creates a new tenant on every run, so tenant creation is tested
+too. The cost is that Hilt does not yet delete a tenant's records in Sprue or its PLC entry
+([FIL-1488](https://linear.app/filecoin-foundation/issue/FIL-1488)). The test authenticates with a
+partner key of its own, which central's seed phase keeps beside FilOne's. Hilt lets any partner key
+manage any tenant ([FIL-1489](https://linear.app/filecoin-foundation/issue/FIL-1489)), so the key
+lives in a GitHub Environment per stage that only `main` can deploy from. As a result, `smoke.yml`
+can no longer be dispatched from a branch.
+
 `smoke` is deliberately not a required check. It runs after the merge, so requiring it would deadlock
 every pull request.
 
