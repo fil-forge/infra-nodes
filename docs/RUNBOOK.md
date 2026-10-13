@@ -948,11 +948,11 @@ took. `smoke.yml` runs the same test after every merge and hourly.
 `scripts/ci/e2e-test.sh`, which creates a tenant through Hilt and a bucket on the node's Ingot,
 uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart upload, downloads both and
 compares them. `--cleanup` then deletes the objects and the bucket, disables the tenant and deletes
-it. It needs Hilt's CI partner key, which central's seed phase keeps in SSM and the workflow reads
-from the `HILT_PARTNER_KEY` secret of the GitHub Environment named after the stage:
+it. It needs Hilt's partner key, the one FilOne uses, which central keeps in SSM and the workflow
+reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment named after the stage:
 
 ```sh
-export HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key-ci --with-decryption --query Parameter.Value --output text)"
+export HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text)"
 E2E_RUN_ID=manual-1 scripts/ci/e2e-test.sh dev
 E2E_RUN_ID=manual-1 scripts/ci/e2e-test.sh dev --cleanup
 ```
@@ -1231,8 +1231,8 @@ gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest th
 *The dev node failed its end-to-end test.* The node answers its health checks, but cannot create a
 tenant, create a bucket, store an object or serve it back. The headline names the operation that
 failed, and the run log has the error Hilt or Ingot returned. A failure creating the tenant or its
-key points at Hilt, or at the CI partner key: an HTTP 401 means the `HILT_PARTNER_KEY` secret no
-longer matches central's `hilt/partner-key-ci`. Anything after that points at the node, so treat it
+key points at Hilt, or at the partner key: an HTTP 401 means the `HILT_PARTNER_KEY` secret no
+longer matches central's `hilt/partner-key`. Anything after that points at the node, so treat it
 like a failed smoke test and suspect the image. The entries above on `CandidateUnavailable` and
 region mismatches cover the usual Ingot causes.
 
@@ -1257,10 +1257,12 @@ gh workflow run bump-deployed-image.yml -f service=piri -f digest=sha256:...
 
 ### Setting up the end-to-end test's credential
 
-The end-to-end test reads Hilt's CI partner key from the `HILT_PARTNER_KEY` secret of a GitHub
-Environment named after the stage: `dev`, `staging` or `prod`. The key can manage every tenant on
-that stage's Hilt, so the only thing keeping a pushed branch from reading it is the Environment's
-branch rule. Create the Environment with that rule before the secret goes in, and before a node of
+The end-to-end test reads Hilt's partner key from the `HILT_PARTNER_KEY` secret of a GitHub
+Environment named after the stage, `dev` or `staging`. It is the key FilOne uses, and it can manage
+every tenant on that stage's Hilt, so the only thing keeping a pushed branch from reading it is the
+Environment's branch rule. Production gets no Environment until
+[FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491) finds a credential that cannot
+reach customer tenants. Create the Environment with that rule before the secret goes in, and before a node of
 that stage joins the matrix in `smoke.yml`: a workflow that names a missing Environment creates it
 with no rules.
 
@@ -1270,10 +1272,11 @@ with no rules.
    the stage's account:
 
    ```sh
-   aws ssm get-parameter --name /forge-central/dev/hilt/partner-key-ci --with-decryption --query Parameter.Value --output text | gh secret set HILT_PARTNER_KEY --env dev --repo fil-forge/infra-nodes
+   aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text | gh secret set HILT_PARTNER_KEY --env dev --repo fil-forge/infra-nodes
    ```
 
-Repeat this after central rotates the key; the infra-central README describes the rotation.
+Repeat step 2 whenever central's `hilt/partner-key` changes. Until then, every end-to-end test on
+that stage fails with HTTP 401.
 
 ### Cleaning up after the end-to-end test
 
@@ -1281,14 +1284,14 @@ A failed cleanup leaves a tenant, and possibly a bucket, named `infra-nodes-e2e-
 The alert names both. Nothing else will ever delete them: Hilt cannot list tenants, so only their
 names lead back to them. The S3 key the test minted has expired by now, so mint another one.
 
-Read the CI partner key while your AWS credentials still point at central, then give the S3 client
+Read the partner key while your AWS credentials still point at central, then give the S3 client
 its own files, so the credentials in your environment do not override them. The values below are
 dev's; take `HILT_URL`, `REGION_LABEL` and `INGOT_HOSTNAME` from the node's `node.env`.
 
 ```sh
 NAME=infra-nodes-e2e-dev-1234567890-1
 HILT_URL=https://auth.latest.dev.fil-forge.com
-HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key-ci --with-decryption --query Parameter.Value --output text)"
+HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text)"
 hilt() { curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$HILT_PARTNER_KEY") -H 'Content-Type: application/json' "$@"; }
 
 dir="$(mktemp -d)"

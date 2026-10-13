@@ -46,7 +46,8 @@ jobs:
       fail-fast: false
       matrix:
         # env names the GitHub Environment holding the Hilt partner key for the
-        # node's stage. A prod node joins with env: prod.
+        # node's stage. Prod nodes stay out until FIL-1491 finds a credential
+        # that cannot reach customer tenants.
         include:
           - node: dev
             env: dev
