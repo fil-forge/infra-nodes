@@ -12,14 +12,15 @@
 #   - staging already pins what dev pins: close the pull request, if one is open
 #   - otherwise: rebuild bot/promote-staging as main plus staging's new pins, and
 #     open or refresh the pull request
-# A branch someone pushed to by hand, to hold a service back say, is left alone
-# while its pull request is open.
+# A branch whose head the app did not both author and commit was pushed by a
+# person, to hold a service back say, and is left alone while its pull request
+# is open.
 #
 # Usage:
 #   APP_SLUG=fil-forge-bot scripts/ci/promote-staging.sh [--dry-run]
 #
-# --dry-run builds the branch in the local work tree and prints the message,
-# and pushes, opens and closes nothing.
+# --dry-run builds the commit on a scratch branch, prints it, and pushes, opens
+# and closes nothing.
 #
 # Reads APP_SLUG, the GitHub App that opens the pull request and whose identity
 # its commit carries. gh reads its own credentials, GH_TOKEN included.
@@ -27,13 +28,14 @@
 # Prerequisites:
 #   - a git work tree with origin fetchable and pushable, and full history
 #     (each pin's source commit is read off the dev bump that first carried it)
-#   - gh authenticated, for the compare API and the pull request
+#   - gh authenticated, for the compare and packages APIs and the pull request
+#   - jq, to read the compare API's pages as one
 #   - writes the local git identity (user.name, user.email) of the work tree
 set -euo pipefail
 
 DRY_RUN=false
 case "${1-}" in
-  -h|--help)  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help)  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   --dry-run)  DRY_RUN=true ;;
   "")         ;;
   *)          echo "usage: APP_SLUG=<app> scripts/ci/promote-staging.sh [--dry-run]" >&2; exit 2 ;;
@@ -86,31 +88,34 @@ source_commit() {
     | head -n 1
 }
 
-# Each version a service has published on ghcr.io, as "<digest> <page>" lines,
-# fetched once per service: the list only grows, and every moving service needs
-# two lookups in it. Loaded here rather than in digest_link, whose callers run
-# it in a subshell that would lose what it fetched. Empty, with a warning, if
-# the packages API will not give it.
-declare -A VERSIONS
+# Sets VERSIONS to each version a service has published on ghcr.io, as
+# "<digest> <page>" lines, fetched once per service: the list only grows, and
+# every moving service needs two lookups in it. Each package is named after the
+# repository it publishes from, as the image paths in versions.env show. Loaded
+# here rather than in digest_link, whose callers run it in a subshell that
+# would lose what it fetched. Empty, with a warning, if the packages API will
+# not give it.
+VERSIONS=""
 load_versions() {
-  local service=$1 owner
-  owner=$(repo_of "$service")
+  local service=$1 repo
+  repo=$(repo_of "$service")
   # On an error, gh prints the response body where the list would be, and its
   # message on stderr; keep the message and drop the body.
-  if ! VERSIONS[$service]=$(gh api --paginate \
-      "orgs/${owner%%/*}/packages/container/$service/versions?per_page=100" \
+  if ! VERSIONS=$(gh api --paginate \
+      "orgs/${repo%%/*}/packages/container/${repo#*/}/versions?per_page=100" \
       --jq '.[] | select(.html_url) | "\(.name) \(.html_url)"'); then
     echo "::warning::could not list $service's versions on ghcr.io; linking its digests to their bump pull requests instead" >&2
-    VERSIONS[$service]=""
+    VERSIONS=""
   fi
 }
 
-# A digest, shortened, linked to its version's page on ghcr.io. Failing that,
-# to the pull request that bumped dev to it, which names its source commit and
-# publish run; plain if no bump on main carried it either.
+# A digest, shortened, linked to its version's page on ghcr.io, as found in the
+# VERSIONS load_versions last set. Failing that, to the pull request that bumped
+# dev to it, which names its source commit and publish run; plain if no bump on
+# main carried it either.
 digest_link() {
-  local service=$1 digest=$2 short="\`sha256:${2:7:7}\`" page bump pr
-  page=$(awk -v d="$digest" '$1 == d { print $2; exit }' <<<"${VERSIONS[$service]-}")
+  local digest=$1 short="\`sha256:${1:7:7}\`" page bump pr
+  page=$(awk -v d="$digest" '$1 == d { print $2; exit }' <<<"$VERSIONS")
   if [ -n "$page" ]; then
     echo "[$short]($page)"
     return
@@ -135,34 +140,45 @@ digest_link() {
 # span, so nothing in it is read as a reference, a mention, a closing keyword or
 # formatting. Says so when there is nothing to list, when dev's pin is behind
 # or beside staging's, and when the compare API cut the list short.
+#
+# Paged, because an unpaged compare stops at 250 commits without saying so.
+# Every page repeats the totals and the status, so the pages are read as one
+# array and the notes written once.
 changes() {
   local from=$2 to=$3
-  # $title, $pr and $c are jq's; the repository reaches jq through the
+  # $title, $pr, $c and $n are jq's; the repository reaches jq through the
   # environment.
   # shellcheck disable=SC2016
-  REPO=$1 gh api "repos/$1/compare/$from...$to" --jq '
-    (.commits[]
+  gh api --paginate --slurp "repos/$1/compare/$from...$to?per_page=100" \
+    | REPO=$1 jq -r '
+    (.[0]) as $compare
+    | ([.[].commits[]]) as $commits
+    | ($commits[]
       | (.commit.message | split("\n")[0] | rtrimstr("\r")) as $title
       | ([$title | capture("\\(#(?<n>[0-9]+)\\)$").n][0]) as $pr
       | "- " + (if $pr then env.REPO + "#" + $pr
                elif $title == "" then "(no title)"
                else "`" + ($title | gsub("`"; "\u0027")) + "`" end)
         + " ([" + .sha[0:7] + "](https://github.com/\(env.REPO)/commit/\(.sha)))"),
-    ((.commits | length) as $c
-      | if .total_commits > $c
-        then "- …and \(.total_commits - $c) more, which the compare API leaves out."
+    (($commits | length) as $c
+      | if $compare.total_commits > $c
+        then "- …and \($compare.total_commits - $c) more, which the compare API leaves out."
         else empty end),
-    (.behind_by as $n | "\($n) commit\(if $n == 1 then "" else "s" end)" as $commits
-      | if .status == "identical" then "- No commits: both pins were built from the same commit."
-        elif .status == "behind"
-        then "- No commits forward: dev\u2019s pin is \($commits) behind staging\u2019s, so merging this rolls staging back."
-        elif .status == "diverged"
-        then "- Staging\u2019s pin also has \($commits) that dev\u2019s lacks, which merging this drops."
+    ($compare.behind_by as $n | "\($n) commit\(if $n == 1 then "" else "s" end)" as $behind
+      | if $compare.status == "identical" then "- No commits: both pins were built from the same commit."
+        elif $compare.status == "behind"
+        then "- No commits forward: dev\u2019s pin is \($behind) behind staging\u2019s, so merging this rolls staging back."
+        elif $compare.status == "diverged"
+        then "- Staging\u2019s pin also has \($behind) that dev\u2019s lacks, which merging this drops."
         else empty end)'
 }
 
-git fetch --quiet --force origin main "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
-  || git fetch --quiet --force origin main
+# A branch that is gone from origin must not leave a stale remote-tracking ref
+# behind, or old_head would name a commit the lease below cannot match.
+if ! git fetch --quiet --force origin main "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null; then
+  git fetch --quiet --force origin main
+  git update-ref -d "refs/remotes/origin/$BRANCH" 2>/dev/null || true
+fi
 old_head=$(git rev-parse --verify --quiet "origin/$BRANCH" || true)
 
 # Only a pull request the app opened, from this repository.
@@ -170,6 +186,20 @@ pr_url=""
 if [ "$DRY_RUN" = false ]; then
   pr_url=$(gh pr list --state open --head "$BRANCH" --author "app/${APP_SLUG}" \
     --json url,isCrossRepository --jq '[.[] | select(.isCrossRepository | not)][0].url // ""')
+fi
+
+# A head the app did not both author and commit was pushed by a person, who
+# wanted something other than dev's pins. Rebuilding or deleting the branch
+# would undo that, so it is left alone while its pull request is open; once that
+# is merged or closed, the branch is fair game. The committer counts too,
+# because an amended bot commit keeps the bot as its author.
+if [ -n "$old_head" ] && [ -n "$pr_url" ]; then
+  author=$(git log -1 --format=%an "$old_head")
+  committer=$(git log -1 --format=%cn "$old_head")
+  if [ "$author" != "${APP_SLUG}[bot]" ] || [ "$committer" != "${APP_SLUG}[bot]" ]; then
+    echo "$BRANCH was last changed by $author (committed by $committer), not ${APP_SLUG}[bot]; leaving it for a person"
+    exit 0
+  fi
 fi
 
 # Which services differ, and the message describing the promotion.
@@ -203,7 +233,7 @@ for service in "${SERVICES[@]}"; do
     echo
     echo "## $service"
     echo
-    echo "$(digest_link "$service" "$staging_digest") → $(digest_link "$service" "$dev_digest")"
+    echo "$(digest_link "$staging_digest") → $(digest_link "$dev_digest")"
     echo
     if [ -n "$from" ] && [ -n "$to" ]; then
       echo "What $repo brings over staging's pin, [\`${from:0:7}..${to:0:7}\`](https://github.com/$repo/compare/$from...$to):"
@@ -236,17 +266,6 @@ if [ ${#moving[@]} -eq 0 ]; then
   exit 0
 fi
 
-# A branch whose head the app did not commit was pushed to by a person, who
-# wanted something other than dev's pins. Rebuilding would undo that, while its
-# pull request is open; once that is merged or closed, the branch is fair game.
-if [ -n "$old_head" ] && [ -n "$pr_url" ]; then
-  author=$(git log -1 --format=%an "$old_head")
-  if [ "$author" != "${APP_SLUG}[bot]" ]; then
-    echo "$BRANCH was last pushed by $author, not ${APP_SLUG}[bot]; leaving it for a person"
-    exit 0
-  fi
-fi
-
 # Attribute the commit to the app, as the bump workflow does.
 if [ "$DRY_RUN" = false ]; then
   bot_id=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
@@ -254,7 +273,11 @@ if [ "$DRY_RUN" = false ]; then
   git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
 fi
 
-git checkout --quiet -B "$BRANCH" origin/main
+# A scratch branch for a dry run, so the local bot/promote-staging is never
+# touched.
+work_branch=$BRANCH
+[ "$DRY_RUN" = false ] || work_branch=dry-run/promote-staging
+git checkout --quiet -B "$work_branch" origin/main
 # Staged after each pin: set-node-pin.sh asserts its own edit is one line,
 # against the index.
 for move in "${moving[@]}"; do
@@ -267,6 +290,8 @@ git commit --quiet --file <(echo "$SUBJECT"; echo; cat "$body")
 if [ "$DRY_RUN" = true ]; then
   echo "would push $BRANCH at $(git rev-parse --short HEAD), on main $(git rev-parse --short origin/main):" >&2
   git --no-pager show --stat --format='%n%B' HEAD
+  git checkout --quiet -
+  git branch --quiet -D "$work_branch"
   exit 0
 fi
 
@@ -277,7 +302,7 @@ if [ -n "$old_head" ] \
   && git diff --quiet "$old_head" HEAD; then
   echo "$BRANCH is already main plus dev's pins"
 else
-  git push --force-with-lease="$BRANCH:$old_head" --quiet origin "$BRANCH"
+  git push --force-with-lease="$BRANCH:$old_head" --quiet origin "HEAD:refs/heads/$BRANCH"
   pushed=true
   echo "pushed $BRANCH at $(git rev-parse --short HEAD)"
 fi
