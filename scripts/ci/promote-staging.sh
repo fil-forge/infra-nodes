@@ -19,8 +19,9 @@
 # Usage:
 #   APP_SLUG=fil-forge-bot scripts/ci/promote-staging.sh [--dry-run]
 #
-# --dry-run builds the commit on a detached HEAD, prints it, switches back, and
-# pushes, opens and closes nothing.
+# --dry-run builds the commit and prints it, and pushes, opens and closes
+# nothing. Every run builds it in a temporary worktree, so the checkout it runs
+# in, its index and its branches are left as they were.
 #
 # Reads APP_SLUG, the GitHub App that opens the pull request and whose identity
 # its commit carries. gh reads its own credentials, GH_TOKEN included.
@@ -35,7 +36,7 @@ set -euo pipefail
 
 DRY_RUN=false
 case "${1-}" in
-  -h|--help)  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help)  sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   --dry-run)  DRY_RUN=true ;;
   "")         ;;
   *)          echo "usage: APP_SLUG=<app> scripts/ci/promote-staging.sh [--dry-run]" >&2; exit 2 ;;
@@ -53,14 +54,6 @@ STAGING_FILE=nodes/$NODE/apps/versions.env
 SUBJECT="Promote dev's images to staging"
 # This repository, which Actions names; for links in the message.
 SELF=${GITHUB_REPOSITORY:-fil-forge/infra-nodes}
-
-# The promotion commit takes in whatever the index holds and any edit to
-# staging's file. A dry run then switches back and drops that commit, and the
-# changes with it.
-if ! git diff --cached --quiet || ! git diff --quiet -- "$STAGING_FILE"; then
-  echo "::error::commit or stash the staged changes and any edit to $STAGING_FILE first; the promotion commit would take them in" >&2
-  exit 1
-fi
 
 # The services a node pins, and the repository each publishes from, mirroring
 # set-node-pin.sh and bump-deployed-image.yml.
@@ -212,7 +205,8 @@ fi
 
 # Which services differ, and the message describing the promotion.
 body=$(mktemp)
-trap 'rm -f "$body"' EXIT
+work=""
+trap 'rm -f "$body"; [ -z "$work" ] || git worktree remove --force "$work"' EXIT
 moving=()
 {
   echo "Sets every staging pin in \`$STAGING_FILE\` to what"
@@ -281,25 +275,23 @@ if [ "$DRY_RUN" = false ]; then
   git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
 fi
 
-# A dry run commits on a detached HEAD, so it creates and moves no local branch.
-if [ "$DRY_RUN" = true ]; then
-  git checkout --quiet --detach origin/main
-else
-  git checkout --quiet -B "$BRANCH" origin/main
-fi
+# The commit is built in a worktree of its own, detached at main, so the
+# checkout this runs in, its index and its branches are never touched.
+work=$(mktemp -d)
+git worktree add --quiet --detach "$work" origin/main
 # Staged after each pin: set-node-pin.sh asserts its own edit is one line,
 # against the index.
 for move in "${moving[@]}"; do
-  scripts/ci/set-node-pin.sh --node "$NODE" "${move%%:*}" "${move#*:}" >/dev/null
-  git add "$STAGING_FILE"
+  "$work/scripts/ci/set-node-pin.sh" --node "$NODE" "${move%%:*}" "${move#*:}" >/dev/null
+  git -C "$work" add "$STAGING_FILE"
 done
-# Only what was staged above, whatever else the work tree holds.
-git commit --quiet --file <(echo "$SUBJECT"; echo; cat "$body")
+# The worktree's index starts clean, so the commit holds the new pins alone.
+git -C "$work" commit --quiet --file <(echo "$SUBJECT"; echo; cat "$body")
+head=$(git -C "$work" rev-parse HEAD)
 
 if [ "$DRY_RUN" = true ]; then
-  echo "would push $BRANCH at $(git rev-parse --short HEAD), on main $(git rev-parse --short origin/main):" >&2
-  git --no-pager show --stat --format='%n%B' HEAD
-  git checkout --quiet -
+  echo "would push $BRANCH at ${head:0:7}, on main $(git rev-parse --short origin/main):" >&2
+  git --no-pager show --stat --format='%n%B' "$head"
   exit 0
 fi
 
@@ -307,12 +299,12 @@ fi
 pushed=false
 if [ -n "$old_head" ] \
   && [ "$(git rev-parse "$old_head^")" = "$(git rev-parse origin/main)" ] \
-  && git diff --quiet "$old_head" HEAD; then
+  && git diff --quiet "$old_head" "$head"; then
   echo "$BRANCH is already main plus dev's pins"
 else
-  git push --force-with-lease="$BRANCH:$old_head" --quiet origin "HEAD:refs/heads/$BRANCH"
+  git push --force-with-lease="$BRANCH:$old_head" --quiet origin "$head:refs/heads/$BRANCH"
   pushed=true
-  echo "pushed $BRANCH at $(git rev-parse --short HEAD)"
+  echo "pushed $BRANCH at ${head:0:7}"
 fi
 
 if [ -z "$pr_url" ]; then
