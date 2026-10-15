@@ -730,6 +730,40 @@ piri_services() {
   printf '%s\n' "$services"
 }
 
+# The URL a Piri service answers at and registers with sprue. A node that runs
+# one Piri per storage volume names them piri-<n>.$PIRI_HOSTNAME_SUFFIX; a node
+# with a single `piri` still has one PIRI_PUBLIC_URL.
+piri_public_url() {
+  local service="$1"
+  if [ -n "${PIRI_HOSTNAME_SUFFIX:-}" ]; then
+    printf 'https://%s.%s' "$service" "$PIRI_HOSTNAME_SUFFIX"
+  else
+    [ "$service" = piri ] ||
+      die "nodes/$FILONE_NODE/node.env has no PIRI_HOSTNAME_SUFFIX to name $service by"
+    [ -n "${PIRI_PUBLIC_URL:-}" ] || die "nodes/$FILONE_NODE/node.env has no PIRI_PUBLIC_URL"
+    printf '%s' "$PIRI_PUBLIC_URL"
+  fi
+}
+
+# The host directory a Piri service mounts at /data/piri, read from compose.yml
+# because it differs per node: an EBS volume per Piri on dev, a directory on the
+# shared data disk on staging.
+piri_data_dir() {
+  local service="$1" definition dir
+  definition="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
+    config --no-interpolate --format json)" ||
+    die "could not read nodes/$FILONE_NODE/apps/compose.yml"
+  dir="$(python3 -c '
+import json, sys
+service = json.load(sys.stdin)["services"][sys.argv[1]]
+for volume in service.get("volumes") or []:
+    if isinstance(volume, dict) and volume.get("target") == "/data/piri":
+        print(volume["source"])
+' "$service" <<<"$definition")" || die "could not read $service's volumes from compose.yml"
+  [ -n "$dir" ] || die "$service in nodes/$FILONE_NODE/apps/compose.yml mounts nothing at /data/piri"
+  printf '%s' "$dir"
+}
+
 # The Piri containers on this box, in index order. Read from Docker rather than
 # from compose, for the reason given at container_exists below.
 piri_containers() {
