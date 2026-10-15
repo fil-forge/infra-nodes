@@ -23,12 +23,13 @@ metrics, also every minute: counts, durations and sizes per site, handler, metho
 which is where the public error rate is read from. Staging also ships per-container CPU, memory,
 network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
 mount, and container health there is read from the journal and the deploy stamp instead.
-Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds.
+Piri's and Ingot's own application metrics, which each pushes over OTLP to Alloy: Piri every
+thirty seconds, Ingot every minute.
 
-**Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's Tempo
+**Traces.** Whatever spans Piri and Ingot record, pushed over OTLP to Alloy and on to the stack's Tempo
 unchanged apart from the node's identity.
 
-**Not shipped.** Ingot's own application metrics; the network interface collector, which
+**Not shipped.** The network interface collector, which
 inside the Alloy container would report the container's namespace rather than the host's.
 
 ## Where to look
@@ -259,6 +260,27 @@ is the signal:
 
 ```promql
 absent(target_info{job="forge/piri", node="staging/eu-central-3"})
+```
+
+### Ingot
+
+Ingot pushes its metrics to the same Alloy receiver as Piri, at the `OTEL_EXPORTER_OTLP_ENDPOINT`
+each stage's `apps/compose.yml` sets for it. It pushes every minute, the OpenTelemetry SDK's
+default, since nothing sets `OTEL_METRIC_EXPORT_INTERVAL`. The series arrive under
+`job="forge/ingot"` and `service_name="appliance-<stage>-<region>-ingot"`, converted as Piri's are.
+The metrics section of [Ingot's README](https://github.com/fil-forge/ingot#local-disk) lists what
+it reports.
+
+Every metric Ingot ships, per node:
+
+```promql
+count by (__name__, node) ({job="forge/ingot"})
+```
+
+As with Piri, an Ingot that stops pushing shows as an absence:
+
+```promql
+absent(target_info{job="forge/ingot", node="staging/eu-central-3"})
 ```
 
 ### The deploy stamp

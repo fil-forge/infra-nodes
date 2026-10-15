@@ -1,5 +1,6 @@
 // Telemetry out of the node: journald, container logs, host metrics, the
-// deploy stamp and Piri's OTLP metrics and traces, all pushed to Grafana Cloud.
+// deploy stamp and Piri's and Ingot's OTLP metrics and traces, all pushed to
+// Grafana Cloud.
 //
 // Push-only credentials, so this is a one-way pipe: nothing in Grafana Cloud
 // can reach back into the node.
@@ -208,9 +209,10 @@ prometheus.relabel "caddy" {
 	}
 }
 
-// Piri's metrics and traces, pushed over OTLP/HTTP to this receiver on the
-// filone network. compose.yml publishes no port for it, so nothing outside that
-// network reaches it. Piri pushes metrics every 30 seconds; the base config says
+// Piri's and Ingot's metrics and traces, pushed over OTLP/HTTP to this receiver
+// on the filone network. compose.yml publishes no port for it, so nothing
+// outside that network reaches it. Piri pushes metrics every 30 seconds and
+// Ingot every minute; Piri's base config and Ingot's compose environment say
 // where.
 otelcol.receiver.otlp "apps" {
 	http {

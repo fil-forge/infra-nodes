@@ -678,8 +678,7 @@ missing; `connection refused` means Alloy is not listening on 4318.
 
 Each service's series then arrive in Grafana under `job="forge/<service>"` (Piri's as
 `job="forge/piri"`), and each service's traces under `service.name="<service>"` with
-`service.namespace="forge"`; `docs/observability.md` has the queries. Ingot sends traces only, so
-far.
+`service.namespace="forge"`; `docs/observability.md` has the queries.
 
 A host set up from an earlier version of this snippet selects Forge's services by name instead: its
 `where` clauses match `service.name="piri"` (and `"ingot"`), and its relabel is `filone_piri`,
