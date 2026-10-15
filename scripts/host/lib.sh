@@ -709,10 +709,39 @@ image_differs() {
   [ "$running" != "$desired" ]
 }
 
+# --- Piri ------------------------------------------------------------------
+
+# The Piri services in the node's apps project, in index order: piri-0, piri-1
+# and so on for a node that runs one Piri per storage volume, or the single
+# `piri` of a node that has not moved to that layout. Every other name a Piri
+# has on the box is derived from its service name: container filone-<service>,
+# OpenBao path <service>, and secret files <service>.pem and
+# <service>-owner-wallet.hex. Its Postgres database is the service name with
+# `_` for `-` (piri_0), so a one-off query does not have to quote it.
+#
+# Read without interpolation, so it answers before apps.env has been rendered:
+# keygen.sh needs the list on a node that has never deployed apps.
+piri_services() {
+  local services
+  services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps     config --no-interpolate --services)" ||
+    die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
+  services="$(grep -E '^piri(-[0-9]+)?$' <<<"$services" | sort -V || true)"
+  [ -n "$services" ] || die "nodes/$FILONE_NODE/apps/compose.yml defines no Piri service"
+  printf '%s\n' "$services"
+}
+
+# The Piri containers on this box, in index order. Read from Docker rather than
+# from compose, for the reason given at container_exists below.
+piri_containers() {
+  local names
+  names="$(docker ps -a --format '{{.Names}}')" || die "could not list containers"
+  grep -E '^filone-piri(-[0-9]+)?$' <<<"$names" | sort -V || true
+}
+
 # --- Piri and Ingot ----------------------------------------------------------
 
-# The two containers a platform deploy has to take down before it touches
-# anything underneath them, and bring back once it is done.
+# The containers a platform deploy has to take down before it touches anything
+# underneath them, and bring back once it is done: Ingot and every Piri.
 #
 # By container name rather than through compose_apps, because the apps project
 # takes an --env-file that does not exist until provision-apps.sh has run and
@@ -730,8 +759,10 @@ container_running() {
 # non-zero when there was nothing to stop, so a caller can tell a node whose apps
 # it took down from one that has never deployed them.
 stop_apps() {
-  local container stopped=1
-  for container in filone-ingot filone-piri; do
+  local container stopped=1 piris
+  piris="$(piri_containers)"
+  # shellcheck disable=SC2086 # one container name per word
+  for container in filone-ingot $piris; do
     if container_running "$container"; then
       echo "  stopping $container"
       docker stop "$container" >/dev/null || die "could not stop $container"
@@ -744,8 +775,10 @@ stop_apps() {
 # Piri first, the same order in reverse: Ingot started against a Piri that is
 # still coming up produces a burst of failures for no reason.
 start_apps() {
-  local container
-  for container in filone-piri filone-ingot; do
+  local container piris
+  piris="$(piri_containers)"
+  # shellcheck disable=SC2086 # one container name per word
+  for container in $piris filone-ingot; do
     if container_exists "$container"; then
       echo "  starting $container"
       docker start "$container" >/dev/null || die "could not start $container"
@@ -878,7 +911,7 @@ stamp_deploy_success() {
 # --- The status document ---------------------------------------------------
 
 # Write what this node is running to a file Caddy serves at
-# https://<piri hostname>/.well-known/filone-node-status.json.
+# https://<every piri hostname>/.well-known/filone-node-status.json.
 #
 # Nothing else on the node says which commit it reached, so nothing could tell a
 # merged image bump from a broken one: the merge happens up to an hour before
@@ -900,7 +933,7 @@ stamp_deploy_success() {
 # Public and unauthenticated, and it carries nothing else: a commit SHA from a
 # public repository and digests of public images.
 publish_node_status() {
-  local tmp revision_file project revision stamped_at service image_id repo_digest
+  local tmp revision_file project revision stamped_at service image_id repo_digest piris
   local projects='{}' images='{}'
 
   # Everything stamp_deploy_success has recorded, rather than a list here that
@@ -920,8 +953,12 @@ publish_node_status() {
   done
 
   # Absent rather than fatal when a container is not there. A platform deploy
-  # stamps too, and platform is provisioned before apps exist.
-  for service in piri ingot; do
+  # stamps too, and platform is provisioned before apps exist. Each Piri is
+  # listed under its own service name, so a Piri left on an old image shows up
+  # as one mismatch rather than hiding behind the others.
+  piris="$(piri_containers)"
+  # shellcheck disable=SC2086 # one container name per word
+  for service in ${piris//filone-/} ingot; do
     # Two hops: the container carries an image ID, the image carries the
     # repository digest. Empty when the image was never pulled from a registry.
     image_id="$(docker container inspect --format '{{.Image}}' "filone-$service" 2>/dev/null || true)"
