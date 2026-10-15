@@ -6,7 +6,7 @@ the current Forge version before production runs it (FIL-1503).
 
 ## Names
 
-A Piri is named `piri-<n>`, where `<n>` counts from 0 within the appliance. hilt keeps one regional
+A Piri is named `piri-<n>`, where `<n>` counts from 0 within the appliance. Hilt keeps one regional
 provider, Ingot, per region, so an appliance and a region are one-to-one and the index is unique in
 the region too. In production `piri-<n>` serves storage volume `<n>`.
 
@@ -44,7 +44,7 @@ because each Piri's Curio coordinates nonces only within its own database.
 
 Each Piri has its own Postgres database. Piri uses fixed schema names (`curio`, `replicator`,
 `egress_tracker`), so two Piris cannot share one. One role, `piri`, owns all three databases, as in
-smelt.
+Smelt.
 
 ## Writes
 
@@ -69,14 +69,14 @@ healthy before it starts. Without that ordering, concurrent gas estimation under
 
 The host scripts read the list of Piris from compose instead of naming them. An apps deploy
 recreates changed Piris one at a time, each behind its own PDP gate. A platform deploy restarts
-Postgres under all three, so it waits until all three report a safe proving window.
+Postgres under all Piris, so it waits until all Piris report a safe proving window.
 
 Every Piri hostname serves the status document at `/.well-known/filone-node-status.json`, and the
 smoke test checks `/readyz` and the status document on each.
 
 ## Telemetry
 
-The three Piris are one service with three instances, following the OpenTelemetry conventions:
+All Piris are one service with multiple instances, following the OpenTelemetry conventions:
 `service.name` stays `piri`, and `service_name` stays `appliance-<stage>-<region>-piri` on logs and
 metrics alike. `service.instance.id` tells them apart. Each Piri sets it to
 `<FILONE_NODE>/piri-<n>`, for example `staging/eu-central-3/piri-0`, through
@@ -93,7 +93,7 @@ left to fault.
 
 These survive the wipe:
 
-- OpenBao, which holds the region key, Ingot's identity and the link to central
+- OpenBao, which holds the region key, Ingot's identity and the link to Forge central
 - piri-0's key and funded wallet, copied from OpenBao path `piri` to `piri-0`, so piri-0 keeps its
   DID and on-chain provider ID
 - Ingot's data
