@@ -1141,9 +1141,9 @@ itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually re
 
 Piri's proving rules in infra-central's `terraform/envs/grafana/alerts.tf` link here. Each says how
 soon to act. Three page, because waiting overnight can make a loss permanent. The other three can
-wait until the next day: each day costs about one proving period's payment (24 hours on mainnet),
-and nothing more is lost once the cause is fixed. The severity definitions are in infra-central's
-`docs/observability.md`.
+wait until the next day: two cost about one proving period's payment a day (24 hours on mainnet)
+and lose nothing more once the cause is fixed, and the third reports a loss that has already
+happened. The severity definitions are in infra-central's `docs/observability.md`.
 
 Most checks run inside the Piri container (`docker exec -it filone-piri sh`): `piri status` for the
 node, `piri client pdp proofset state` for a proof set. Curio's task logs are in the container's
@@ -1153,22 +1153,24 @@ for scheduling.
 #### Piri's chain head is stale
 
 **Act within about three hours.** Uploads and reads keep working, but Piri cannot add new pieces
-to its data set on chain. Each batch of pieces gets about 3.4 hours of retries if Lotus is
-unreachable, and 6.7 if it answers but is stale. After that, Piri gives up on the batch and never
+to its data set on chain. Each batch of pieces gets about 3.5 hours of retries if Lotus is
+unreachable, and 6.9 if it answers but is stale. After that, Piri gives up on the batch and never
 retries it ([FIL-1508](https://linear.app/filecoin-foundation/issue/FIL-1508)). The batch then
 waits for the fix below.
 
 Check that the Lotus Piri reads the chain from is synced: `lotus sync wait` or `lotus chain head`
 on the host that owns it. Then run `piri status`. Piri resubscribes to Lotus on its own after five
 minutes without a new tipset, so a Lotus that is synced while Piri's head stays old for longer
-than that needs a restart of Piri.
+than that needs a restart of Piri: `docker restart filone-piri`. The proving-window gate that
+deploys wait for doesn't apply here, since Piri isn't proving without a head.
 
 Once the head moves again, look for stranded batches, and free them if there are any. The next
 AddRoots run picks them up.
 
 ```sh
 docker exec filone-platform-postgres-1 psql -U admin -d piri -c "
-  SELECT count(*) FROM curio.pdp_root_submissions s
+  SELECT count(DISTINCT s.add_task_id) AS batches, count(*) AS roots
+  FROM curio.pdp_root_submissions s
   WHERE s.add_task_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM curio.harmony_task h WHERE h.id = s.add_task_id)"
 
@@ -1183,7 +1185,8 @@ docker exec filone-platform-postgres-1 psql -U admin -d piri -c "
 **Act within about three hours**, for the reason above. Piri has not seen a single tipset since it
 started, usually because Lotus was unreachable then. Check that Lotus is up and synced, and that
 Piri's Lotus endpoint and token are right (see "Piri crash-loops on the chain endpoint" above).
-Then restart Piri, and once it has a head, check for stranded batches as above.
+Then restart Piri (`docker restart filone-piri`), and once it has a head, check for stranded batches
+as above.
 
 #### Piri proving is failing
 
@@ -1193,9 +1196,9 @@ proof set for good on its fifth rejection without a successful proof in between.
 brings the proof set back after that.
 
 Find the rejection in the `PDPv0_Prove` or `PDPv0_ProvPeriod` logs, and check the proof set's state.
-A wallet without enough FIL for gas is the cause the node can fix: fund it. A rejection that says
-the data set's payment has ended or been terminated makes Curio give up at once, and the next
-alert is "Piri proof set is unrecoverable".
+The revert reason says what the contract refused. A rejection that says the data set's payment has
+ended or been terminated makes Curio give up at once, and the next alert is "Piri proof set is
+unrecoverable".
 
 #### Piri's proving period has not advanced
 
@@ -1208,14 +1211,20 @@ The usual causes are a chain head that has stopped moving, which pages as "Piri'
 stale", and Piri's task engine not running. Run `piri status`, check the proof set's state, and read
 the `PDPv0_ProvPeriod` logs for whether scheduling ran.
 
+One cause can lose more without paging: one that also stops AddRoots while the head keeps moving,
+such as an owner wallet without FIL for gas. Check the wallet's balance, and if the logs show
+AddRoots failing too, check for stranded batches as in [Piri's chain head is
+stale](#piris-chain-head-is-stale) once it's fixed.
+
 #### Piri's Prove task has not run in 1.5 proving periods
 
 **Act within a day.** No proof has gone out for one and a half proving periods, so at least one
 period's payment is already lost, and each further day loses another. Proving resumes on its own
-once the cause is fixed. The causes that can lose more than that page on their own: rejected
+once the cause is fixed. Most causes that can lose more than that page on their own: rejected
 proofs as "Piri proving is failing", and a stalled head as "Piri's chain head is stale". Check
-Lotus, `piri status` and each proof set's state, and read the `PDPv0_Prove` logs for why no run
-finished.
+Lotus, `piri status`, the wallet's balance and each proof set's state, and read the `PDPv0_Prove`
+logs for why no run finished. If AddRoots is failing too, check for stranded batches as in [Piri's
+chain head is stale](#piris-chain-head-is-stale) once the cause is fixed.
 
 #### Piri proof set is unrecoverable
 
