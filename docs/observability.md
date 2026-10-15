@@ -53,7 +53,7 @@ A container started by hand with `docker run` has no Compose service, so its log
 | `appliance`    | `dev-us-east-9`                  | `<stage>-<region>`. One matcher for everything the appliance ships. On staging it is also on the host's other metrics, since it sits on the metrics writer.   |
 | `node`         | `dev`, `staging/eu-central-3`    | The box. `FILONE_NODE`, which is the node's path under `nodes/`.                                                                                                                          |
 | `region`       | `us-east-9`, `eu-central-3`      | `REGION_LABEL` in `node.env`.                                                                                                                                  |
-| `service_name` | `appliance-dev-us-east-9-piri`   | `appliance-<stage>-<region>-<service>`. `<service>` is the Compose service name, or `host` for the journal and the host metrics. Two nodes in one stage and region share it and are told apart by `node`. Absent on a container started by hand; select that one by `container`. |
+| `service_name` | `appliance-dev-us-east-9-piri`   | `appliance-<stage>-<region>-<service>`. `<service>` is the Compose service name, or `host` for the journal and the host metrics. The Piris `piri-0` to `piri-2` all ship as `piri` and are told apart by `instance`. Two nodes in one stage and region share it and are told apart by `node`. Absent on a container started by hand; select that one by `container`. |
 
 ## Logs
 
@@ -73,6 +73,12 @@ Piri on every node, told apart by the `node` label:
 
 ```logql
 {service_name=~"appliance-.*-piri"}
+```
+
+One Piri, by the `instance` its logs and metrics carry, `<node>/piri-<n>`:
+
+```logql
+{service_name="appliance-dev-us-east-9-piri", instance="dev/piri-1"}
 ```
 
 Everything an appliance's containers wrote, errors only:
@@ -113,7 +119,7 @@ Caddy on every node, without the dev healthcheck:
 Requests to a FilOne site on staging that Caddy could not serve, such as a 502 while Piri restarts:
 
 ```logql
-{service_name="appliance-staging-eu-central-3-caddy"} | json | logger =~ "http.log.error.*" | request_host =~ "piri-0.staging.fil-forge.com(:443)?"
+{service_name="appliance-staging-eu-central-3-caddy"} | json | logger =~ "http.log.error.*" | request_host =~ "piri-[0-9]+.eu-central-3.staging.fil-forge.com(:443)?"
 ```
 
 Certificate activity for a FilOne hostname on staging:
@@ -132,12 +138,12 @@ Warnings and errors from Caddy on every node:
 
 | Label            | Example                     | On which streams                                                                                                      |
 | ---------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `container`      | `filone-piri`               | Container logs. The Docker container name.                                                                            |
+| `container`      | `filone-piri-0`             | Container logs. The Docker container name.                                                                            |
 | `compose_project`| `filone-apps`               | Container logs on dev. `filone-apps` or `filone-platform`.                                                            |
 | `unit`           | `filone-reconcile.service`  | Journal lines. The systemd unit that wrote the line.                                                                  |
 | `job`            | `docker`, `journal`         | Dev streams. Staging container logs carry no `job`; its reconcile journal carries the Alloy component name.           |
 | `hostname`       | `curio`                     | Staging streams. The host's own label, shared with everything else that Alloy ships.                                 |
-| `service`, `stream` | `piri`, `stderr`         | Staging container logs. The host's own labels: bare Compose service name and the Docker stream. The staging Caddy log carries `service="caddy"` and the tailed file's path as `filename`, and no `stream`. |
+| `service`, `stream` | `piri-0`, `stderr`       | Staging container logs. The host's own labels: bare Compose service name and the Docker stream. The staging Caddy log carries `service="caddy"` and the tailed file's path as `filename`, and no `stream`. |
 | `detected_level` | `info`                      | Loki, parsed from the line.                                                                                           |
 
 Select by `appliance`, `service_name`, `node`, `container` or `unit`. The others differ between nodes, so a query
@@ -147,13 +153,20 @@ built on them works on one node only.
 
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
 Caddy's `caddy_http_*` family, and `deploy_last_success_timestamp`. Every series carries the four
-labels above plus `instance`, which is the node name, and `job`, which is `integrations/unix` for
-the host, `cadvisor` for containers, `caddy` for Caddy and `piri` for Piri.
+labels above plus `instance`, which is the node name (`<node>/piri-<n>` on Piri's own series), and
+`job`, which is `integrations/unix` for the host, `cadvisor` for containers, `caddy` for Caddy and
+`forge/piri` for Piri.
 
 Free space on the dev appliance's filesystems:
 
 ```promql
 node_filesystem_avail_bytes{node="dev"}
+```
+
+Each dev Piri has a volume of its own, so its free space is one series:
+
+```promql
+node_filesystem_avail_bytes{node="dev", mountpoint=~"/mnt/fil-one/piri-[0-9]+"}
 ```
 
 Five-minute load across every appliance, one series per node:
@@ -193,7 +206,7 @@ has no `code` label, so a status-code query reads the histogram's count instead.
 
 | Label     | Example                                | Meaning                                                                                                              |
 | --------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `host`    | `piri-0.latest.dev.fil-forge.com`      | The hostname the request was for. On dev any other name is counted under `_other`. On staging the host Caddy is 2.9.1, which records every name it sees, and the scrape keeps only the appliance's two. |
+| `host`    | `piri-0.us-east-9.latest.dev.fil-forge.com` | The hostname the request was for. On dev any other name is counted under `_other`. On staging the host Caddy is 2.9.1, which records every name it sees, and the scrape keeps only the appliance's. |
 | `handler` | `reverse_proxy`, `file_server`         | The handler that produced the response. `file_server` is the node status document; the rest is proxied to Piri or Ingot. |
 | `server`  | `public`                               | The listener. On dev, `public` is :443 and `remaining_auto_https_redirects` is the :80 redirect Caddy adds itself.  |
 | `code`    | `502`                                  | The response status. A 502 is Caddy failing to reach the upstream; a 500 came from Piri or Ingot itself.             |
@@ -226,9 +239,9 @@ Alloy ships only the series for the appliance's two hostnames, plus Caddy's own 
 which carry no `host`, all under `service_name="appliance-staging-eu-central-3-caddy"`:
 
 ```promql
-sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-central-3", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com", code=~"5.."}[5m]))
+sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-central-3", host=~"piri-[0-9]+.eu-central-3.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com", code=~"5.."}[5m]))
 /
-sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-central-3", host=~"piri-0.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com"}[5m]))
+sum by (host) (rate(caddy_http_request_duration_seconds_count{node="staging/eu-central-3", host=~"piri-[0-9]+.eu-central-3.staging.fil-forge.com|s3.eu-central-3.staging.filonecontent.com"}[5m]))
 ```
 
 ### Piri
@@ -237,12 +250,14 @@ Piri pushes its metrics over OTLP/HTTP to Alloy on port 4318: on dev to the plat
 `alloy:4318` on the filone network, on staging to the host's Alloy at `host.docker.internal:4318`.
 The `[telemetry]` section of Piri's base config sets the address. Alloy converts the metrics to Prometheus
 series under `job="forge/piri"` and `service_name="appliance-<stage>-<region>-piri"`, with
-`instance` set to the node name rather than the DID Piri reports. The conversion builds `job` from
+`instance` set to `<node>/piri-<n>`, the `service.instance.id` each Piri reports from
+`OTEL_RESOURCE_ATTRIBUTES`. A Piri image older than fil-forge/piri#173 ignores that variable and
+reports its DID instead. The conversion builds `job` from
 Piri's `service.namespace` and `service.name`: every Forge service reports
 `service.namespace="forge"`, so `job=~"forge/.+"` selects all of them.
 
 The conversion keeps each metric's own attributes as labels, but not Piri's resource attributes.
-Those land on one `target_info` series per node, which is where Piri's version is read from:
+Those land on one `target_info` series per Piri, which is where its version is read from:
 
 ```promql
 target_info{job="forge/piri"}
@@ -255,10 +270,10 @@ Everything Piri ships on one node:
 ```
 
 A Piri that stops pushing leaves no `up` series to go to zero, since nothing scrapes it. Its absence
-is the signal:
+is the signal, one query per Piri:
 
 ```promql
-absent(target_info{job="forge/piri", node="staging/eu-central-3"})
+absent(target_info{job="forge/piri", instance="staging/eu-central-3/piri-1"})
 ```
 
 ### The deploy stamp
@@ -285,7 +300,7 @@ Piri and Ingot push their spans to the same Alloy receiver as Piri's metrics. Al
 relabel them into Prometheus series; it adds `node`, `region` and `appliance` as resource
 attributes, under the same names and values as the labels above, and sends them on over OTLP.
 `service.name` stays `piri` or `ingot` and `service.namespace` stays `forge`, as each service sets
-them, and Piri's `service.instance.id` stays its DID.
+them, and Piri's `service.instance.id` is `<node>/piri-<n>`.
 
 Every Piri trace from the staging appliance:
 
