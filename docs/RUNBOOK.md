@@ -924,7 +924,8 @@ is a new set of images. Staging then deploys as dev does, on its next reconcile 
 proving window.
 
 To hold one service back, push to `bot/promote-staging` yourself: while its pull request is open,
-the workflow leaves a branch it did not last push alone. Or promote by hand in a branch of your own,
+the workflow neither rebuilds nor closes a branch whose head the bot did not both author and
+commit, so an amended bot commit counts as a push. Or promote by hand in a branch of your own,
 with `set-node-pin.sh --node staging/eu-central-3`.
 
 A deploy that fails is retried on the next pass. Each project records the revision it was last
