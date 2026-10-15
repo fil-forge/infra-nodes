@@ -19,8 +19,8 @@
 # Usage:
 #   APP_SLUG=fil-forge-bot scripts/ci/promote-staging.sh [--dry-run]
 #
-# --dry-run builds the commit on a scratch branch, prints it, and pushes, opens
-# and closes nothing.
+# --dry-run builds the commit on a detached HEAD, prints it, switches back, and
+# pushes, opens and closes nothing.
 #
 # Reads APP_SLUG, the GitHub App that opens the pull request and whose identity
 # its commit carries. gh reads its own credentials, GH_TOKEN included.
@@ -53,6 +53,14 @@ STAGING_FILE=nodes/$NODE/apps/versions.env
 SUBJECT="Promote dev's images to staging"
 # This repository, which Actions names; for links in the message.
 SELF=${GITHUB_REPOSITORY:-fil-forge/infra-nodes}
+
+# The promotion commit takes in whatever the index holds and any edit to
+# staging's file. A dry run then switches back and drops that commit, and the
+# changes with it.
+if ! git diff --cached --quiet || ! git diff --quiet -- "$STAGING_FILE"; then
+  echo "::error::commit or stash the staged changes and any edit to $STAGING_FILE first; the promotion commit would take them in" >&2
+  exit 1
+fi
 
 # The services a node pins, and the repository each publishes from, mirroring
 # set-node-pin.sh and bump-deployed-image.yml.
@@ -146,8 +154,8 @@ digest_link() {
 # array and the notes written once.
 changes() {
   local from=$2 to=$3
-  # $title, $pr, $c and $n are jq's; the repository reaches jq through the
-  # environment.
+  # $compare, $commits, $title, $pr, $c, $n and $behind are jq's; the
+  # repository reaches jq through the environment.
   # shellcheck disable=SC2016
   gh api --paginate --slurp "repos/$1/compare/$from...$to?per_page=100" \
     | REPO=$1 jq -r '
@@ -273,11 +281,12 @@ if [ "$DRY_RUN" = false ]; then
   git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
 fi
 
-# A scratch branch for a dry run, so the local bot/promote-staging is never
-# touched.
-work_branch=$BRANCH
-[ "$DRY_RUN" = false ] || work_branch=dry-run/promote-staging
-git checkout --quiet -B "$work_branch" origin/main
+# A dry run commits on a detached HEAD, so it creates and moves no local branch.
+if [ "$DRY_RUN" = true ]; then
+  git checkout --quiet --detach origin/main
+else
+  git checkout --quiet -B "$BRANCH" origin/main
+fi
 # Staged after each pin: set-node-pin.sh asserts its own edit is one line,
 # against the index.
 for move in "${moving[@]}"; do
@@ -291,7 +300,6 @@ if [ "$DRY_RUN" = true ]; then
   echo "would push $BRANCH at $(git rev-parse --short HEAD), on main $(git rev-parse --short origin/main):" >&2
   git --no-pager show --stat --format='%n%B' HEAD
   git checkout --quiet -
-  git branch --quiet -D "$work_branch"
   exit 0
 fi
 
