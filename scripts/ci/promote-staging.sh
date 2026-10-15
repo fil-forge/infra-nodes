@@ -19,9 +19,9 @@
 # Usage:
 #   APP_SLUG=fil-forge-bot scripts/ci/promote-staging.sh [--dry-run]
 #
-# --dry-run builds the commit and prints it, and pushes, opens and closes
-# nothing. Every run builds it in a temporary worktree, so the checkout it runs
-# in, its index and its branches are left as they were.
+# --dry-run builds the commit, prints it, and pushes, opens and closes nothing.
+# Every run builds the commit in a temporary worktree and leaves the caller's
+# checkout, index and branches as they were.
 #
 # Reads APP_SLUG, the GitHub App that opens the pull request and whose identity
 # its commit carries. gh reads its own credentials, GH_TOKEN included.
@@ -205,8 +205,7 @@ fi
 
 # Which services differ, and the message describing the promotion.
 body=$(mktemp)
-work=""
-trap 'rm -f "$body"; [ -z "$work" ] || git worktree remove --force "$work"' EXIT
+trap 'rm -f "$body"' EXIT
 moving=()
 {
   echo "Sets every staging pin in \`$STAGING_FILE\` to what"
@@ -275,17 +274,19 @@ if [ "$DRY_RUN" = false ]; then
   git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
 fi
 
-# The commit is built in a worktree of its own, detached at main, so the
-# checkout this runs in, its index and its branches are never touched.
+# The commit is built in a temporary worktree, detached at main, so the caller's
+# checkout, index and branches are never touched. Anything already staged in
+# the caller's index stays out of the commit, and no branch is created that an
+# earlier run could have left behind.
 work=$(mktemp -d)
+trap 'rm -f "$body"; git worktree remove --force "$work" 2>/dev/null || rm -rf "$work"' EXIT
 git worktree add --quiet --detach "$work" origin/main
 # Staged after each pin: set-node-pin.sh asserts its own edit is one line,
-# against the index.
+# against the index. It edits the worktree it is run from.
 for move in "${moving[@]}"; do
   "$work/scripts/ci/set-node-pin.sh" --node "$NODE" "${move%%:*}" "${move#*:}" >/dev/null
   git -C "$work" add "$STAGING_FILE"
 done
-# The worktree's index starts clean, so the commit holds the new pins alone.
 git -C "$work" commit --quiet --file <(echo "$SUBJECT"; echo; cat "$body")
 head=$(git -C "$work" rev-parse HEAD)
 
