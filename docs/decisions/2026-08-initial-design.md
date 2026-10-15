@@ -85,6 +85,9 @@ There is one Piri per region. The service is called `piri`, its key is `piri.pem
 the piri proof. smelt's `piri-0` suffix, which anticipated several nodes per box, was not part of
 this initial hostname. We can explore multi-piri setup in the future.
 
+An appliance now runs one Piri per storage volume; see
+[An appliance runs one Piri per storage volume](2026-10-multiple-piri-per-appliance.md).
+
 Both hostnames, and the `piri-0` suffix itself, have since moved to the names RFC 16 gives Forge
 services; see [Names follow RFC 16](#names-follow-rfc-16) below.
 
@@ -384,7 +387,9 @@ same `service_name` and are told apart by `node`. Container logs take the `<serv
 compose service name, so a service added to either project ships labelled without a change to the
 Alloy config. A container started by hand has no compose service and ships with `container` alone.
 The journal and the host's own metrics have no compose service and use
-`appliance-<stage>-<region>-host`.
+`appliance-<stage>-<region>-host`. Piri's three instances share `service_name` and are told apart
+by `instance`; see
+[An appliance runs one Piri per storage volume](2026-10-multiple-piri-per-appliance.md#telemetry).
 
 This is why `STAGE` exists in `node.env` alongside `FILONE_NODE`. A stage is a group of nodes
 talking to one set of central services, and more than one node can be in it, so the node's directory
@@ -425,7 +430,9 @@ staging uses `staging` and production carries none, so `node.env` states each ho
 rather than composing it from `STAGE`, which keeps its own name and value.
 
 The `piri-0` suffix comes back with this, because the RFC numbers Piri instances within a hostname
-suffix rather than per box.
+suffix rather than per box. The hostname has since gained the region label,
+`piri-<n>.<region>.<suffix>`; see
+[An appliance runs one Piri per storage volume](2026-10-multiple-piri-per-appliance.md#names).
 
 Two public domains means two Route53 zones. Piri's record goes into `dev.fil-forge.com` and Ingot's
 into `dev.filonecontent.com`, both delegated to this account by
