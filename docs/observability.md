@@ -26,11 +26,11 @@ mount, and container health there is read from the journal and the deploy stamp 
 Piri's and Ingot's own application metrics, which each pushes over OTLP to Alloy: Piri every
 thirty seconds, Ingot every minute.
 
-**Traces.** Whatever spans Piri and Ingot record, pushed over OTLP to Alloy and on to the stack's Tempo
-unchanged apart from the node's identity.
+**Traces.** Whatever spans Piri and Ingot record, pushed over OTLP to Alloy and on to the stack's
+Tempo unchanged apart from the node's identity.
 
-**Not shipped.** The network interface collector, which
-inside the Alloy container would report the container's namespace rather than the host's.
+**Not shipped.** The network interface collector, which inside the Alloy container would report
+the container's namespace rather than the host's.
 
 ## Where to look
 
@@ -268,8 +268,10 @@ Ingot pushes its metrics to the same Alloy receiver as Piri, at the `OTEL_EXPORT
 each stage's `apps/compose.yml` sets for it. It pushes every minute, the OpenTelemetry SDK's
 default, since nothing sets `OTEL_METRIC_EXPORT_INTERVAL`. The series arrive under
 `job="forge/ingot"` and `service_name="appliance-<stage>-<region>-ingot"`, converted as Piri's are.
-The metrics section of [Ingot's README](https://github.com/fil-forge/ingot#local-disk) lists what
-it reports.
+The metrics table in the [local disk section of Ingot's
+README](https://github.com/fil-forge/ingot#local-disk) lists its local disk metrics, under their
+OpenTelemetry names; in Prometheus the dots become underscores. The query below lists everything
+Ingot ships.
 
 Every metric Ingot ships, per node:
 
@@ -303,7 +305,7 @@ deploy_last_success_timestamp{project=~"apps|platform"}
 
 ## Traces
 
-Piri and Ingot push their spans to the same Alloy receiver as Piri's metrics. Alloy does not
+Piri and Ingot push their spans to the same Alloy receiver as their metrics. Alloy does not
 relabel them into Prometheus series; it adds `node`, `region` and `appliance` as resource
 attributes, under the same names and values as the labels above, and sends them on over OTLP.
 `service.name` stays `piri` or `ingot` and `service.namespace` stays `forge`, as each service sets
