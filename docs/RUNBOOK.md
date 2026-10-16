@@ -1128,18 +1128,10 @@ three Piris that have no keys, no funded wallets and no onboarding. Do them with
 The node takes no uploads from step 1 until the merge, and the smoke test alerts on it in that
 window.
 
-Hold every other merge to `main` for the same window. A reconcile pass that deploys the apps or the
-platform starts the apps the reset stopped, and dev's image bumps merge on their own. Before step 1,
-disable the bump workflow and turn off auto-merge on any bump pull request already open:
-
-```sh
-gh workflow disable bump-deployed-image.yml
-gh pr merge bot/bump-piri-image-dev --disable-auto    # if open
-gh pr merge bot/bump-ingot-image-dev --disable-auto   # if open
-```
-
-A publish dispatched while the workflow is disabled is lost. Pin that image by hand afterwards, as
-**Deploy a new image** describes.
+Step 1 stops the node's reconcile timer, and nothing starts it again before step 9, so other merges
+to `main`, dev's image bumps included, do not reach the node in that window. They wait on `main` and
+go out with the first deploy. A reconcile pass would start the apps the reset stopped, so keep the
+timer stopped until step 9.
 
 The two nodes start differently. Dev gets a new instance in step 3, which boots with nothing running
 and the reconcile timer disabled. Staging keeps its host and its timer.
@@ -1224,8 +1216,8 @@ and the reconcile timer disabled. Staging keeps its host and its timer.
    On dev, check out `origin/main`, run `scripts/host/provision-apps.sh`, and enable both timers,
    as [step 7](#7-the-timers) describes. The new instance has never had them enabled.
 
-   Enable the bump workflow again with `gh workflow enable bump-deployed-image.yml`, and ask whoever
-   runs infra-central to run `make smoke STAGE=<stage>`. Finish with the node's smoke test.
+   Ask whoever runs infra-central to run `make smoke STAGE=<stage>`. Finish with the node's smoke
+   test.
 
 ## Re-onboarding after identity loss
 
