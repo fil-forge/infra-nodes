@@ -65,8 +65,16 @@ jobs:
           NODE: ${{ matrix.node }}
         run: |
           set -euo pipefail
-          host=$(sed -nE 's/^PIRI_HOSTNAME=(.*)$/\1/p' "nodes/$NODE/node.env" | tail -1)
-          [ -n "$host" ] || { echo "::error::no PIRI_HOSTNAME in nodes/$NODE/node.env"; exit 1; }
+          # Every Piri hostname serves the document. piri-0 is the one a node
+          # running one Piri per storage volume always has; a node with a
+          # single Piri still names its hostname in PIRI_HOSTNAME.
+          suffix=$(sed -nE 's/^PIRI_HOSTNAME_SUFFIX=(.*)$/\1/p' "nodes/$NODE/node.env" | tail -1)
+          if [ -n "$suffix" ]; then
+            host="piri-0.$suffix"
+          else
+            host=$(sed -nE 's/^PIRI_HOSTNAME=(.*)$/\1/p' "nodes/$NODE/node.env" | tail -1)
+          fi
+          [ -n "$host" ] || { echo "::error::no PIRI_HOSTNAME_SUFFIX or PIRI_HOSTNAME in nodes/$NODE/node.env"; exit 1; }
           url="https://$host/.well-known/filone-node-status.json"
           deadline=$(( $(date +%s) + 60 * 60 ))
           echo "waiting for $NODE at $url to report ${COMMIT:0:7} or a descendant"

@@ -29,24 +29,36 @@
 	}
 }
 
-# Piri. Storage protocol endpoints, the readiness probe sprue polls, and the
-# node's did:web document.
+# A Piri, named by its compose service. Storage protocol endpoints, the
+# readiness probe sprue polls, and the node's did:web document.
 #
 # Ahead of the proxy: the node's own status document, which says which revision
-# each project was deployed from and which image digests are running.
-# scripts/ci/smoke-test.sh waits on it after a merge. It sits under
-# /.well-known/ because RFC 8615 reserves that prefix for site-wide metadata,
-# which makes it the one place Piri has no business defining a route. The path
-# matcher is exact and carries no wildcard, so the state directory mounted
-# behind it serves this one file and nothing else.
-https://{$PIRI_HOSTNAME} {
+# each project was deployed from and which image digests are running. Every Piri
+# hostname serves the same file. scripts/ci/smoke-test.sh waits on it after a
+# merge. It sits under /.well-known/ because RFC 8615 reserves that prefix for
+# site-wide metadata, which makes it the one place Piri has no business defining
+# a route. The path matcher is exact and carries no wildcard, so the state
+# directory mounted behind it serves this one file and nothing else.
+(piri) {
 	handle /.well-known/filone-node-status.json {
 		root * /srv/filone
 		file_server
 	}
 	handle {
-		reverse_proxy piri:3000
+		reverse_proxy {args[0]}:3000
 	}
+}
+
+https://piri-0.{$PIRI_HOSTNAME_SUFFIX} {
+	import piri piri-0
+}
+
+https://piri-1.{$PIRI_HOSTNAME_SUFFIX} {
+	import piri piri-1
+}
+
+https://piri-2.{$PIRI_HOSTNAME_SUFFIX} {
+	import piri piri-2
 }
 
 # Ingot. Addressed path-style: there is no wildcard certificate for

@@ -8,7 +8,7 @@
 # that names nothing useful.
 set -euo pipefail
 
-# SC2154: PIRI_HOSTNAME and INGOT_HOSTNAME come from the node's node.env,
+# SC2154: INGOT_DID and INGOT_HOSTNAME come from the node's node.env,
 # which filone_init sources at run time.
 # shellcheck disable=SC2154
 
@@ -26,35 +26,48 @@ echo "=== provision apps ($FILONE_NODE) ==="
 echo "[1/3] Checking onboarding completed"
 bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 
-bao_has piri did || die "no Piri DID in OpenBao; run keygen.sh"
+piri_services="$(piri_services)"
+# shellcheck disable=SC2206 # one service name per word
+piris=($piri_services)
+
+for service in "${piris[@]}"; do
+  bao_has "$service" did || die "no $service DID in OpenBao; run keygen.sh"
+done
 bao_has ingot hilt_proof ||
   die "OpenBao has no hilt-to-ingot delegation, so onboarding has not finished.
        onboarding-request.sh prints what Forge Central needs; store-hilt-proof.sh
        installs the delegation they send back."
 
-echo "  Piri:  $(bao_get piri did)"
+for service in "${piris[@]}"; do
+  echo "  $service: $(bao_get "$service" did)"
+done
 # Ingot has two identities: the did:web it signs as, and the key that document
 # publishes. The delegation's audience is the did:web, so that one leads.
 echo "  Ingot: $INGOT_DID (key: $(bao_get ingot did))"
 
 # --- 2. Start ---------------------------------------------------------------
 
-# True on a node whose Piri has never finished `piri init`. Mirrors the first two
-# conditions of the entrypoint's skip test, read from the host so this needs no
-# container. A re-init triggered by a changed base config is not a first setup,
-# and does not stream.
+# True on a node where some Piri has never finished `piri init`. Mirrors the
+# first two conditions of the entrypoint's skip test, read from the host so this
+# needs no container. A re-init triggered by a changed base config is not a
+# first setup, and does not stream.
 piri_needs_init() {
-  local config="$FILONE_DATA_DIR/piri/piri-config.toml"
-  [ -f "$config" ] && grep -q proof_set "$config" 2>/dev/null && return 1
-  return 0
+  local service config
+  for service in "${piris[@]}"; do
+    config="$(piri_data_dir "$service")/piri-config.toml"
+    [ -f "$config" ] && grep -q proof_set "$config" 2>/dev/null && continue
+    return 0
+  done
+  return 1
 }
 
-# Run the deploy and print Piri's container log alongside it.
+# Run the deploy and print the Piri container logs alongside it.
 #
 # `docker logs --since` by container name each pass, rather than one
-# `docker logs -f`: the deploy runs `up -d --force-recreate piri`, which replaces
-# the container, and a follower attached to the old container ID exits silently
-# at that moment. A fresh call per pass resolves whatever container is current.
+# `docker logs -f`: the deploy runs `up -d --force-recreate <piri>`, which
+# replaces the container, and a follower attached to the old container ID exits
+# silently at that moment. A fresh call per pass resolves whatever container is
+# current.
 run_deploy_streaming_piri_log() {
   # Job control, so the deploy leads a process group of its own and the trap
   # below can signal everything it started. Ctrl+C reaches only the foreground
@@ -104,14 +117,17 @@ stop_deploy() {
 # compose has created it, and `docker logs` on a missing container is an error
 # per pass.
 #
-# Best-effort past that guard. The deploy runs `up -d --force-recreate piri`, so
-# the container can go away between the check and the read, and under
+# Best-effort past that guard. The deploy runs `up -d --force-recreate <piri>`,
+# so the container can go away between the check and the read, and under
 # `set -euo pipefail` that one expected error would abort provisioning while the
 # deploy keeps running and keeps the deploy lock. The next pass reads whatever
 # container is current.
 drain_piri_log() {
-  container_exists filone-piri || return 0
-  docker logs --since "$1" filone-piri 2>&1 | sed 's/^/  piri | /' || true
+  local service
+  for service in "${piris[@]}"; do
+    container_exists "filone-$service" || continue
+    docker logs --since "$1" "filone-$service" 2>&1 | sed "s/^/  $service | /" || true
+  done
 }
 
 echo "[2/3] Starting"
@@ -122,7 +138,7 @@ if piri_needs_init; then
   # `piri init` registers the provider and creates the proof set, waiting on both
   # transactions. That wait is minutes long and every sign of it living or being
   # stuck is in Piri's log, which nothing else here would show.
-  echo "  first Piri start; its log follows, prefixed 'piri |'"
+  echo "  first Piri start; the Piri logs follow, each prefixed with its service name"
   run_deploy_streaming_piri_log
 else
   "$SCRIPT_DIR/deploy-apps.sh"
@@ -161,25 +177,28 @@ seal_roundtrip() {
 check "OpenBao restarts and unseals against central" seal_roundtrip ||
   failures=$((failures + 1))
 
-check "Piri answers /readyz" \
-  docker exec filone-piri wget -q -O - http://localhost:3000/readyz ||
-  failures=$((failures + 1))
+for service in "${piris[@]}"; do
+  check "$service answers /readyz" \
+    docker exec "filone-$service" wget -q -O - http://localhost:3000/readyz ||
+    failures=$((failures + 1))
+done
 
 check "Ingot answers /health" \
   docker exec filone-ingot curl -sf http://localhost:9000/health ||
   failures=$((failures + 1))
 
-check "Caddy serves $PIRI_HOSTNAME with an issued certificate" \
-  curl -sf --max-time 20 "https://$PIRI_HOSTNAME/readyz" ||
-  failures=$((failures + 1))
+for service in "${piris[@]}"; do
+  url="$(piri_public_url "$service")"
+  check "Caddy serves $url with an issued certificate" \
+    curl -sf --max-time 20 "$url/readyz" ||
+    failures=$((failures + 1))
+  check "Caddy serves the node status document at $url" \
+    curl -sf --max-time 20 "$url/.well-known/filone-node-status.json" ||
+    failures=$((failures + 1))
+done
 
 check "Caddy serves $INGOT_HOSTNAME with an issued certificate" \
   curl -sf --max-time 20 "https://$INGOT_HOSTNAME/health" ||
-  failures=$((failures + 1))
-
-check "Caddy serves the node status document" \
-  curl -sf --max-time 20 \
-    "https://$PIRI_HOSTNAME/.well-known/filone-node-status.json" ||
   failures=$((failures + 1))
 
 if [ "$failures" -gt 0 ]; then
