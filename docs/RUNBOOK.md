@@ -804,8 +804,10 @@ Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and t
 onboarding only central can sign. Every `make onboard-appliance` command in the request writes the
 same file name, and that is intended: the region has one Ingot, so central issues one delegation
 and returns it byte for byte on every Piri's run. Store it once. When OpenBao already holds one,
-after an app reset or when adding a Piri, `onboarding-request.sh` says so, and a central run that
-reports "returning the delegation issued earlier" leaves nothing to store.
+after an app reset or when adding a Piri, `onboarding-request.sh` says so. If the Ingot DID is
+unchanged, a central run that reports "returning the delegation issued earlier" leaves nothing to
+store. If the Ingot DID changed, the same message means a stale delegation; see "When the Ingot
+DID changes too" under [Re-onboarding after identity loss](#re-onboarding-after-identity-loss).
 
 The file lands on your machine, and there is no SSH on the node to copy it across, so pass it to
 `store-hilt-proof.sh` over stdin:

@@ -110,12 +110,17 @@ INFO
 if bao_has ingot hilt_proof; then
   cat <<INFO
 OpenBao already holds a hilt delegation, which is the usual case after an app
-reset or when adding a Piri. If central's run says "returning the delegation
-issued earlier", there is nothing to store; start the apps:
+reset or when adding a Piri. If the Ingot DID above has not changed since it was
+stored and central's run says "returning the delegation issued earlier", there
+is nothing to store; start the apps:
 
   scripts/host/provision-apps.sh
 
-If central issued a new delegation instead, store it first as below.
+If the Ingot DID changed, that same message means central returned the old
+DID's delegation and Ingot's S3 calls will get 403s. Ask central to run
+make retire-region and onboard again, as "When the Ingot DID changes too" in
+docs/RUNBOOK.md describes. If central issued a new delegation, store it as
+below.
 
 INFO
 fi
