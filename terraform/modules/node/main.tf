@@ -1,17 +1,22 @@
-# One FilOne Appliance node: a VM, the two disks that outlive it, an address
-# that outlives both, and the DNS pointing at that address.
+# One FilOne Appliance node: a VM, the disks that outlive it, an address that
+# outlives them, and the DNS pointing at that address.
 #
 # The design goal the resource layout serves is that the instance is disposable.
 # Everything that cannot be rebuilt from this repository — the node's identity
 # keys, its Postgres databases, its issued certificates, its Elastic IP — lives
 # on a resource with prevent_destroy. Replacing the VM is an ordinary operation.
 #
-# The two hostnames sit in different zones, one per public domain, and
-# region_label is part of Ingot's: central derives the appliance's did:web from
-# the same two strings, so a change to either is a change of identity.
+# The Piri and Ingot hostnames sit in different zones, one per public domain,
+# and region_label is part of both. Central derives the appliance's did:web from
+# Ingot's, so a change to it is a change of identity.
+#
+# The node runs one Piri per storage volume, piri-0 to piri-<piri_count - 1>.
+# Each has its own EBS volume and its own hostname,
+# piri-<n>.<region_label>.<hostname_suffix>.
 
 locals {
-  piri_hostname  = "piri-${var.piri_index}.${var.hostname_suffix}"
+  piris          = { for n in range(var.piri_count) : "piri-${n}" => n }
+  piri_hostnames = { for name, _ in local.piris : name => "${name}.${var.region_label}.${var.hostname_suffix}" }
   ingot_hostname = "s3.${var.region_label}.${var.ingot_hostname_suffix}"
 }
 
@@ -161,9 +166,9 @@ resource "aws_ebs_volume" "control" {
   tags = { Name = "filone-node-${var.node_name}-control" }
 }
 
-# Piri's blobs and Ingot's spool and LSM segments. Losing this loses stored
-# data, which is a customer-visible failure rather than an identity one, and it
-# is the volume that grows.
+# Ingot's spool and LSM segments. Losing this loses stored data, which is a
+# customer-visible failure rather than an identity one. It held Piri's blobs too
+# until each Piri got a volume of its own.
 resource "aws_ebs_volume" "data" {
   availability_zone = var.availability_zone
   size              = var.data_volume_size
@@ -175,6 +180,24 @@ resource "aws_ebs_volume" "data" {
   }
 
   tags = { Name = "filone-node-${var.node_name}-data" }
+}
+
+# One per Piri, holding its blobs and the config `piri init` writes. Losing one
+# loses that Piri's stored data. A volume per Piri is the layout production
+# runs, and it gives each Piri a free-space figure of its own.
+resource "aws_ebs_volume" "piri" {
+  for_each = local.piris
+
+  availability_zone = var.availability_zone
+  size              = var.piri_volume_size
+  type              = "gp3"
+  encrypted         = true
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  tags = { Name = "filone-node-${var.node_name}-${each.key}" }
 }
 
 resource "aws_instance" "node" {
@@ -211,6 +234,7 @@ resource "aws_instance" "node" {
     node_name         = var.node_name
     control_volume_id = aws_ebs_volume.control.id
     data_volume_id    = aws_ebs_volume.data.id
+    piri_volume_ids   = { for name, volume in aws_ebs_volume.piri : name => volume.id }
     repository_url    = var.repository_url
   })
 
@@ -273,11 +297,24 @@ resource "aws_volume_attachment" "data" {
   skip_destroy = true
 }
 
-# Both hostnames point at the Elastic IP rather than the instance, so a replaced
+# /dev/sdh for piri-0, /dev/sdi for piri-1 and so on. The device name is only a
+# request to AWS; bootstrap finds each volume by its id.
+resource "aws_volume_attachment" "piri" {
+  for_each = local.piris
+
+  device_name  = "/dev/sd${substr("hijklmnop", each.value, 1)}"
+  volume_id    = aws_ebs_volume.piri[each.key].id
+  instance_id  = aws_instance.node.id
+  skip_destroy = true
+}
+
+# Every hostname points at the Elastic IP rather than the instance, so a replaced
 # instance needs no DNS change and no propagation wait.
 resource "aws_route53_record" "piri" {
+  for_each = local.piri_hostnames
+
   zone_id = data.aws_route53_zone.this.zone_id
-  name    = local.piri_hostname
+  name    = each.value
   type    = "A"
   ttl     = 300
   records = [aws_eip.node.public_ip]

@@ -943,7 +943,8 @@ curl -s https://piri-0.latest.dev.fil-forge.com/.well-known/filone-node-status.j
 The document carries a revision per stamp. `reconcile` is the commit the node has reached, advanced
 on every pass; `apps` and `platform` move only when that project deploys. The smoke test waits on
 `reconcile` and compares the running digests against the pins at `apps`, which is what proves a bump
-took. `smoke.yml` runs the same test after every merge and hourly.
+took. The Piris it checks are the ones `compose.yml` defined at `apps`, so a merged Piri the node has
+not deployed yet is not probed. `smoke.yml` runs the same test after every merge and hourly.
 
 **Deploy by hand**, without waiting for the timer:
 
@@ -1214,8 +1215,8 @@ preceding `did not finish within` line means init was killed with SIGKILL (exit 
 timeout, but the kernel's OOM killer exits the same way, and `dmesg` on the host tells the two
 apart. The first-start case can hide a `node.env` or token change that lands in the same deploy: the
 config served lacks it until init next succeeds. Any other failure of a re-run still exits, and
-Docker restarts the container into the same init. The lines before the warning in `docker logs
-filone-piri` carry init's own error, most often the registrar or chain RPC being unreachable. A kill
+Docker restarts the container into the same init. The lines before the warning in the Piri's `docker
+logs` carry init's own error, most often the registrar or chain RPC being unreachable. A kill
 partway through init is harmless: the wallet import is idempotent and the key files are mounted
 read-only, so the next run recovers.
 
@@ -1234,14 +1235,16 @@ recreate Piri around the restart:
 
 ```sh
 cd /opt/fil-one/infra-nodes
-sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh \
-  && rm /mnt/fil-one/data/piri/piri-init.failed \
-  && docker restart filone-piri'
+sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh piri-0 \
+  && rm /mnt/fil-one/piri-0/piri-init.failed \
+  && docker restart filone-piri-0'
 ```
 
-Those are dev's checkout and data directory; staging's are `/root/fil-one/infra-nodes` and
-`/mnt/data/fil-one/data/piri/`. Deleting the file without the restart retries on the next start of
-any kind, gated or not; `deploy-apps.sh` does not recreate Piri when nothing has changed.
+Those are dev's checkout and `piri-0`'s service, data directory and container; dev's other Piris are
+`piri-1` and `piri-2`. Staging runs one Piri: its checkout is `/root/fil-one/infra-nodes`, the
+service `piri`, the data directory `/mnt/data/fil-one/data/piri/` and the container `filone-piri`.
+Deleting the file without the restart retries on the next start of any kind, gated or not;
+`deploy-apps.sh` does not recreate Piri when nothing has changed.
 
 **Piri logs `ERROR: init wrote a config naming proof set N in place of M`.** A re-run of init
 came back with a config naming a different proof set from the one the node was proving. `piri init`
