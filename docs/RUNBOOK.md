@@ -98,6 +98,8 @@ with this node's own values:
 | Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` |
 | Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
 | Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
+| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>` | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
+| Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` |
 | `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | neither: Lotus RPC is local and unauthenticated, Alloy is the host's |
 
 #### The dev node on EC2
@@ -130,12 +132,12 @@ and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; 
 control and data directories are `/mnt/data/fil-one/control` and
 `/mnt/data/fil-one/data`.
 
-Apply the DNS-only root and confirm both names resolve to `23.83.66.244`:
+Apply the DNS-only root and confirm every name resolves to `23.83.66.244`:
 
 ```sh
 tofu -chdir=terraform/envs/staging/eu-central-3 init
 tofu -chdir=terraform/envs/staging/eu-central-3 apply
-dig +short piri-0.staging.fil-forge.com
+for n in 0 1 2; do dig +short "piri-$n.eu-central-3.staging.fil-forge.com"; done
 dig +short s3.eu-central-3.staging.filonecontent.com
 ```
 
@@ -240,6 +242,25 @@ rule {
     regex         = "filone-(?:apps|platform);(.+)"
     replacement   = "appliance-staging-eu-central-3-$1"
     target_label  = "service_name"
+}
+
+// The Piris are one service with one instance each: piri-0, piri-1 and piri-2
+// share service_name ...-piri, the name their metrics carry, and are told
+// apart by instance, the service.instance.id each one reports.
+rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project", "__meta_docker_container_label_com_docker_compose_service"]
+    separator     = ";"
+    regex         = "filone-apps;(piri)-[0-9]+"
+    replacement   = "appliance-staging-eu-central-3-$1"
+    target_label  = "service_name"
+}
+
+rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project", "__meta_docker_container_label_com_docker_compose_service"]
+    separator     = ";"
+    regex         = "filone-apps;(piri-[0-9]+)"
+    replacement   = "staging/eu-central-3/$1"
+    target_label  = "instance"
 }
 
 rule {
@@ -412,10 +433,10 @@ prometheus.relabel "host_caddy" {
   forward_to = [prometheus.remote_write.grafanacloud.receiver]
 
   // The host Caddy records every Host header it sees. Only the appliance's
-  // two sites ship, plus the series with no host label at all.
+  // sites ship, plus the series with no host label at all.
   rule {
     source_labels = ["host"]
-    regex         = "|piri-0\\.staging\\.fil-forge\\.com|s3\\.eu-central-3\\.staging\\.filonecontent\\.com"
+    regex         = "|piri-[0-9]+\\.eu-central-3\\.staging\\.fil-forge\\.com|s3\\.eu-central-3\\.staging\\.filonecontent\\.com"
     action        = "keep"
   }
   rule {
@@ -632,11 +653,29 @@ prometheus.relabel "filone_forge" {
     target_label = "region"
     replacement  = "eu-central-3"
   }
-  // Piri reports its DID as service.instance.id; name the node, as every
-  // other appliance series does.
+  // Every Forge sender is named by the node, as every other appliance series
+  // is, except Piri. The node runs several Piris, and each sets
+  // service.instance.id to staging/eu-central-3/piri-<n>, so its instance is
+  // kept: set aside before the overwrite and put back after it.
+  rule {
+    source_labels = ["job", "instance"]
+    separator     = ";"
+    regex         = "forge/piri;(.+)"
+    replacement   = "$1"
+    target_label  = "__tmp_piri_instance"
+  }
   rule {
     target_label = "instance"
     replacement  = "staging/eu-central-3"
+  }
+  rule {
+    source_labels = ["__tmp_piri_instance"]
+    regex         = "(.+)"
+    target_label  = "instance"
+  }
+  rule {
+    action = "labeldrop"
+    regex  = "__tmp_piri_instance"
   }
 }
 ```
@@ -666,10 +705,10 @@ that takes the host's logs and metrics down too; undo the snippet to recover. Af
 shows `alloy` listening, and `journalctl -u alloy --since '-5 min' | grep -iE 'error|filone'` shows
 nothing from the new components.
 
-**8. Check Piri can reach it**, from inside the Piri container, through the host gateway and UFW:
+**8. Check the Piris can reach it**, from inside a Piri container, through the host gateway and UFW:
 
 ```sh
-docker exec filone-piri wget -q -O - --header 'Content-Type: application/json' \
+docker exec filone-piri-0 wget -q -O - --header 'Content-Type: application/json' \
   --post-data '{}' http://host.docker.internal:4318/v1/metrics
 ```
 
@@ -779,28 +818,31 @@ On the node:
 scripts/host/onboarding-request.sh
 ```
 
-It prints the node's Piri DID, its public URL and the delegation it signed with its own Piri key,
-in the form central's `make onboard-appliance` takes. Send that to whoever runs infra-central. The
+It prints, for each Piri, its DID, its public URL and the delegation it signed with its own key, as
+one `make onboard-appliance` command per Piri. Send that to whoever runs infra-central: central
+runs the command once per Piri, and records each Piri DID under the region, so hilt offers all of
+them to sprue. The
 Ingot identity is not in it: central derives the same did:web from the stage's domain, so there is
 nothing to mistype. The script prints it anyway, because the node has to be configured with the
 matching string — `INGOT_DID` in `nodes/<node>/node.env`, which `deploy-apps.sh` renders into
 Ingot's `identity.service_id`. Central's delegation is addressed to that DID, and a mismatch shows
 up only when Ingot's first S3 call is refused.
 
-While central works on that, fund the node's owner wallet. Piri registers itself in the provider
-registry on its first start, and that transaction sends 5 tFIL from this wallet, so send it at least
-6 from a Calibration faucet. The address is printed by `onboarding-request.sh`, and also readable
+While central works on that, fund each Piri's owner wallet. Every Piri has its own, because the
+provider registry allows one provider per address. A Piri registers itself in the registry on its
+first start, and that transaction sends 5 tFIL from its wallet, so send each one at least 6 from a
+Calibration faucet. The addresses are printed by `onboarding-request.sh`, and also readable
 directly:
 
 ```sh
 docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-  filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri
+  filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri-0
 ```
 
 This is the only thing the node ever pays for. Proofs are paid by the central signing service from
 `PAYER_ADDRESS`.
 
-Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
+Each onboarding run writes ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
 onboarding only central can sign. It lands on your machine, and there is no SSH on the node to copy
 it across, so pass it to `store-hilt-proof.sh` over stdin:
 
@@ -818,17 +860,19 @@ scripts/host/provision-apps.sh
 A second onboarding run at central is safe. It performs only what is missing and returns the same
 delegation byte for byte, so a node that lost its copy can ask for it again.
 
-Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means the
-node's DID is not on the delegator's allow list, which means onboarding did not complete.
+Each Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means
+that Piri's DID is not on the delegator's allow list, which means its onboarding did not complete.
 
 That first start also registers the provider and creates the proof set, and waits for both
-transactions to land, which takes minutes. The first `provision-apps.sh` prints Piri's own log while
-it waits, prefixed `piri |`, so a registration or a proof-set transaction that never confirms is
-visible as it happens. Later runs skip init and print nothing extra.
+transactions to land, which takes minutes. The Piris start one after another, each once the one
+before it is healthy, because concurrent gas estimation makes the later `createDataSet` revert.
+The first `provision-apps.sh` prints every Piri's log while it waits, prefixed with its service
+name (`piri-0 |`), so a registration or a proof-set transaction that never confirms is visible as
+it happens. Later runs skip init and print nothing extra.
 
-`provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, Piri answers
-`/readyz`, Ingot answers `/health`, both hostnames serve over HTTPS with issued certificates, and
-Caddy serves the node status document.
+`provision-apps.sh` finishes with acceptance checks: OpenBao restarts and unseals, each Piri answers
+`/readyz`, Ingot answers `/health`, every hostname serves over HTTPS with an issued certificate, and
+each Piri hostname serves the node status document.
 
 It then installs the systemd units from the checkout, so the timers below exist whatever revision
 the box was bootstrapped from.
@@ -895,8 +939,10 @@ The host owns the Lotus, Caddy and Alloy running there. FilOne leaves them alone
 **Deploy a new image.** Nothing to do. Piri and Ingot dispatch their new digest here when they
 publish a `:main` image, `bump-deployed-image.yml` opens the pull request that rewrites
 `nodes/dev/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and `compose` pass.
-Within five minutes of the merge the node pulls, waits for a safe proving window, restarts Piri and
-then Ingot, and health-gates both.
+Within five minutes of the merge the node pulls, then restarts the Piris one at a time, each after
+waiting for its own safe proving window and health-gated before the next goes down, and then Ingot.
+A Piri taken out of `compose.yml` is stopped before any of that, also behind its own gate, and then
+removed.
 
 Two ways in by hand. Run the same workflow with a digest you read off the registry:
 
@@ -937,7 +983,7 @@ sees it:
 
 ```sh
 scripts/ci/smoke-test.sh dev
-curl -s https://piri-0.latest.dev.fil-forge.com/.well-known/filone-node-status.json | jq
+curl -s https://piri-0.us-east-9.latest.dev.fil-forge.com/.well-known/filone-node-status.json | jq
 ```
 
 The document carries a revision per stamp. `reconcile` is the commit the node has reached, advanced
@@ -1002,10 +1048,10 @@ stored wrap on the old version, which transit still decrypts, so a rotation is s
 `min_decryption_version` bump is not: it makes every object written before it unreadable. There is
 no rewrap campaign in this repository yet, and Ingot's token cannot run one.
 
-**Reissue Piri's delegation to sprue after SPRUE_DID changes.** Run `keygen.sh` again. It compares
-the delegation's stored audience against the current `SPRUE_DID` and reissues automatically when
-they differ, so this is the same command as the first run. sprue needs nothing from this beyond the
-new proof reaching Piri on the next `deploy-apps.sh`; the old delegation just becomes one addressed
+**Reissue the Piris' delegations to sprue after SPRUE_DID changes.** Run `keygen.sh` again. It
+compares each delegation's stored audience against the current `SPRUE_DID` and reissues
+automatically when they differ, so this is the same command as the first run. sprue needs nothing
+from this beyond the new proofs reaching the Piris on the next `deploy-apps.sh`; the old delegation just becomes one addressed
 to a DID sprue no longer answers to.
 
 **Take a node out of service.** Revoke its unseal token at central and restart its OpenBao. It comes
@@ -1021,14 +1067,15 @@ box:
 
 ```sh
 journalctl -u filone-reconcile.service -n 200
-docker logs --tail 200 filone-piri
+docker logs --tail 200 filone-piri-0
 ```
 
 In Grafana Explore, select the Loki datasource and query `{appliance="dev-us-east-9"}` for
 everything the node ships, or `{node="dev"}` for one box. Docker logs carry
 `service_name="appliance-<stage>-<region>-<compose-service>"`, so Piri on dev is
 `{service_name="appliance-dev-us-east-9-piri"}`, Piri on staging is
-`{service_name="appliance-staging-eu-central-3-piri"}`, and Ingot ends in `-ingot`.
+`{service_name="appliance-staging-eu-central-3-piri"}`, and Ingot ends in `-ingot`. The Piris
+share one `service_name`; add `instance="dev/piri-1"` to read one of them.
 
 Host metrics sit in the Prometheus datasource under the same `appliance`, `node` and `region` labels, with
 `service_name="appliance-<stage>-<region>-host"` and `instance` set to the node name, so
@@ -1057,8 +1104,8 @@ full order, and the on-chain cost of leaving the old proof sets behind.
 
 ## Re-onboarding after identity loss
 
-Losing the control volume loses the node's keys, so the rebuilt node comes back with a new Piri
-DID and central still carries the old one. Ingot is unaffected as long as its hostname holds: the
+Losing the control volume loses the node's keys, so the rebuilt node comes back with new Piri
+DIDs and central still carries the old ones. Ingot is unaffected as long as its hostname holds: the
 `did:web` is derived from the region label and the content domain, both of which central also holds,
 so a rebuilt node publishes a new key at the same DID and hilt's delegation to it stays valid.
 Everything below is about Piri. A node whose Ingot hostname *does* change is a different case, at
@@ -1070,16 +1117,16 @@ identities. The transit key at central is per-node, not per-identity, so it stay
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
 for a new wrapping token.
 
-**2. Remove the old identity at central.** Ask whoever runs infra-central to drop the old Piri DID
-from the delegator's allow list and to deregister or zero-weight the old provider at sprue. hilt's
+**2. Remove the old identities at central.** Ask whoever runs infra-central to drop the old Piri DIDs
+from the delegator's allow list and to deregister or zero-weight the old providers at sprue. hilt's
 provider row is keyed by the Ingot DID, which the rebuild does not change, so it stays as it is.
 
-**3. Onboard the new Piri DID.** [Step 6](#6-onboarding-then-the-apps) again, then
+**3. Onboard the new Piri DIDs.** [Step 6](#6-onboarding-then-the-apps) again, then
 `provision-apps.sh` and the timers. hilt's delegation to Ingot is unchanged and central still holds
 it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and store it with
 `store-hilt-proof.sh`: the rebuilt OpenBao has no copy of it.
 
-The data volume still holds the old identity's blobs and spool. Dev data is disposable; wipe it and
+The Piri volumes and the data volume still hold the old identities' blobs and spool. Dev data is disposable; wipe it and
 start clean rather than carry data the new identity cannot serve.
 
 **When the Ingot DID changes too**, because the region label or the content domain moved, central
@@ -1101,7 +1148,7 @@ Onboarding's log line has to read "issued hilt's S3 delegation to the appliance"
 DID as the audience. "Returning the delegation issued earlier" means the retire did not take.
 
 `retire-region` leaves `unseal-token.accessor` alone, which is what the onboard phase checks before
-it will admit a region at all. It does not touch sprue's registration for the old Piri DID either,
+it will admit a region at all. It does not touch sprue's registration for the old Piri DIDs either,
 which is the same tidying step 2 above describes.
 
 ## When something is wrong
@@ -1143,22 +1190,22 @@ document Ingot resolved.
 **`deploy-apps.sh` says PAYER_ADDRESS is still the placeholder.** Ask whoever runs infra-central for
 the address the stage's signing service pays from, and commit it to `nodes/dev/node.env`.
 
-**Piri crash-loops with a 403 from the registrar.** Its DID is not on the delegator's allow list.
+**A Piri crash-loops with a 403 from the registrar.** Its DID is not on the delegator's allow list.
 
-**Piri crash-loops on `wallet balance is too low`.** The owner wallet holds less than the 5 tFIL
+**A Piri crash-loops on `wallet balance is too low`.** Its owner wallet holds less than the 5 tFIL
 provider registration sends to the registry. Fund it with at least 6, as [step
 6](#6-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
 because the 5 is the transaction's value and the gas comes out of the same wallet.
 
-**Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
+**A Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
 OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri sends the token
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
-`docker inspect filone-piri` shows its environment.
+`docker inspect filone-piri-0` shows its environment.
 
 ### The node rebooted
 
-Piri and Ingot come back down, and stay down until an apps deploy runs. Their
-keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts both containers
+The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
+keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts the containers
 before anything has rendered them again, so each restart fails on a missing bind-mount source.
 Reconcile does not notice: it deploys a project only when a commit has touched it since the last
 deploy, and the deployed revision is on the control volume, so a reboot leaves nothing to do. The
@@ -1179,24 +1226,26 @@ timer, clear the directories, deploy by hand, and start the timer again:
 
 ```sh
 systemctl stop filone-reconcile.timer
-docker stop filone-piri filone-ingot
+docker stop filone-piri-0 filone-piri-1 filone-piri-2 filone-ingot
 find /run/fil-one/secrets -mindepth 1 -type d -exec rm -rf {} +
 scripts/host/deploy-apps.sh
 systemctl start filone-reconcile.timer
 ```
 
-**The proving gate never lets a deploy through.** `pdp-gate.sh` waits 45 minutes by default. If Piri
-reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it after
+**The proving gate never lets a deploy through.** `pdp-gate.sh` waits 45 minutes by default. If a
+Piri reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it after
 the challenge window. A Piri that owes proofs and will not report its state at all is treated the
-same way, most often because the chain RPC is unreachable.
+same way, most often because the chain RPC is unreachable. A platform deploy waits until every Piri
+reports safe in the same poll, because restarting Postgres stops all of them at once; three Piris
+whose challenge windows rarely line up can take longer than one.
 
 **The gate says `piri-config.toml` is missing.** The container is running but the file is not there
 yet, which is where a node sits while `piri init` is still working and where it stays if init died.
-`docker logs filone-piri` says which of the two it is. The gate lets the deploy through only when
+`docker logs filone-piri-<n>` says which of the two it is. The gate lets the deploy through only when
 `piri-base-config.applied.toml` is missing too, because init writes that file last and a node that
 has never got that far holds no proof set. A missing config next to a present snapshot aborts the
 deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
-`docker stop filone-piri` if the node is being decommissioned.
+`docker stop filone-piri-<n>` if that Piri is being decommissioned.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.
