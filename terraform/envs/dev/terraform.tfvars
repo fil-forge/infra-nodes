@@ -6,7 +6,7 @@
 # building a new node rather than moving this one.
 availability_zone = "us-east-2a"
 
-# Piri answers at piri-0.latest.dev.fil-forge.com and Ingot at
+# The Piris answer at piri-<n>.us-east-9.latest.dev.fil-forge.com and Ingot at
 # s3.us-east-9.latest.dev.filonecontent.com, the names RFC 16 gives Forge
 # services. `latest` is this long-lived dev environment's label; staging uses
 # `staging` and production carries none, so the suffixes are stated here rather
@@ -14,8 +14,9 @@ availability_zone = "us-east-2a"
 hostname_suffix       = "latest.dev.fil-forge.com"
 ingot_hostname_suffix = "latest.dev.filonecontent.com"
 
-# There is one Piri on this node, and no second appliance shares the suffix.
-piri_index = 0
+# One Piri per storage volume, as production runs them. Must match the Piri
+# services in nodes/dev/apps/compose.yml.
+piri_count = 3
 
 # The virtual S3 region this node presents. Deliberately not a real AWS region:
 # an S3 client that guesses a real one should fail loudly rather than half-work.
@@ -31,5 +32,9 @@ instance_type = "t4g.large"
 # and slow-growing; this is the volume that carries the node's identity.
 control_volume_size = 50
 
-# Piri's blobs and Ingot's spool. This is the one that grows.
+# Ingot's spool. Piri's blobs lived here too before each Piri got a volume of
+# its own, and an EBS volume cannot shrink, so it keeps its size.
 data_volume_size = 500
+
+# Each Piri's blobs. These are the volumes that grow.
+piri_volume_size = 100

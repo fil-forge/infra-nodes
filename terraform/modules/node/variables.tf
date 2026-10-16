@@ -4,7 +4,7 @@ variable "node_name" {
 }
 
 variable "hostname_suffix" {
-  description = "Suffix Piri's hostname carries, e.g. latest.dev.fil-forge.com. Piri answers at piri-<piri_index>.<suffix>. Stated explicitly rather than derived from zone_name, because the delegation point and the hostname shape need not match."
+  description = "Suffix the Piri hostnames carry, e.g. latest.dev.fil-forge.com. Each Piri answers at piri-<n>.<region_label>.<suffix>. Stated explicitly rather than derived from zone_name, because the delegation point and the hostname shape need not match."
   type        = string
 }
 
@@ -13,9 +13,14 @@ variable "ingot_hostname_suffix" {
   type        = string
 }
 
-variable "piri_index" {
-  description = "Which Piri this is within its hostname suffix, counting from 0. One appliance runs one Piri, so this only moves when a second appliance shares the suffix."
+variable "piri_count" {
+  description = "How many Piris the node runs, one per storage volume: piri-0 to piri-<piri_count - 1>. Must match the Piri services in the node's apps/compose.yml."
   type        = number
+
+  validation {
+    condition     = var.piri_count >= 1 && var.piri_count <= 9
+    error_message = "piri_count must be between 1 and 9; the volume attachments have device names /dev/sdh to /dev/sdp."
+  }
 }
 
 variable "zone_name" {
@@ -46,9 +51,14 @@ variable "control_volume_size" {
 }
 
 variable "data_volume_size" {
-  description = "GB for the data-plane volume: Piri's blobs and Ingot's spool and LSM segments. Grows with what the node stores; the control volume does not."
+  description = "GB for the data-plane volume: Ingot's spool and LSM segments."
   type        = number
   default     = 500
+}
+
+variable "piri_volume_size" {
+  description = "GB for each Piri's volume: its blobs and the config `piri init` writes. Grows with what the Piri stores."
+  type        = number
 }
 
 variable "root_volume_size" {

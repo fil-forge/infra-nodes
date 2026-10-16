@@ -8,9 +8,9 @@ output "public_ip" {
   value       = aws_eip.node.public_ip
 }
 
-output "piri_url" {
-  description = "Piri's public URL. Registered with sprue at onboarding and written into Piri's own config as public_url, so the three have to agree."
-  value       = "https://${local.piri_hostname}"
+output "piri_urls" {
+  description = "Each Piri's public URL, by service name. Registered with sprue at onboarding and written into the Piri's own config as public_url, so the three have to agree."
+  value       = { for name, hostname in local.piri_hostnames : name => "https://${hostname}" }
 }
 
 output "ingot_url" {
@@ -24,4 +24,8 @@ output "control_volume_id" {
 
 output "data_volume_id" {
   value = aws_ebs_volume.data.id
+}
+
+output "piri_volume_ids" {
+  value = { for name, volume in aws_ebs_volume.piri : name => volume.id }
 }
