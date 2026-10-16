@@ -87,17 +87,23 @@ is the Piri's DID.
 
 ## Moving from one Piri
 
-Both nodes are wiped when they move to three Piris. Piri's data and its database are deleted on dev
-and on staging, staging's import runs included. piri-0's on-chain data set then faults, and it is
-left to fault.
+Both nodes reset their apps when they move to three Piris, and Forge central resets its apps for
+the stage at the same time. On the node, `scripts/host/reset-apps.sh` drops the Ingot and Piri
+databases and empties their data directories, staging's import runs included. At central,
+`make reset-apps` empties sprue, hilt, swarf and plc, the delegator's allow list and the recorded
+Piri DIDs. The stage's tenants, buckets and stored objects are gone afterwards, and FilOne's
+tenants for the region are reset to match.
 
-These survive the wipe:
+The node's identity survives the reset:
 
 - OpenBao, which holds the region key, Ingot's identity and the link to Forge central
+- hilt's delegation to Ingot, which still verifies, because neither hilt's key nor the Ingot DID
+  changes
 - piri-0's key and funded wallet, copied from OpenBao path `piri` to `piri-0`, so piri-0 keeps its
   DID and on-chain provider ID
-- Ingot's data
 
-piri-0's hostname changes, so its sprue registration is deregistered and onboarded again at the new
-URL. infra-central refuses to move a registered Piri to another URL by itself. Piri's on-chain
-registration carries only its DID, so nothing changes on chain.
+sprue is empty after the reset, so all three Piris are onboarded from scratch, piri-0 at its new
+URL. Each Piri creates a new proof set when it first starts. piri-0's old data set faults and is
+left to fault, with about 0.9 USDFC of the payer's lockup stranded in it. Piri's on-chain
+registration carries only its DID and is found again by wallet address, so nothing else changes on
+chain.
