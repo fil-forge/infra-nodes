@@ -42,7 +42,7 @@ variable "ingot_hostname_suffix" {
   type = string
 }
 
-variable "piri_index" {
+variable "piri_count" {
   type = number
 }
 
@@ -62,6 +62,10 @@ variable "data_volume_size" {
   type = number
 }
 
+variable "piri_volume_size" {
+  type = number
+}
+
 module "node" {
   source = "../../modules/node"
 
@@ -74,7 +78,7 @@ module "node" {
   # content domain instead, which is a zone of its own.
   zone_name       = module.constants.dev_forge_zone_name
   hostname_suffix = var.hostname_suffix
-  piri_index      = var.piri_index
+  piri_count      = var.piri_count
 
   ingot_zone_name       = module.constants.dev_content_zone_name
   ingot_hostname_suffix = var.ingot_hostname_suffix
@@ -82,6 +86,7 @@ module "node" {
   instance_type       = var.instance_type
   control_volume_size = var.control_volume_size
   data_volume_size    = var.data_volume_size
+  piri_volume_size    = var.piri_volume_size
 }
 
 output "instance_id" {
@@ -94,8 +99,8 @@ output "public_ip" {
   value = module.node.public_ip
 }
 
-output "piri_url" {
-  value = module.node.piri_url
+output "piri_urls" {
+  value = module.node.piri_urls
 }
 
 output "ingot_url" {

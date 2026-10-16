@@ -942,7 +942,8 @@ curl -s https://piri-0.latest.dev.fil-forge.com/.well-known/filone-node-status.j
 The document carries a revision per stamp. `reconcile` is the commit the node has reached, advanced
 on every pass; `apps` and `platform` move only when that project deploys. The smoke test waits on
 `reconcile` and compares the running digests against the pins at `apps`, which is what proves a bump
-took. `smoke.yml` runs the same test after every merge and hourly.
+took. The Piris it checks are the ones `compose.yml` defined at `apps`, so a merged Piri the node has
+not deployed yet is not probed. `smoke.yml` runs the same test after every merge and hourly.
 
 **Deploy by hand**, without waiting for the timer:
 

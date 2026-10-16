@@ -126,7 +126,13 @@ trap restore_apps EXIT
 echo "[5/7] Applying"
 if [ "${#changed_services[@]}" -gt 0 ]; then
   echo "  waiting for a safe restart window"
-  "$SCRIPT_DIR/pdp-gate.sh"
+  # Every Piri at once: stop_apps takes all of them down together, so all of
+  # them have to be clear of a challenge window in the same moment.
+  piri_containers="$(piri_containers)"
+  if [ -n "$piri_containers" ]; then
+    # shellcheck disable=SC2086 # one service name per word
+    "$SCRIPT_DIR/pdp-gate.sh" ${piri_containers//filone-/}
+  fi
   if stop_apps; then apps_stopped=1; fi
   # --force-recreate because most of what changes here is the *content* of a
   # bind-mounted file: the Caddyfile, the Alloy config, bao.hcl. Compose decides

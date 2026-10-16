@@ -105,6 +105,24 @@ discovery.relabel "containers" {
 		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-$1"
 		target_label = "service_name"
 	}
+
+	// The Piris are one service with one instance per storage volume, so
+	// piri-0, piri-1 and piri-2 share service_name ...-piri, the name their
+	// metrics carry too, and are told apart by instance: <node>/piri-<n>, the
+	// service.instance.id each Piri reports.
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "(piri)-[0-9]+"
+		replacement   = sys.env("SERVICE_NAME_PREFIX") + "-$1"
+		target_label  = "service_name"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "(piri-[0-9]+)"
+		replacement   = sys.env("FILONE_NODE") + "/$1"
+		target_label  = "instance"
+	}
 }
 
 loki.source.docker "containers" {
@@ -287,10 +305,31 @@ prometheus.relabel "apps" {
 		target_label  = "service_name"
 	}
 
-	// Piri sets service.instance.id to its DID. Name the node instead, as every
-	// other series from this node does; the DID stays readable in Piri's logs.
+	// Every sender is named by the node, as every other series from this node
+	// is, except Piri. A node runs several Piris, and each sets
+	// service.instance.id to <node>/piri-<n>, so its instance is kept: set aside
+	// before the overwrite and put back after it.
+	rule {
+		source_labels = ["job", "instance"]
+		separator     = ";"
+		regex         = "forge/piri;(.+)"
+		replacement   = "$1"
+		target_label  = "__tmp_piri_instance"
+	}
+
 	rule {
 		replacement  = sys.env("FILONE_NODE")
 		target_label = "instance"
+	}
+
+	rule {
+		source_labels = ["__tmp_piri_instance"]
+		regex         = "(.+)"
+		target_label  = "instance"
+	}
+
+	rule {
+		action = "labeldrop"
+		regex  = "__tmp_piri_instance"
 	}
 }

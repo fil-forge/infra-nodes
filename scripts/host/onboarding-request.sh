@@ -15,9 +15,9 @@
 # mismatch is invisible until Ingot's first S3 call is refused.
 # infra-central's docs/appliance-onboarding.md is where that is decided.
 #
-# Runs after keygen.sh, which creates the identity printed here, and before
-# provision-apps.sh: Piri's first `piri init` asks the delegator for approval and
-# gets a 403 for a DID that is not on its allow list.
+# Runs after keygen.sh, which creates the identities printed here, and before
+# provision-apps.sh: each Piri's first `piri init` asks the delegator for
+# approval and gets a 403 for a DID that is not on its allow list.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -27,28 +27,44 @@ filone_init
 
 bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 
-bao_has piri did || die "no Piri DID in OpenBao; run keygen.sh"
-bao_has piri sprue_proof || die "no Piri delegation in OpenBao; run keygen.sh"
-# Checked here rather than left to the bao_get below it, which sits inside the
-# command substitution of a heredoc: a die in there kills only that subshell and
-# the address would come out blank.
-bao_has piri owner_wallet_address ||
-  die "no Piri owner wallet address in OpenBao; run keygen.sh"
+piri_services="$(piri_services)"
+# shellcheck disable=SC2206 # one service name per word
+piris=($piri_services)
+
+# Checked here rather than left to the bao_get calls below, which sit inside the
+# command substitutions of a heredoc: a die in there kills only that subshell
+# and the value would come out blank.
+for service in "${piris[@]}"; do
+  bao_has "$service" did || die "no $service DID in OpenBao; run keygen.sh"
+  bao_has "$service" sprue_proof || die "no $service delegation in OpenBao; run keygen.sh"
+  bao_has "$service" owner_wallet_address ||
+    die "no $service owner wallet address in OpenBao; run keygen.sh"
+  piri_public_url "$service" >/dev/null
+done
 
 cat <<INFO
 === onboarding request ($FILONE_NODE) ===
 
-Send this to Forge Central. Whoever runs infra-central turns it into:
+Send this to Forge Central. Whoever runs infra-central turns it into one
+onboarding run per Piri:
 
+INFO
+
+for service in "${piris[@]}"; do
+  cat <<INFO
   make onboard-appliance STAGE=$STAGE REGION=$REGION_LABEL \\
-    PIRI_DID=$(bao_get piri did) \\
-    PIRI_URL=$PIRI_PUBLIC_URL \\
-    PIRI_PROOF=piri-proof.txt \\
+    PIRI_DID=$(bao_get "$service" did) \\
+    PIRI_URL=$(piri_public_url "$service") \\
+    PIRI_PROOF=$service-proof.txt \\
     ONBOARD_ARGS="--proof-out ingot-proof.txt"
 
-piri-proof.txt is the delegation below, one line, no trailing newline. It is not
-a secret: a delegation names its audience, and using this one means holding
-this node's Piri key.
+INFO
+done
+
+cat <<INFO
+Each <service>-proof.txt is that Piri's delegation below, one line, no trailing
+newline. It is not a secret: a delegation names its audience, and using one
+means holding that Piri's key.
 
 Central derives this node's Ingot identity rather than taking it as an argument.
 It should come out as the DID this node is configured with:
@@ -57,25 +73,34 @@ It should come out as the DID this node is configured with:
 
 INFO
 
-bao_get piri sprue_proof
-echo
+for service in "${piris[@]}"; do
+  echo "$service-proof.txt:"
+  bao_get "$service" sprue_proof
+  echo
+  echo
+done
+
+cat <<INFO
+While central works on that, fund each Piri's owner wallet from a Calibration
+faucet:
+
+INFO
+for service in "${piris[@]}"; do
+  echo "  $service: $(bao_get "$service" owner_wallet_address)"
+done
 
 cat <<INFO
 
-While central works on that, fund this node's owner wallet from a Calibration
-faucet:
+Each Piri registers itself in the provider registry on its first start, and that
+transaction sends 5 tFIL from its wallet. Send at least 6 to each, so the 5 and
+the gas both fit; an unfunded wallet makes its Piri crash-loop on "wallet
+balance is too low". This is the only thing the node ever pays for. Proofs are
+paid by the central signing service from PAYER_ADDRESS.
 
-  $(bao_get piri owner_wallet_address)
-
-Piri registers itself in the provider registry on its first start, and that
-transaction sends 5 tFIL from this wallet. Send at least 6, so the 5 and the gas
-both fit; an unfunded wallet makes Piri crash-loop on "wallet balance is too
-low". This is the only thing the node ever pays for. Proofs are paid by the
-central signing service from PAYER_ADDRESS.
-
-Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot,
-addressed to the DID above. The file lands on your own machine, so paste the
-delegation into store-hilt-proof.sh over stdin, then start the apps:
+Each onboarding run writes ingot-proof.txt, hilt's delegation to this node's
+Ingot, addressed to the DID above. Keep the one from the last run. The file
+lands on your own machine, so paste the delegation into store-hilt-proof.sh over
+stdin, then start the apps:
 
   scripts/host/store-hilt-proof.sh -
   scripts/host/provision-apps.sh
