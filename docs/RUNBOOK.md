@@ -1164,10 +1164,11 @@ happened. The severity definitions are in infra-central's `docs/observability.md
 
 Most checks run inside the Piri container (`docker exec -it filone-piri sh`): `piri status` for the
 node, `piri client pdp proofset state` for a proof set. Curio's task logs are in the container's
-output, named by task: `docker logs filone-piri 2>&1 | grep PDPv0_Prove`, or `PDPv0_ProvPeriod`
-for scheduling. On a node that runs one Piri per volume, the containers are `filone-piri-0`,
-`filone-piri-1` and so on, and each one's database is `piri_0`, `piri_1` and so on, in place of
-`filone-piri` and `piri` below.
+output, named by task: `docker logs filone-piri 2>&1 | grep PDPv0_Prove`, or `PDPv0_ProvPeriod` for
+scheduling. On a node that runs one Piri per volume, the containers are `filone-piri-0`,
+`filone-piri-1` and so on, in place of `filone-piri` here and below, and the databases are `piri_0`,
+`piri_1` and so on, in place of `piri`. `docker inspect filone-piri-<n>` shows which database a
+container uses, in its `PIRI_DB_POSTGRES_URL`.
 
 #### Piri's chain head is stale
 
@@ -1231,19 +1232,20 @@ stale", and Piri's task engine not running. Run `piri status`, check the proof s
 the `PDPv0_ProvPeriod` logs for whether scheduling ran.
 
 One cause can lose more without paging: one that also stops AddRoots while the head keeps moving,
-such as an owner wallet without FIL for gas. Check the wallet's balance, and if the logs show
-AddRoots failing too, check for stranded batches as in [Piri's chain head is
-stale](#piris-chain-head-is-stale) once it's fixed.
+such as an owner wallet without FIL for gas. Check the wallet's balance, and fund it as [step
+6](#6-onboarding-then-the-apps) describes if it's low. If the logs show AddRoots failing too, check
+for stranded batches as in [Piri's chain head is stale](#piris-chain-head-is-stale) once it's fixed.
 
 #### Piri's Prove task has not run in 1.5 proving periods
 
 **Act within a day.** No proof has gone out for one and a half proving periods, so at least one
 period's payment is already lost, and each further day loses another. Proving resumes on its own
-once the cause is fixed. Most causes that can lose more than that page on their own: rejected
-proofs as "Piri proving is failing", and a stalled head as "Piri's chain head is stale". Check
-Lotus, `piri status`, the wallet's balance and each proof set's state, and read the `PDPv0_Prove`
-logs for why no run finished. If AddRoots is failing too, check for stranded batches as in [Piri's
-chain head is stale](#piris-chain-head-is-stale) once the cause is fixed.
+once the cause is fixed. Most causes that can lose more than that page on their own: rejected proofs
+as "Piri proving is failing", and a stalled head as "Piri's chain head is stale". Check Lotus, `piri
+status`, the wallet's balance (fund it as [step 6](#6-onboarding-then-the-apps) describes), and each
+proof set's state, and read the `PDPv0_Prove` logs for why no run finished. If AddRoots is failing
+too, check for stranded batches as in [Piri's chain head is stale](#piris-chain-head-is-stale) once
+the cause is fixed.
 
 #### Piri proof set is unrecoverable
 
