@@ -1192,12 +1192,13 @@ same way, most often because the chain RPC is unreachable.
 
 **The gate says `piri-config.toml` is missing.** The container is running but the file is not there
 yet, which is where a node sits while `piri init` is still working and where it stays if init died.
-`docker logs filone-piri` says which of the two it is. The gate lets the deploy through only when
+The Piri's `docker logs` say which of the two it is. The gate lets the deploy through only when
 init's stamp is missing too: `piri-init.stamp`, or `piri-base-config.applied.toml` on a node that
 has not re-run init since the stamp replaced it. The entrypoint writes the stamp once init returns,
 so a node that has never got that far holds no proof set. A missing config next to a present stamp
-aborts the deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
-`docker stop filone-piri` if the node is being decommissioned.
+aborts the deploy: init has completed here before, so Piri may still owe a proof. Restore the
+config, or stop the Piri (`docker stop filone-piri-<n>` on dev, `docker stop filone-piri` on
+staging) if it is being decommissioned.
 
 **Piri logs `WARNING: init failed; serving the existing config version N`.** Piri's entrypoint
 re-runs `piri init` whenever one of init's inputs changes: the base config, a `node.env` value init
