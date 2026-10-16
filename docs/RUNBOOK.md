@@ -1036,6 +1036,23 @@ and cAdvisor, so container metrics such as `container_memory_working_set_bytes` 
 only. Caddy's request metrics ship from both nodes under `service_name="appliance-<stage>-<region>-caddy"`
 and `job="caddy"`; [observability.md](observability.md#caddy-requests) has the 5xx queries.
 
+**Reset the apps on dev or staging.** This drops the `ingot` and Piri databases, empties the apps'
+data directories and recreates the databases empty. It keeps the node's identity: OpenBao and its
+unseal token, every key and wallet, and the hilt proof. The node is reset first, and the apps stay
+stopped until central has been reset too:
+
+```sh
+sudo scripts/host/reset-apps.sh
+```
+
+It shows what it will stop, drop and empty, and asks you to type `reset-<stage>`; `--yes` skips the
+question. It refuses any other stage. Hold merges to `main` until central is reset, and watch for
+dev's image bumps, which merge on their own: a reconcile pass that deploys the apps or the platform
+starts them again. After that, the next `deploy-apps.sh` starts them, and each Piri creates a new
+proof set and needs onboarding again. infra-central's
+[app reset guide](https://github.com/fil-forge/infra-central/blob/main/docs/reset-apps.md) has the
+full order, and the on-chain cost of leaving the old proof sets behind.
+
 ## Re-onboarding after identity loss
 
 Losing the control volume loses the node's keys, so the rebuilt node comes back with a new Piri
