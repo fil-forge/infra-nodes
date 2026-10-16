@@ -163,9 +163,9 @@ owes_proofs() {
         0)
           die "$PIRI_CONFIG is gone from $container but init's stamp (or the older
        snapshot) is still there, so init has completed before and this Piri may hold a
-       proof set and owe a proof. The deploy stops rather than restarting it. Restore the config, or if this Piri
-       is being decommissioned, 'docker stop $container' and re-run: a Piri that is
-       already down has no proof in flight."
+       proof set and owe a proof. The deploy stops rather than restarting it. Restore
+       the config, or if this Piri is being decommissioned, 'docker stop $container' and
+       re-run: a Piri that is already down has no proof in flight."
           ;;
         *)
           die "could not look for init's stamp or snapshot in $container (docker exec exited $init_probe).
