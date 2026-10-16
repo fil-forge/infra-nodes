@@ -1113,27 +1113,64 @@ full order, and the on-chain cost of leaving the old proof sets behind.
 
 ## Moving a node from one Piri to several
 
-A node that ran a single `piri` service moves to `piri-0`, `piri-1` and `piri-2` by a wipe of its
-Piri data, as
+A node that ran a single `piri` service moves to `piri-0`, `piri-1` and `piri-2` by an app reset on
+the node and at Forge central, as
 [the decision record](decisions/2026-10-multiple-piri-per-appliance.md#moving-from-one-piri)
-describes. OpenBao, the link to Forge central and Ingot's data stay. The existing Piri keeps its key
-and funded wallet as `piri-0`. Its old on-chain data set faults from then on and is left to fault.
+describes. The node loses its Ingot and Piri databases and data, and central loses the stage's
+providers, tenants and Piri DIDs. OpenBao, the link to Forge central, every key and wallet, and
+hilt's delegation to Ingot stay. The existing Piri keeps its key and funded wallet as `piri-0`. Its
+old on-chain data set faults from then on and is left to fault. infra-central's
+[app reset guide](https://github.com/fil-forge/infra-central/blob/main/docs/reset-apps.md) covers
+central's side and the on-chain cost.
 
 The node's change has to land after these steps, because the reconcile timer would otherwise start
 three Piris that have no keys, no funded wallets and no onboarding. Do them with the merge pending.
-The old Piri hostname stops resolving at step 1, so the node takes no uploads until the merge, and
-the smoke test alerts on it in that window.
+The node takes no uploads from step 1 until the merge, and the smoke test alerts on it in that
+window.
 
-The two nodes start differently. Dev gets a new instance in step 1, which boots with nothing running
-and the reconcile timer disabled. Staging keeps its host, its running Piri and its timer.
+Hold every other merge to `main` for the same window. A reconcile pass that deploys the apps or the
+platform starts the apps the reset stopped, and dev's image bumps merge on their own. Before step 1,
+disable the bump workflow and turn off auto-merge on any bump pull request already open:
 
-1. **Infrastructure.** On dev, run `tofu plan` and then `tofu apply` from the branch. The plan adds
+```sh
+gh workflow disable bump-deployed-image.yml
+gh pr merge bot/bump-piri-image-dev --disable-auto    # if open
+gh pr merge bot/bump-ingot-image-dev --disable-auto   # if open
+```
+
+A publish dispatched while the workflow is disabled is lost. Pin that image by hand afterwards, as
+**Deploy a new image** describes.
+
+The two nodes start differently. Dev gets a new instance in step 3, which boots with nothing running
+and the reconcile timer disabled. Staging keeps its host and its timer.
+
+1. **Reset the node.** On the node, stop the timer and reset the apps from the node's `main`
+   checkout, as **Reset the apps on dev or staging** describes:
+
+   ```sh
+   systemctl stop filone-reconcile.timer
+   sudo scripts/host/reset-apps.sh
+   ```
+
+   On dev this has to run on the old instance, before step 3 replaces it. The script finds the apps
+   by their containers and refuses a box that has none, which the new instance is. It leaves the
+   apps stopped, so nothing on the node calls central during the next step.
+2. **Reset central.** Ask whoever runs infra-central to reset the stage's apps and to keep pushes to
+   infra-central's `main` out of the window:
+
+   ```sh
+   make reset-apps STAGE=<stage>
+   ```
+
+   The `reset-apps` phase has to be deployed to the stage's provision Lambda; on staging it arrives
+   with a promotion of infra-central's images.
+3. **Infrastructure.** On dev, run `tofu plan` and then `tofu apply` from the branch. The plan adds
    three Piri volumes, their attachments and three DNS records, removes the old DNS record, and
    replaces the instance. It must leave the Elastic IP and the control and data volumes alone. The
-   new root volume no longer has the seal token or the deploy token. OpenBao's data, the Postgres
-   cluster and the old Piri's blobs are on the control and data volumes and stay. On staging, apply
-   the DNS-only root.
-2. **Seal token, dev only.** Central still records the old instance's unseal token as live and
+   new root volume no longer has the seal token or the deploy token. OpenBao's data and the
+   Postgres cluster are on the control and data volumes and stay. On staging, apply the DNS-only
+   root.
+4. **Seal token, dev only.** Central still records the old instance's unseal token as live and
    refuses to mint a second one, so ask whoever runs infra-central for a new wrapping token with
    `--reissue`, which revokes the old token first. The Elastic IP is unchanged, so the address is
    the same one [step 4](#4-the-unseal-token) used:
@@ -1142,11 +1179,10 @@ and the reconcile timer disabled. Staging keeps its host, its running Piri and i
    make mint-appliance-token STAGE=dev REGION=us-east-9 NODE_IP=<the address> TOKEN_ARGS=--reissue
    ```
 
-3. **Keys.** On the node, check out the branch. On staging, stop the timer first. On dev it is
-   already disabled, and `systemctl is-enabled filone-reconcile.timer` says so.
+5. **Keys.** On the node, check out the branch. On dev the timer is disabled on the new instance,
+   and `systemctl is-enabled filone-reconcile.timer` says so. On staging, step 1 stopped it.
 
    ```sh
-   systemctl stop filone-reconcile.timer   # staging only
    git fetch origin
    git checkout --detach origin/<branch>
    ```
@@ -1157,50 +1193,39 @@ and the reconcile timer disabled. Staging keeps its host, its running Piri and i
    chain.love and Grafana Cloud tokens are already in OpenBao. Its key generation copies OpenBao
    path `piri` to `piri-0` and generates `piri-1` and `piri-2`, and its platform deploy serves the
    new hostnames and creates databases `piri_0` to `piri_2`. Provisioning from `main` instead would
-   ask Caddy for a certificate for the hostname step 1 removed from DNS.
+   ask Caddy for a certificate for the hostname step 3 removed from DNS.
 
    On staging, run `scripts/host/keygen.sh`, which does the same copy. The host Caddy imports its
    snippet from this checkout, so reload it now with `scripts/host/reload-staging-host-caddy.sh`,
    and update the host Alloy rules ([step 3](#3-the-nodes-host)).
-4. **Wallets.** Fund the `piri-1` and `piri-2` owner wallets, as [step
+6. **Wallets.** Fund the `piri-1` and `piri-2` owner wallets, as [step
    6](#6-onboarding-then-the-apps) describes. `piri-0` keeps the funded wallet it had.
-5. **Wipe.** Drop the old Piri's database and delete its data. On staging, stop the old Piri first.
-   On dev nothing runs it.
+7. **Onboarding.** Run `scripts/host/onboarding-request.sh` and send its output to whoever runs
+   infra-central, who runs the `make onboard-appliance` command it printed for each of the three
+   Piris. sprue is empty after step 2, so each command carries its Piri's proof, and piri-0
+   registers at its new URL like the other two. Central logs "returning the delegation issued
+   earlier", because hilt's delegation to Ingot survived the reset. The node still holds its copy,
+   so there is nothing to store with `store-hilt-proof.sh`.
+8. **FilOne's tenants.** FilOne still records the tenant IDs central forgot in step 2. From the
+   fil-one repository, reset them for the region on every FilOne stage that provisions tenants
+   there. `--stage` takes FilOne's stage name, which is not central's; for staging's
+   `eu-central-3`:
 
    ```sh
-   docker stop filone-piri   # staging only
-   docker exec filone-platform-postgres-1 psql -U admin -d admin -c 'DROP DATABASE piri'
-   rm -rf /mnt/fil-one/data/piri   # staging: /mnt/data/fil-one/data/piri
+   ./bin/reset-region-provisioning.ts --stage staging --region eu-central-3 --dry-run
+   ./bin/reset-region-provisioning.ts --stage staging --region eu-central-3
    ```
 
-6. **Onboarding.** piri-0's URL changes, and central's onboarding refuses to move a registered Piri
-   to a new URL, so piri-0 is removed from central and onboarded again. Run
-   `scripts/host/onboarding-request.sh` and send its output to whoever runs infra-central, who
-   works in this order:
-
-   1. Onboard `piri-1` and `piri-2` with the commands the script printed for them.
-   2. Remove piri-0's DID, which is still registered at the old URL:
-
-      ```sh
-      make remove-piri STAGE=<stage> REGION=<region> PIRI_DID=<piri-0's DID>
-      ```
-
-      It takes the DID out of hilt's node set, sprue, the delegator's allow list and provider
-      info, and the region record. Run before step 1, it refuses, because hilt still routes the
-      region to that Piri alone.
-   3. Onboard `piri-0` with the command the script printed for it, which registers it at the new
-      URL.
-
-   `make remove-piri` has to be deployed to the stage's provision Lambda; on staging it arrives
-   with a promotion of infra-central's images. hilt's delegation to Ingot is still in OpenBao, so
-   there is nothing to store with `store-hilt-proof.sh`.
-7. **Merge**, then deploy. On staging, start the timer again. The first deploy creates `piri_0` to
+9. **Merge**, then deploy. On staging, start the timer again. The first deploy creates `piri_0` to
    `piri_2`, starts the Piris one after another, and removes the old `filone-piri` container. Watch
    it with `journalctl -u filone-reconcile.service -f`, or run `scripts/host/provision-apps.sh` by
    hand to see the Piri logs and the acceptance checks.
 
    On dev, check out `origin/main`, run `scripts/host/provision-apps.sh`, and enable both timers,
    as [step 7](#7-the-timers) describes. The new instance has never had them enabled.
+
+   Enable the bump workflow again with `gh workflow enable bump-deployed-image.yml`, and ask whoever
+   runs infra-central to run `make smoke STAGE=<stage>`. Finish with the node's smoke test.
 
 ## Re-onboarding after identity loss
 
