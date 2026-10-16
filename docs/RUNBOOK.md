@@ -1124,35 +1124,67 @@ three Piris that have no keys, no funded wallets and no onboarding. Do them with
 The old Piri hostname stops resolving at step 1, so the node takes no uploads until the merge, and
 the smoke test alerts on it in that window.
 
-1. **Infrastructure.** On dev, `tofu apply` from the branch: three Piri volumes, three DNS records
-   in place of the old one, and a replaced instance. The new instance boots on `main` and runs the
-   single Piri, with the new volumes mounted and unused and its old hostname no longer in DNS.
-   Replacing it means pasting the seal token and the OpenBao root token back in, as
-   [steps 4](#4-the-unseal-token) and [5](#5-the-platform) describe. On staging, apply the
-   DNS-only root.
-2. **Keys.** On the node, stop `filone-reconcile.timer`, check out the branch, and run
-   `scripts/host/keygen.sh`. It copies OpenBao path `piri` to `piri-0` and generates `piri-1` and
-   `piri-2`. On staging, the host Caddy imports its snippet from this checkout, so reload it now
-   with `scripts/host/reload-staging-host-caddy.sh`, and update the host Alloy rules
-   ([step 3](#3-the-nodes-host)).
-3. **Wallets.** Fund the `piri-1` and `piri-2` owner wallets, as [step
-   6](#6-onboarding-then-the-apps) describes. `piri-0` keeps the funded wallet it had.
-4. **Wipe.** Stop the old Piri, drop its database and delete its data:
+The two nodes start differently. Dev gets a new instance in step 1, which boots with nothing running
+and the reconcile timer disabled. Staging keeps its host, its running Piri and its timer.
+
+1. **Infrastructure.** On dev, run `tofu plan` and then `tofu apply` from the branch. The plan adds
+   three Piri volumes, their attachments and three DNS records, removes the old DNS record, and
+   replaces the instance. It must leave the Elastic IP and the control and data volumes alone. The
+   new root volume no longer has the seal token or the deploy token. OpenBao's data, the Postgres
+   cluster and the old Piri's blobs are on the control and data volumes and stay. On staging, apply
+   the DNS-only root.
+2. **Seal token, dev only.** Central still records the old instance's unseal token as live and
+   refuses to mint a second one, so ask whoever runs infra-central for a new wrapping token with
+   `--reissue`, which revokes the old token first. The Elastic IP is unchanged, so the address is
+   the same one [step 4](#4-the-unseal-token) used:
 
    ```sh
-   docker stop filone-piri
+   make mint-appliance-token STAGE=dev REGION=us-east-9 NODE_IP=<the address> TOKEN_ARGS=--reissue
+   ```
+
+3. **Keys.** On the node, check out the branch. On staging, stop the timer first. On dev it is
+   already disabled, and `systemctl is-enabled filone-reconcile.timer` says so.
+
+   ```sh
+   systemctl stop filone-reconcile.timer   # staging only
+   git fetch origin
+   git checkout --detach origin/<branch>
+   ```
+
+   On dev, run `scripts/host/provision-platform.sh` from the branch, as [step 5](#5-the-platform)
+   describes. It claims the seal token with the new wrapping token, finds OpenBao already
+   initialised and prints no recovery key, and asks for the root token from 1Password twice. The
+   chain.love and Grafana Cloud tokens are already in OpenBao. Its key generation copies OpenBao
+   path `piri` to `piri-0` and generates `piri-1` and `piri-2`, and its platform deploy serves the
+   new hostnames and creates databases `piri_0` to `piri_2`. Provisioning from `main` instead would
+   ask Caddy for a certificate for the hostname step 1 removed from DNS.
+
+   On staging, run `scripts/host/keygen.sh`, which does the same copy. The host Caddy imports its
+   snippet from this checkout, so reload it now with `scripts/host/reload-staging-host-caddy.sh`,
+   and update the host Alloy rules ([step 3](#3-the-nodes-host)).
+4. **Wallets.** Fund the `piri-1` and `piri-2` owner wallets, as [step
+   6](#6-onboarding-then-the-apps) describes. `piri-0` keeps the funded wallet it had.
+5. **Wipe.** Drop the old Piri's database and delete its data. On staging, stop the old Piri first.
+   On dev nothing runs it.
+
+   ```sh
+   docker stop filone-piri   # staging only
    docker exec filone-platform-postgres-1 psql -U admin -d admin -c 'DROP DATABASE piri'
    rm -rf /mnt/fil-one/data/piri   # staging: /mnt/data/fil-one/data/piri
    ```
 
-5. **Onboarding.** piri-0's URL changes, and central's onboarding refuses to move a registered Piri
+6. **Onboarding.** piri-0's URL changes, and central's onboarding refuses to move a registered Piri
    to a new URL. Ask whoever runs infra-central to deregister piri-0's DID at sprue first
    (`admin provider deregister <did>`), then to run the three commands
-   `scripts/host/onboarding-request.sh` prints.
-6. **Merge**, then start the timer again. The first deploy creates `piri_0` to `piri_2`, starts the
-   Piris one after another, and removes the old `filone-piri` container. Watch it with
-   `journalctl -u filone-reconcile.service -f`, or run `scripts/host/provision-apps.sh` by hand to
-   see the Piri logs and the acceptance checks.
+   `scripts/host/onboarding-request.sh` prints. hilt's delegation to Ingot is still in OpenBao, so
+   there is nothing to store with `store-hilt-proof.sh`.
+7. **Merge**, then deploy. On staging, start the timer again. The first deploy creates `piri_0` to
+   `piri_2`, starts the Piris one after another, and removes the old `filone-piri` container. Watch
+   it with `journalctl -u filone-reconcile.service -f`, or run `scripts/host/provision-apps.sh` by
+   hand to see the Piri logs and the acceptance checks.
+
+   On dev, check out `origin/main`, run `scripts/host/provision-apps.sh`, and enable both timers,
+   as [step 7](#7-the-timers) describes. The new instance has never had them enabled.
 
 ## Re-onboarding after identity loss
 
