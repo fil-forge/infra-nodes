@@ -1166,10 +1166,10 @@ happened. The severity definitions are in infra-central's `docs/observability.md
 Most checks run inside the Piri container (`docker exec -it filone-piri sh`): `piri status` for the
 node, `piri client pdp proofset state` for a proof set. Curio's task logs are in the container's
 output, named by task: `docker logs filone-piri 2>&1 | grep PDPv0_Prove`, or `PDPv0_ProvPeriod` for
-scheduling. On a node that runs one Piri per volume, the containers are `filone-piri-0`,
-`filone-piri-1` and so on, in place of `filone-piri` here and below, and the databases are `piri_0`,
-`piri_1` and so on, in place of `piri`. `docker inspect filone-piri-<n>` shows which database a
-container uses, in its `PIRI_DB_POSTGRES_URL`.
+scheduling. Staging runs one Piri, `filone-piri`, whose database is `piri`. Dev runs one per storage
+volume: `filone-piri-0` to `filone-piri-2`, with databases `piri_0` to `piri_2` (each container's
+`PIRI_DB_POSTGRES_URL` names its own). The proving alerts are grouped by node, not by Piri, so on
+dev check each Piri, substituting its names for `filone-piri` and `piri` here and below.
 
 #### Piri's chain head is stale
 
