@@ -788,7 +788,10 @@ start_apps() {
 
 # --- Health ----------------------------------------------------------------
 
-# Wait until every container in a compose project is ready, or fail.
+# Wait until every container in a compose project is ready, or fail. Given
+# service names, wait for those alone: a rolling restart waits for the service
+# it just recreated, so one already unhealthy further down the line does not
+# stop the rollout before it reaches it.
 #
 # Ported from smelt's staging deploy, including the two races it encodes. A
 # crash-looping container oscillates faster than this polls, so a single
@@ -799,9 +802,10 @@ start_apps() {
 # poll, so the whole project has to read ready twice in a row, at least one
 # sleep apart.
 #
-# Usage: wait_healthy <compose function name> [timeout seconds]
+# Usage: wait_healthy <compose function name> [timeout seconds] [service...]
 wait_healthy() {
   local compose_fn="$1" timeout="${2:-300}" deadline ready_streak=0
+  shift "$(( $# < 2 ? $# : 2 ))"
   deadline=$(( $(date +%s) + timeout ))
 
   echo "==> waiting for health (timeout ${timeout}s)"
@@ -813,8 +817,8 @@ wait_healthy() {
     # a process substitution throws their exit status away, so a docker daemon
     # that went down after `up` would yield no rows, leave bad and pending at
     # zero, and be read as every service healthy.
-    ids="$("$compose_fn" ps -aq)" || die "could not list the project's containers"
-    [ -n "$ids" ] || die "the project has no containers"
+    ids="$("$compose_fn" ps -aq "$@")" || die "could not list the project's containers"
+    [ -n "$ids" ] || die "the project has no containers${*:+ for $*}"
     # shellcheck disable=SC2086
     inspected="$(docker inspect \
       -f '{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}|{{.State.ExitCode}}|{{.State.StartedAt}}' \
@@ -853,7 +857,7 @@ wait_healthy() {
     done <<<"$inspected"
 
     if [ "$bad" -gt 0 ]; then
-      "$compose_fn" ps -a
+      "$compose_fn" ps -a "$@"
       die "$bad service(s) crash-looping, dead or unhealthy"
     fi
 
@@ -865,7 +869,7 @@ wait_healthy() {
     fi
 
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      "$compose_fn" ps -a
+      "$compose_fn" ps -a "$@"
       die "timed out waiting for health"
     fi
     sleep 5

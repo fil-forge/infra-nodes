@@ -4,8 +4,10 @@
 # Runs on the node, as root, from the reconcile timer or by hand. Nothing here
 # restarts a Piri without first waiting for its proving window, because a
 # restart in the wrong minute is a missed proof. The Piris restart one at a
-# time, each behind its own gate, so the others keep serving meanwhile. A platform deploy that has something to
-# apply waits on the same gate and stops both services while it works.
+# time, each behind its own gate, so the others keep serving meanwhile. A Piri
+# removed from compose.yml is stopped behind its gate too. A platform deploy that
+# has something to apply waits on the same gate and stops both services while it
+# works.
 #
 # Idempotent. A run that changes nothing renders identical files, finds the
 # running images already correct, restarts nothing and never touches the gate.
@@ -144,6 +146,22 @@ mark ingot_changed config_changed apps-ingot "$ingot_config_hash"
 # --- 3. Piri ----------------------------------------------------------------
 
 echo "[3/5] Piri"
+# A Piri gone from compose.yml first, behind its own gate. The --remove-orphans
+# below would otherwise remove it in whatever minute it reaches it. Stopped here
+# rather than left to that call, so the gate's answer is still true when the
+# container goes down, and before any new Piri starts: a node that renames
+# `piri` to `piri-0` hands the new service the old one's identity, and the two
+# must not run at once.
+piri_containers="$(piri_containers)"
+for container in $piri_containers; do
+  service="${container#filone-}"
+  [[ " ${piris[*]} " == *" $service "* ]] && continue
+  container_running "$container" || continue
+  echo "  $service: gone from compose.yml; waiting for a safe window to stop it"
+  "$SCRIPT_DIR/pdp-gate.sh" "$service"
+  docker stop "$container" >/dev/null || die "could not stop $container"
+done
+
 for service in "${piris[@]}"; do
   if [ "${piri_changed[$service]}" -eq 1 ]; then
     echo "  $service: something changed; waiting for a safe restart window"
@@ -160,7 +178,7 @@ for service in "${piris[@]}"; do
     compose_apps up -d --force-recreate --no-deps "$service"
     # Healthy before the next one goes down, so a bad image stops the rollout at
     # the first Piri instead of taking all of them out.
-    wait_healthy compose_apps 420
+    wait_healthy compose_apps 420 "$service"
   else
     echo "  $service: nothing changed"
     # Without --no-deps: a Piri created for the first time waits here for the
