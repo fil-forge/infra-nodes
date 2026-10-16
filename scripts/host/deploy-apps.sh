@@ -6,8 +6,8 @@
 # restart in the wrong minute is a missed proof. The Piris restart one at a
 # time, each behind its own gate, so the others keep serving meanwhile. A Piri
 # removed from compose.yml is stopped behind its gate too. A platform deploy that
-# has something to apply waits on the same gate and stops both services while it
-# works.
+# has something to apply waits on the same gate and stops Ingot and every Piri
+# while it works.
 #
 # Idempotent. A run that changes nothing renders identical files, finds the
 # running images already correct, restarts nothing and never touches the gate.
@@ -174,15 +174,19 @@ for service in "${piris[@]}"; do
     #
     # --no-deps because --force-recreate reaches the services this one depends
     # on, and each Piri depends on the one before it: recreating piri-2 would
-    # recreate piri-0 and piri-1 too, past their own gates.
+    # recreate piri-0 and piri-1 too, past their own gates. It also drops the
+    # wait compose.yml asks for, a Piri starting only once the one before it is
+    # healthy, so the loop keeps the order instead. A Piri with no container yet
+    # counts as changed and starts here, after every Piri before it has been
+    # started and every recreated one has passed its health check.
     compose_apps up -d --force-recreate --no-deps "$service"
     # Healthy before the next one goes down, so a bad image stops the rollout at
     # the first Piri instead of taking all of them out.
     wait_healthy compose_apps 420 "$service"
   else
     echo "  $service: nothing changed"
-    # Without --no-deps: a Piri created for the first time waits here for the
-    # one before it to be healthy, as compose.yml asks.
+    # An existing Piri with nothing to apply. --no-recreate leaves it running,
+    # or starts it again if it was stopped.
     compose_apps up -d --no-recreate "$service"
   fi
 done
