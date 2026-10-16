@@ -1174,9 +1174,25 @@ and the reconcile timer disabled. Staging keeps its host, its running Piri and i
    ```
 
 6. **Onboarding.** piri-0's URL changes, and central's onboarding refuses to move a registered Piri
-   to a new URL. Ask whoever runs infra-central to deregister piri-0's DID at sprue first
-   (`admin provider deregister <did>`), then to run the three commands
-   `scripts/host/onboarding-request.sh` prints. hilt's delegation to Ingot is still in OpenBao, so
+   to a new URL, so piri-0 is removed from central and onboarded again. Run
+   `scripts/host/onboarding-request.sh` and send its output to whoever runs infra-central, who
+   works in this order:
+
+   1. Onboard `piri-1` and `piri-2` with the commands the script printed for them.
+   2. Remove piri-0's DID, which is still registered at the old URL:
+
+      ```sh
+      make remove-piri STAGE=<stage> REGION=<region> PIRI_DID=<piri-0's DID>
+      ```
+
+      It takes the DID out of hilt's node set, sprue, the delegator's allow list and provider
+      info, and the region record. Run before step 1, it refuses, because hilt still routes the
+      region to that Piri alone.
+   3. Onboard `piri-0` with the command the script printed for it, which registers it at the new
+      URL.
+
+   `make remove-piri` has to be deployed to the stage's provision Lambda; on staging it arrives
+   with a promotion of infra-central's images. hilt's delegation to Ingot is still in OpenBao, so
    there is nothing to store with `store-hilt-proof.sh`.
 7. **Merge**, then deploy. On staging, start the timer again. The first deploy creates `piri_0` to
    `piri_2`, starts the Piris one after another, and removes the old `filone-piri` container. Watch
