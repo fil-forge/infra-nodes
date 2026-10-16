@@ -25,8 +25,8 @@
 #
 # The hostnames come from nodes/<node>/node.env, so they are the ones Caddy
 # holds certificates for. The Piris are the services nodes/<node>/apps/compose.yml
-# defines; each answers at piri-<n>.$PIRI_HOSTNAME_SUFFIX, or a node with a single
-# `piri` at $PIRI_HOSTNAME.
+# defined at the revision the node deployed apps from; each answers at
+# piri-<n>.$PIRI_HOSTNAME_SUFFIX, or a node with a single `piri` at $PIRI_HOSTNAME.
 #
 # Prerequisites:
 #   - curl, jq, and a git work tree deep enough to hold the revisions compared
@@ -75,8 +75,8 @@ INGOT_HOSTNAME="$(read_env INGOT_HOSTNAME)"
 piri_services_in() { sed -nE 's/^  (piri(-[0-9]+)?):[[:space:]]*$/\1/p' | sort -V; }
 
 # shellcheck disable=SC2207 # one service name per word
-PIRIS=($(piri_services_in <"$COMPOSE"))
-[ "${#PIRIS[@]}" -gt 0 ] || { echo "ERROR: $COMPOSE defines no Piri service" >&2; exit 1; }
+CHECKOUT_PIRIS=($(piri_services_in <"$COMPOSE"))
+[ "${#CHECKOUT_PIRIS[@]}" -gt 0 ] || { echo "ERROR: $COMPOSE defines no Piri service" >&2; exit 1; }
 
 piri_hostname() {
   if [ -n "$PIRI_HOSTNAME_SUFFIX" ]; then
@@ -88,17 +88,32 @@ piri_hostname() {
     exit 1
   fi
 }
-for service in "${PIRIS[@]}"; do piri_hostname "$service" >/dev/null; done
-
-# Every Piri hostname serves the document; the full check reads it from the
-# first.
-STATUS_URL="https://$(piri_hostname "${PIRIS[0]}")/.well-known/filone-node-status.json"
 
 # Every request is bounded. A hung smoke test is worse than a failing one.
 #
 # No --show-error: curl's own diagnostic would land in the middle of the
 # results, and every failure below already names the URL and the reason.
 CURL=(curl --silent --max-time 10)
+
+# Every Piri hostname serves the document. It is read first, from the first
+# Piri the checkout names, because it says which Piris to check: the ones
+# compose.yml defined at the revision the node deployed apps from. A merge that
+# adds a Piri reaches the checkout before the node deploys it, and the proving
+# gate can hold that deploy for 45 minutes.
+#
+# When the document gives no usable revision, the Piris the checkout names are
+# checked instead, and check_status reports why.
+STATUS_URL="https://$(piri_hostname "${CHECKOUT_PIRIS[0]}")/.well-known/filone-node-status.json"
+STATUS_BODY="$("${CURL[@]}" --fail "$STATUS_URL" 2>/dev/null || true)"
+DEPLOYED="$(jq -r '.projects.apps.revision // empty' <<<"$STATUS_BODY" 2>/dev/null || true)"
+
+PIRIS=()
+if [ -n "$DEPLOYED" ] && git cat-file -e "$DEPLOYED:$COMPOSE" 2>/dev/null; then
+  # shellcheck disable=SC2207 # one service name per word
+  PIRIS=($(git show "$DEPLOYED:$COMPOSE" | piri_services_in))
+fi
+[ "${#PIRIS[@]}" -gt 0 ] || PIRIS=("${CHECKOUT_PIRIS[@]}")
+for service in "${PIRIS[@]}"; do piri_hostname "$service" >/dev/null; done
 
 PASS='  ✓'
 FAIL='  ✗'
@@ -162,9 +177,9 @@ pin_at() {
 # deployed nothing. `apps` moves only when the apps project deploys, and it is
 # the revision the running digests have to be compared against.
 check_status() {
-  local body reached deployed service key want got deployed_piris
+  local body="$STATUS_BODY" reached deployed service key want got deployed_piris
 
-  if ! body="$("${CURL[@]}" --fail "$STATUS_URL" 2>/dev/null)"; then
+  if [ -z "$body" ]; then
     fail "$STATUS_URL — not served"
     return
   fi
