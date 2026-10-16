@@ -318,12 +318,14 @@ go.
   service name and `service.namespace="forge"`, and sends to Alloy on port 4318: `alloy:4318` on
   dev and `host.docker.internal:4318` on staging, configured as Ingot's entry in each stage's
   `apps/compose.yml` is. Neither Alloy then needs a change; on staging, a series without that
-  namespace is dropped. A service that runs replicas, as dev's `piri-0` to `piri-2` do, is the
-  exception. They share one `service.name` (`piri`) and are told apart by `service.instance.id`,
-  and dev's `config.alloy` keeps that apart only for Piri: its `prometheus.relabel "apps"` keeps
-  `instance` for `job="forge/piri"` alone, and its container log rules map only `piri-<n>` to the
-  shared `service_name`. A new replicated service needs the same rules extended to it. Staging sets
-  `instance` to the node for every series, so replicas there would need a rule of their own too.
+  namespace is dropped.
+
+  Replicas are the exception. Dev's `piri-0` to `piri-2` share one `service.name` (`piri`) and are
+  told apart by `service.instance.id`, but dev's `config.alloy` keeps replicas apart only for Piri:
+  its `prometheus.relabel "apps"` keeps `instance` for `job="forge/piri"` alone, and its container
+  log rules map only `piri-<n>` to the shared `service_name`. A new replicated service needs those
+  rules extended to it. Staging sets `instance` to the node for every series and names logs per
+  Compose service, so replicas there would need rules of their own too.
 - **Metrics scraped on dev.** Add a scrape to `nodes/dev/platform/config/alloy/config.alloy`,
   routed through a `prometheus.relabel` that sets `service_name` (built as
   `sys.env("SERVICE_NAME_PREFIX") + "-<service>"`) and `instance`, as the host and Caddy ones do.
