@@ -314,12 +314,16 @@ go.
   host's Alloy config lives outside this repository, so for a new host service there, add what it
   must ship to the staging section of the [runbook](RUNBOOK.md) and say in the PR that the host's
   config needs the change.
-- **Metrics pushed over OTLP**, as Piri and Ingot do. The service sets `service.name` to its
-  Compose service name, or to the name its replicas share (dev's `piri-0` to `piri-2` all report
-  `piri`, told apart by `service.instance.id`), and `service.namespace="forge"`. It sends to Alloy
-  on port 4318: `alloy:4318` on dev and `host.docker.internal:4318` on staging, configured as
-  Ingot's entry in each stage's `apps/compose.yml` is. Neither Alloy then needs a change; on
-  staging, a series without that namespace is dropped.
+- **Metrics pushed over OTLP**, as Piri does. The service sets `service.name` to its Compose
+  service name and `service.namespace="forge"`, and sends to Alloy on port 4318: `alloy:4318` on
+  dev and `host.docker.internal:4318` on staging, configured as Ingot's entry in each stage's
+  `apps/compose.yml` is. Neither Alloy then needs a change; on staging, a series without that
+  namespace is dropped. A service that runs replicas, as dev's `piri-0` to `piri-2` do, is the
+  exception. They share one `service.name` (`piri`) and are told apart by `service.instance.id`,
+  and dev's `config.alloy` keeps that apart only for Piri: its `prometheus.relabel "apps"` keeps
+  `instance` for `job="forge/piri"` alone, and its container log rules map only `piri-<n>` to the
+  shared `service_name`. A new replicated service needs the same rules extended to it. Staging sets
+  `instance` to the node for every series, so replicas there would need a rule of their own too.
 - **Metrics scraped on dev.** Add a scrape to `nodes/dev/platform/config/alloy/config.alloy`,
   routed through a `prometheus.relabel` that sets `service_name` (built as
   `sys.env("SERVICE_NAME_PREFIX") + "-<service>"`) and `instance`, as the host and Caddy ones do.
