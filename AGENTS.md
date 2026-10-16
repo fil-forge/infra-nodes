@@ -15,10 +15,11 @@ useful. Skip it for changes nothing operational depends on.
   PR that the host's config needs the change.
 - **Metrics.**
   - *Pushed over OTLP*, as Piri does: the service sets `service.name` to its
-    Compose service name and `service.namespace="forge"`, and sends to Alloy on
-    port 4318, at `alloy:4318` on dev and `host.docker.internal:4318` on
-    staging (configure it as Ingot's entry in each stage's `apps/compose.yml`
-    does). Neither Alloy then needs a change; on staging, a series without that
+    Compose service name, or to the name its replicas share (dev's `piri-0` to
+    `piri-2` all report `piri`, told apart by `service.instance.id`), and
+    `service.namespace="forge"`, and sends to Alloy on port 4318, at
+    `alloy:4318` on dev and `host.docker.internal:4318` on staging (configure
+    it as Ingot's entry in each stage's `apps/compose.yml` does). Neither Alloy then needs a change; on staging, a series without that
     namespace is dropped.
   - *Scraped, on dev*: add a scrape to
     `nodes/dev/platform/config/alloy/config.alloy`, routed through a
