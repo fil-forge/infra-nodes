@@ -801,8 +801,14 @@ This is the only thing the node ever pays for. Proofs are paid by the central si
 `PAYER_ADDRESS`.
 
 Central sends back ingot-proof.txt, hilt's delegation to this node's Ingot and the one piece of
-onboarding only central can sign. It lands on your machine, and there is no SSH on the node to copy
-it across, so pass it to `store-hilt-proof.sh` over stdin:
+onboarding only central can sign. Every `make onboard-appliance` command in the request writes the
+same file name, and that is intended: the region has one Ingot, so central issues one delegation
+and returns it byte for byte on every Piri's run. Store it once. When OpenBao already holds one,
+after an app reset or when adding a Piri, `onboarding-request.sh` says so, and a central run that
+reports "returning the delegation issued earlier" leaves nothing to store.
+
+The file lands on your machine, and there is no SSH on the node to copy it across, so pass it to
+`store-hilt-proof.sh` over stdin:
 
 ```sh
 scripts/host/store-hilt-proof.sh -
