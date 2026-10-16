@@ -97,10 +97,37 @@ the gas both fit; an unfunded wallet makes its Piri crash-loop on "wallet
 balance is too low". This is the only thing the node ever pays for. Proofs are
 paid by the central signing service from PAYER_ADDRESS.
 
-Each onboarding run writes ingot-proof.txt, hilt's delegation to this node's
-Ingot, addressed to the DID above. Keep the one from the last run. The file
-lands on your own machine, so paste the delegation into store-hilt-proof.sh over
-stdin, then start the apps:
+Every run above writes the same ingot-proof.txt, and that is intended. The file
+holds hilt's delegation to this region's Ingot, addressed to the DID above, and
+the region has one Ingot whichever Piri is being onboarded. Central issues it
+once and returns it byte for byte on every later run, so each run overwrites the
+file with the same content. The node needs it stored once.
+
+INFO
+
+# Only presence is checked: the stored delegation cannot be compared with one
+# central has not returned yet.
+if bao_has ingot hilt_proof; then
+  cat <<INFO
+OpenBao already holds a hilt delegation, which is the usual case after an app
+reset or when adding a Piri. If the Ingot DID above has not changed since it was
+stored and central's run says "returning the delegation issued earlier", there
+is nothing to store; start the apps:
+
+  scripts/host/provision-apps.sh
+
+If the Ingot DID changed, that same message means central returned the old
+DID's delegation and Ingot's S3 calls will get 403s. Ask central to run
+make retire-region and onboard again, as "When the Ingot DID changes too" in
+docs/RUNBOOK.md describes. If central issued a new delegation, store it as
+below.
+
+INFO
+fi
+
+cat <<INFO
+ingot-proof.txt lands on your own machine, so paste the delegation into
+store-hilt-proof.sh over stdin, then start the apps:
 
   scripts/host/store-hilt-proof.sh -
   scripts/host/provision-apps.sh
