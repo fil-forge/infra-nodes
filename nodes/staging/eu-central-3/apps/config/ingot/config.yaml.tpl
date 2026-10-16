@@ -6,6 +6,7 @@ cors_allowed_origins:
   - "https://staging.fil.one"
   - "https://staging.filone.ai"
   - "https://*.dev.fil.one"
+  - "https://localhost:5173"
 identity:
   key_file: /keys/ingot.pem
   service_id: ${INGOT_DID}

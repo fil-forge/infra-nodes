@@ -26,6 +26,7 @@ cors_allowed_origins:
   - "https://staging.fil.one"
   - "https://staging.filone.ai"
   - "https://*.dev.fil.one"
+  - "https://localhost:5173"
 
 # Ingot signs as this did:web and serves the matching document at
 # /.well-known/did.json, over the same listener. The key below is what the
