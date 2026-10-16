@@ -949,6 +949,8 @@ publish a `:main` image, `bump-deployed-image.yml` opens the pull request that r
 `nodes/dev/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and `compose` pass.
 Within five minutes of the merge the node pulls, then restarts the Piris one at a time, each after
 waiting for its own safe proving window and health-gated before the next goes down, and then Ingot.
+A Piri taken out of `compose.yml` is stopped before any of that, also behind its own gate, and then
+removed.
 
 Two ways in by hand. Run the same workflow with a digest you read off the registry:
 
