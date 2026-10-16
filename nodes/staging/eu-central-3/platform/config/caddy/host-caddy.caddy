@@ -1,14 +1,31 @@
 # Imported directly by the host-operated Caddy configuration.
-# The appliance exposes its apps only on loopback, on ports 15000-15999.
-https://piri-0.staging.fil-forge.com {
+# The appliance exposes its apps only on loopback, on ports 15000-15999: the
+# Piris on 15100 to 15102, Ingot on 15200.
+
+# A Piri, given its loopback port. Every Piri hostname serves the same status
+# document. Named with the filone- prefix because snippets share one namespace
+# with the rest of the host's Caddy configuration.
+(filone-piri) {
   handle /.well-known/filone-node-status.json {
     root * /mnt/data/fil-one/control/state
     rewrite * /filone-node-status.json
     file_server
   }
   handle {
-    reverse_proxy 127.0.0.1:15100
+    reverse_proxy 127.0.0.1:{args[0]}
   }
+}
+
+https://piri-0.eu-central-3.staging.fil-forge.com {
+  import filone-piri 15100
+}
+
+https://piri-1.eu-central-3.staging.fil-forge.com {
+  import filone-piri 15101
+}
+
+https://piri-2.eu-central-3.staging.fil-forge.com {
+  import filone-piri 15102
 }
 
 https://s3.eu-central-3.staging.filonecontent.com {
