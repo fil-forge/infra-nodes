@@ -2,10 +2,10 @@ addr: "0.0.0.0:9000"
 region: ${REGION_LABEL}
 data_dir: /data
 log_level: info
+# Any browser origin, as the other regions' S3 endpoints allow; see
+# nodes/dev/apps/config/ingot/config.yaml.tpl.
 cors_allowed_origins:
-  - "https://staging.fil.one"
-  - "https://staging.filone.ai"
-  - "https://*.dev.fil.one"
+  - "*"
 identity:
   key_file: /keys/ingot.pem
   service_id: ${INGOT_DID}

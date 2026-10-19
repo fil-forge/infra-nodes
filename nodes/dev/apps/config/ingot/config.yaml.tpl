@@ -21,14 +21,13 @@ region: ${REGION_LABEL}
 data_dir: /data
 log_level: info
 
-# Browser origins the S3 listener answers CORS for. Matching is over the raw
-# Origin header, so the localhost entry's wildcard is what covers a dev
-# server's port; it matches no other host.
+# Browser origins the S3 listener answers CORS for: any, as the other
+# regions' S3 endpoints do. Ingot authenticates the Authorization header and
+# presigned URLs, never cookies, so an open origin exposes nothing a signed
+# request does not already prove, and it lets a console or demo served from
+# localhost reach the endpoint.
 cors_allowed_origins:
-  - "https://staging.fil.one"
-  - "https://staging.filone.ai"
-  - "https://*.dev.fil.one"
-  - "http://localhost:*"
+  - "*"
 
 # Ingot signs as this did:web and serves the matching document at
 # /.well-known/did.json, over the same listener. The key below is what the
