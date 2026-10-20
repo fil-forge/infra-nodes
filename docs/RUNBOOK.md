@@ -1215,7 +1215,8 @@ writes a different config version, which a rollback to an older image does as we
 happens on the next recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump
 or such a `node.env` edit costs one init run, not just a restart. A re-run that fails, or does not
 finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a whole
-number without leading zeros falls back to 300 with a warning), ends in this warning when it is safe
+number without leading zeros falls back to 300 with a warning; keep it under the 420 seconds
+`deploy-apps.sh` waits for a recreated Piri to turn healthy), ends in this warning when it is safe
 to carry on: the image writes a different config version, it is the first start since the stamp
 replaced the snapshot and the old snapshot still matches the base config, or init timed out. Piri
 then serves the config already on disk, which holds its proof set; `N` is that config's version. A
@@ -1249,8 +1250,9 @@ sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh piri-0 \
 ```
 
 Those are dev's checkout and `piri-0`'s service, data directory and container; the other Piris are
-`piri-1` and `piri-2`. Staging runs the same three Piris, but its checkout is
-`/root/fil-one/infra-nodes` and each Piri's data directory is `/mnt/data/fil-one/data/piri-<n>/`.
+`piri-1` and `piri-2`. Staging runs the same three Piris, with the same service and container names;
+only its checkout (`/root/fil-one/infra-nodes`) and data directories
+(`/mnt/data/fil-one/data/piri-<n>/`) differ.
 Deleting the file without the restart retries on the next start of any kind, gated or not;
 `deploy-apps.sh` does not recreate Piri when nothing has changed.
 
