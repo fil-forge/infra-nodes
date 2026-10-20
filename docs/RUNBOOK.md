@@ -1205,8 +1205,7 @@ init's stamp is missing too: `piri-init.stamp`, or `piri-base-config.applied.tom
 has not re-run init since the stamp replaced it. The entrypoint writes the stamp once init returns,
 so a node that has never got that far holds no proof set. A missing config next to a present stamp
 aborts the deploy: init has completed here before, so Piri may still owe a proof. Restore the
-config, or stop the Piri (`docker stop filone-piri-<n>` on dev, `docker stop filone-piri` on
-staging) if it is being decommissioned.
+config, or stop the Piri (`docker stop filone-piri-<n>`) if it is being decommissioned.
 
 **Piri logs `WARNING: init failed; serving the existing config version N`.** Piri's entrypoint
 re-runs `piri init` whenever one of init's inputs changes: the base config, a `node.env` value init
@@ -1249,9 +1248,9 @@ sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh piri-0 \
   && docker restart filone-piri-0'
 ```
 
-Those are dev's checkout and `piri-0`'s service, data directory and container; dev's other Piris are
-`piri-1` and `piri-2`. Staging runs one Piri: its checkout is `/root/fil-one/infra-nodes`, the
-service `piri`, the data directory `/mnt/data/fil-one/data/piri/` and the container `filone-piri`.
+Those are dev's checkout and `piri-0`'s service, data directory and container; the other Piris are
+`piri-1` and `piri-2`. Staging runs the same three Piris, but its checkout is
+`/root/fil-one/infra-nodes` and each Piri's data directory is `/mnt/data/fil-one/data/piri-<n>/`.
 Deleting the file without the restart retries on the next start of any kind, gated or not;
 `deploy-apps.sh` does not recreate Piri when nothing has changed.
 
