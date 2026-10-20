@@ -1179,9 +1179,11 @@ from when it ran one Piri, now `piri-0`; nothing reads it any more.
 
 Most checks run inside the Piri container (`docker exec -it filone-piri-$n sh`): `piri status` for
 the node, `piri client pdp proofset state` for a proof set. Curio's task logs are in the
-container's output, named by task: `docker logs "filone-piri-${n:?}" 2>&1 | grep PDPv0_Prove`, or
-`PDPv0_ProvPeriod` for scheduling. That one says `${n:?}` because `grep` would otherwise swallow
-docker's error and print nothing, which looks like a Prove task that never ran.
+container's output, named by task:
+`docker logs "filone-piri-${n:?}" 2>&1 | grep -e PDPv0_Prove -e 'No such container'`, or
+`PDPv0_ProvPeriod` for scheduling. The `${n:?}` and the second pattern are there because `grep`
+would otherwise swallow docker's error for an unset or wrong `n` and print nothing, which looks
+like a Prove task that never ran.
 
 #### Piri's chain head is stale
 
@@ -1258,9 +1260,10 @@ period's payment is already lost, and each further day loses another. Proving re
 once the cause is fixed. Most causes that can lose more than that page on their own: rejected proofs
 as "Piri proving is failing", and a stalled head as "Piri's chain head is stale". Check Lotus,
 `piri status`, the balance of the Piri's owner wallet at `piri-$n` (fund it as
-[step 6](#6-onboarding-then-the-apps) describes), and each proof set's state, and read the
-`PDPv0_Prove` logs for why no run finished. If AddRoots is failing too, check for stranded batches
-as in [Piri's chain head is stale](#piris-chain-head-is-stale) once the cause is fixed.
+[step 6](#6-onboarding-then-the-apps) describes, reading `piri-$n` in place of `piri`), and each
+proof set's state, and read the `PDPv0_Prove` logs for why no run finished. If AddRoots is failing
+too, check for stranded batches as in [Piri's chain head is stale](#piris-chain-head-is-stale) once
+the cause is fixed.
 
 #### Piri proof set is unrecoverable
 
