@@ -835,8 +835,12 @@ Calibration faucet. The addresses are printed by `onboarding-request.sh`, and al
 directly:
 
 ```sh
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-  filone-openbao bao kv get -mount=filone -field=owner_wallet_address piri-0
+for piri in piri-0 piri-1 piri-2; do
+  address="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
+    -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" filone-openbao \
+    bao kv get -mount=filone -field=owner_wallet_address "$piri")"
+  echo "$piri $address"
+done
 ```
 
 This is the only thing the node ever pays for. Proofs are paid by the central signing service from
@@ -1100,7 +1104,7 @@ unseal token, every key and wallet, and the hilt proof. The node is reset first,
 stopped until central has been reset too:
 
 ```sh
-sudo scripts/host/reset-apps.sh
+scripts/host/reset-apps.sh
 ```
 
 It shows what it will stop, drop and empty, and asks you to type `reset-<stage>`; `--yes` skips the
@@ -1126,17 +1130,18 @@ identities. The transit key at central is per-node, not per-identity, so it stay
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
 for a new wrapping token.
 
-**2. Remove the old identities at central.** Ask whoever runs infra-central to drop the old Piri DIDs
-from the delegator's allow list and to deregister or zero-weight the old providers at sprue. hilt's
-provider row is keyed by the Ingot DID, which the rebuild does not change, so it stays as it is.
+**2. Remove the old identities at central.** Ask whoever runs infra-central to drop the old Piri
+DIDs from the delegator's allow list and to deregister or zero-weight the old providers at sprue.
+hilt's provider row is keyed by the Ingot DID, which the rebuild does not change, so it stays as it
+is.
 
 **3. Onboard the new Piri DIDs.** [Step 6](#6-onboarding-then-the-apps) again, then
 `provision-apps.sh` and the timers. hilt's delegation to Ingot is unchanged and central still holds
 it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and store it with
 `store-hilt-proof.sh`: the rebuilt OpenBao has no copy of it.
 
-The Piri volumes and the data volume still hold the old identities' blobs and spool. Dev data is disposable; wipe it and
-start clean rather than carry data the new identity cannot serve.
+The Piri volumes and the data volume still hold the old identities' blobs and spool. Dev data is
+disposable; wipe it and start clean rather than carry data the new identity cannot serve.
 
 **When the Ingot DID changes too**, because the region label or the content domain moved, central
 carries two pieces of state addressed to an identity that no longer exists: hilt's `provider` row,
@@ -1242,18 +1247,18 @@ systemctl start filone-reconcile.timer
 ```
 
 **The proving gate never lets a deploy through.** `pdp-gate.sh` waits 45 minutes by default. If a
-Piri reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it after
-the challenge window. A Piri that owes proofs and will not report its state at all is treated the
-same way, most often because the chain RPC is unreachable. A platform deploy waits until every Piri
-reports safe in the same poll, because restarting Postgres stops all of them at once; three Piris
-whose challenge windows rarely line up can take longer than one.
+Piri reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it
+after the challenge window. A Piri that owes proofs and will not report its state at all is treated
+the same way, most often because the chain RPC is unreachable. A platform deploy waits until every
+Piri reports safe in the same poll, because restarting Postgres stops all of them at once; three
+Piris whose challenge windows rarely line up can take longer than one.
 
 **The gate says `piri-config.toml` is missing.** The container is running but the file is not there
 yet, which is where a node sits while `piri init` is still working and where it stays if init died.
-`docker logs filone-piri-<n>` says which of the two it is. The gate lets the deploy through only when
-`piri-base-config.applied.toml` is missing too, because init writes that file last and a node that
-has never got that far holds no proof set. A missing config next to a present snapshot aborts the
-deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
+`docker logs filone-piri-<n>` says which of the two it is. The gate lets the deploy through only
+when `piri-base-config.applied.toml` is missing too, because init writes that file last and a node
+that has never got that far holds no proof set. A missing config next to a present snapshot aborts
+the deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
 `docker stop filone-piri-<n>` if that Piri is being decommissioned.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.

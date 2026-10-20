@@ -3,10 +3,10 @@
 Deployment configuration for FilOne Appliance nodes: the regional half of the Forge network.
 
 An appliance is one Piri storage node per storage volume and one Ingot S3 gateway in front of them,
-running under Docker Compose on a single host, with the local OpenBao and Postgres they need. Dev runs Grafana Alloy in the platform
-project; staging uses the host-owned Alloy service. Central services
-live in [infra-central](https://github.com/fil-forge/infra-central); a node talks to them over public
-HTTPS and unseals its OpenBao against theirs.
+running under Docker Compose on a single host, with the local OpenBao and Postgres they need. Dev
+runs Grafana Alloy in the platform project; staging uses the host-owned Alloy service. Central
+services live in [infra-central](https://github.com/fil-forge/infra-central); a node talks to them
+over public HTTPS and unseals its OpenBao against theirs.
 
 Two nodes: `dev`, an EC2 node in us-east-2 paired with infra-central's dev stage; and
 `staging/eu-central-3`, a bare-metal Servers.com appliance paired with the staging services.
@@ -42,9 +42,10 @@ On the dev node `<forge>` is `latest.dev.fil-forge.com`, `<content>` is
 `latest.dev.filonecontent.com` and `<region>` is `us-east-9`. The Piris and the central services
 answer on the Forge domain; Ingot answers on the content one, and that hostname with `did:web:` in
 front is the identity central addresses its delegation to. Both names come from [RFC 16][rfc-16].
-Each Piri is a storage node of its own, with its own key, wallet, database and volume; sprue
-spreads uploads across them. [The decision record](docs/decisions/2026-10-multiple-piri-per-appliance.md)
-explains the layout.
+Each Piri is a storage node of its own, with its own key, wallet and database; sprue spreads
+uploads across them. On dev each Piri also has its own volume, as it will in production, while
+staging's Piris share one data disk.
+[The decision record](docs/decisions/2026-10-multiple-piri-per-appliance.md) explains the layout.
 
 [rfc-16]: https://github.com/fil-one/RFC/blob/main/rfcs/2026-07-forge-service-identities.md
 
@@ -56,8 +57,8 @@ deploy that has anything to apply stops all of them first, because they run on t
 Caddy. Both wait for the Piris' proving windows.
 
 The Piris, Ingot, Postgres and OpenBao publish no public ports. Dev Caddy reaches the apps on the
-shared `filone` Docker network. On staging, the Piris and Ingot bind only to host loopback and the host-owned
-Caddy proxies them; OpenBao is not on the Docker network.
+shared `filone` Docker network. On staging, the Piris and Ingot bind only to host loopback and the
+host-owned Caddy proxies them; OpenBao is not on the Docker network.
 
 ## Repository layout
 
@@ -121,9 +122,10 @@ reconciling.
 
 The node also publishes what it is running, at
 `https://<every piri hostname>/.well-known/filone-node-status.json`: the commit each pass and each
-project last stamped, and the image digest each Piri and Ingot is actually on. `reconcile` is the commit the
-node has reached, stamped on every pass; `apps` and `platform` move only when that project deploys.
-The digests are read off the containers, so a pin the node never applied shows up as a mismatch.
+project last stamped, and the image digest each Piri and Ingot is actually on. `reconcile` is the
+commit the node has reached, stamped on every pass; `apps` and `platform` move only when that
+project deploys. The digests are read off the containers, so a pin the node never applied shows up
+as a mismatch.
 
 ## Secrets
 

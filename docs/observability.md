@@ -235,7 +235,7 @@ sum by (appliance, host, handler, code) (rate(caddy_http_request_duration_second
 ```
 
 On staging, Caddy belongs to the host and serves sites that are not the appliance's. The host's
-Alloy ships only the series for the appliance's two hostnames, plus Caddy's own process series,
+Alloy ships only the series for the appliance's four hostnames, plus Caddy's own process series,
 which carry no `host`, all under `service_name="appliance-staging-eu-central-3-caddy"`:
 
 ```promql
