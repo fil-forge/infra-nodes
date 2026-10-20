@@ -136,6 +136,8 @@ issue_sprue_proof() {
     --audience="$SPRUE_DID" \
     --command=/blob/allocate \
     --command=/blob/accept \
+    --command=/blob/release \
+    --command=/blob/reject \
     --command=/blob/replica/allocate \
     --command=/pdp/info \
     --container=base64+gzip)"
