@@ -108,7 +108,8 @@ where secret files should be. Remove only those known, empty placeholders:
 set -euo pipefail
 
 for name in openbao.env platform.env apps.env \
-  piri.pem piri-owner-wallet.hex piri-base-config.toml \
+  piri-0.pem piri-0-owner-wallet.hex piri-1.pem piri-1-owner-wallet.hex \
+  piri-2.pem piri-2-owner-wallet.hex piri-base-config.toml \
   ingot.pem ingot-config.yaml hilt-ingot-proof.txt; do
   path="/run/fil-one/secrets/$name"
   if [ -d "$path" ]; then
