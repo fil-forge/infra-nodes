@@ -9,7 +9,8 @@ TEMP_DIR=/tmp/piri
 CONFIG_FILE="$DATA_DIR/piri-config.toml"
 BASE_CONFIG_SNAPSHOT="$DATA_DIR/piri-base-config.applied.toml"
 
-: "${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
+: "${PIRI_PDP_LOTUS_ENDPOINT:?PIRI_PDP_LOTUS_ENDPOINT must be set}"
+: "${PIRI_PDP_LOTUS_AUTH_TOKEN:?PIRI_PDP_LOTUS_AUTH_TOKEN must be set}"
 : "${PUBLIC_URL:?PUBLIC_URL must be set}"
 : "${REGISTRAR_URL:?REGISTRAR_URL must be set}"
 # Passed to both init and serve: init only re-runs when the base config
@@ -32,7 +33,7 @@ else
     --temp-dir="$TEMP_DIR" \
     --key-file="$KEY_FILE" \
     --wallet-file="$WALLET_FILE" \
-    --lotus-endpoint="$LOTUS_ENDPOINT" \
+    --lotus-endpoint="$PIRI_PDP_LOTUS_ENDPOINT" \
     --public-url="$PUBLIC_URL" \
     --port="${PORT:-3000}" \
     --host="${HOST:-0.0.0.0}" \
@@ -41,6 +42,10 @@ else
     --db-postgres-url="${PIRI_DB_POSTGRES_URL:?PIRI_DB_POSTGRES_URL must be set}" >/dev/null
   cp "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"
 fi
+
+# `piri init` copies the chain RPC token into the config it writes. `serve`
+# reads it from the environment, so the copy on the data disk only leaks it.
+sed -i '/^[[:space:]]*lotus_auth_token[[:space:]]*=/d' "$CONFIG_FILE"
 
 exec /usr/bin/piri serve full --config "$CONFIG_FILE" \
   --plc-directory="$PLC_DIRECTORY_URL"
