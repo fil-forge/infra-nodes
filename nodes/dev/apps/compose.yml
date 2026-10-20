@@ -22,6 +22,9 @@ x-piri-base: &piri-base
   # neither read its identity nor write its blobs.
   user: "0:0"
   entrypoint: ["/entrypoint.sh"]
+  # Where `piri init` writes its config, which holds the chain RPC token. The
+  # entrypoint copies it to the data volume without the token.
+  tmpfs: ["/run/piri-init:mode=0700"]
   environment: &piri-environment
     # Piri reads both as overrides of its `[pdp]` config, so `piri serve`
     # dials this endpoint even when the piri-config.toml on the data volume
@@ -32,8 +35,8 @@ x-piri-base: &piri-base
     # rather than written into the config, because `piri init` writes the
     # config it generates onto the data volume and echoes it to stdout, where
     # Alloy would ship it to Grafana Cloud. The setting has no CLI flag for
-    # the same family of reasons. The entrypoint deletes the copy init still
-    # writes into the config.
+    # the same family of reasons. The entrypoint keeps it out of the config on
+    # the data volume.
     PIRI_PDP_LOTUS_AUTH_TOKEN: ${CHAIN_RPC_TOKEN}
     PORT: "3000"
     HOST: 0.0.0.0

@@ -22,10 +22,14 @@ CONFIG_FILE="${DATA_DIR}/piri-config.toml"
 # The base config init last merged from. Compared on every boot, because a
 # changed address or service URL has to reach the generated config.
 BASE_CONFIG_SNAPSHOT="${DATA_DIR}/piri-base-config.applied.toml"
+# `piri init` writes piri-config.toml into its working directory, and the file
+# holds the chain RPC token. Init runs in this tmpfs, so the token never reaches
+# the data volume; only a copy without it does.
+INIT_DIR="/run/piri-init"
 
 PIRI_PDP_LOTUS_ENDPOINT="${PIRI_PDP_LOTUS_ENDPOINT:?PIRI_PDP_LOTUS_ENDPOINT must be set}"
-# Not echoed. `serve` reads it from here only, since the copy init writes into
-# the config is deleted below.
+# Not echoed. `serve` reads it from here only, since the config on the data
+# volume is kept without it.
 PIRI_PDP_LOTUS_AUTH_TOKEN="${PIRI_PDP_LOTUS_AUTH_TOKEN:?PIRI_PDP_LOTUS_AUTH_TOKEN must be set}"
 PUBLIC_URL="${PUBLIC_URL:?PUBLIC_URL must be set}"
 PORT="${PORT:-3000}"
@@ -82,10 +86,14 @@ else
     if [ -f "$CONFIG_FILE" ]; then
         echo "  re-running init to pick up the current base config"
     fi
-    # CONFIG_FILE is left in place. init truncates it when it writes, and a run
-    # that dies on a network call partway through would otherwise leave the node
-    # with no config at all.
-    cd "$DATA_DIR"
+    if ! grep -q " $INIT_DIR tmpfs " /proc/mounts; then
+        echo "ERROR: $INIT_DIR is not a tmpfs; init would write the chain RPC token to disk" >&2
+        exit 1
+    fi
+    # CONFIG_FILE stays in place until init has succeeded, so a run that dies
+    # on a network call partway through leaves the node with its last config.
+    cd "$INIT_DIR"
+    rm -f piri-config.toml
     # Built as positional parameters rather than a string run through eval, so
     # every value reaches piri as one argv entry and nothing in it can
     # word-split or inject.
@@ -112,17 +120,30 @@ else
     # stdout goes nowhere. init prints the generated config there, and that
     # config carries the chain RPC bearer token, which would land in the
     # container log Alloy ships to Grafana Cloud. Nothing is lost: the same
-    # bytes are what init writes to CONFIG_FILE. Progress and every error go to
-    # stderr and stay on the console.
+    # bytes are what init writes to piri-config.toml. Progress and every error
+    # go to stderr and stay on the console.
     "$@" >/dev/null
+    # When init cannot create the file it prints the config to stdout instead,
+    # which goes nowhere, and still exits 0.
+    if [ ! -s piri-config.toml ]; then
+        echo "ERROR: piri init wrote no piri-config.toml in $INIT_DIR" >&2
+        exit 1
+    fi
+    # `serve` reads the token from the environment. The rename keeps a crash
+    # from leaving half a config on the data volume.
+    grep -v '^[[:space:]]*lotus_auth_token[[:space:]]*=' piri-config.toml >"$CONFIG_FILE.new"
+    mv "$CONFIG_FILE.new" "$CONFIG_FILE"
+    rm -f piri-config.toml
     cp "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"
     echo "  init complete"
 fi
 
-# `piri init` copies the chain RPC token into the config it writes. `serve`
-# reads it from the environment, so the copy on the data volume only leaks it.
-# Runs on every start, so it also cleans configs an older entrypoint left.
-sed -i '/^[[:space:]]*lotus_auth_token[[:space:]]*=/d' "$CONFIG_FILE"
+# Entrypoints before the tmpfs ran init in the data directory and left the
+# token in CONFIG_FILE. A config that skipped init above may still hold it.
+if grep -q '^[[:space:]]*lotus_auth_token[[:space:]]*=' "$CONFIG_FILE"; then
+    echo "  removing the chain RPC token an older init left in the config"
+    sed -i '/^[[:space:]]*lotus_auth_token[[:space:]]*=/d' "$CONFIG_FILE"
+fi
 
 echo "[3/3] Serving"
 # No "$@" here. The init branch above rebuilt it with `set --`, so on a first
