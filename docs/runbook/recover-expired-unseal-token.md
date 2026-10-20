@@ -88,13 +88,13 @@ argument, shell history, or captured log.
 ## Stop the applications
 
 ```sh
-docker stop filone-ingot filone-piri
+docker stop filone-piri-0 filone-piri-1 filone-piri-2 filone-ingot
 ```
 
 The next step removes paths that are bind-mount sources of these containers,
 and `provision-platform.sh` ends by calling `deploy-platform.sh`, which brings
 back whatever it stopped before `deploy-apps.sh` has rendered the files again.
-With both already down, `deploy-platform.sh` reports them as left running and
+With all of them down, `deploy-platform.sh` reports them as left running and
 `deploy-apps.sh` starts them on a complete set of secrets. A stopped Piri also
 has no proof in flight, so the proving gate passes at once.
 
