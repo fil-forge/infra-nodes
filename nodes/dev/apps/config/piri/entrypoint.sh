@@ -23,7 +23,10 @@ CONFIG_FILE="${DATA_DIR}/piri-config.toml"
 # changed address or service URL has to reach the generated config.
 BASE_CONFIG_SNAPSHOT="${DATA_DIR}/piri-base-config.applied.toml"
 
-LOTUS_ENDPOINT="${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
+PIRI_PDP_LOTUS_ENDPOINT="${PIRI_PDP_LOTUS_ENDPOINT:?PIRI_PDP_LOTUS_ENDPOINT must be set}"
+# Not echoed. `serve` reads it from here only, since the copy init writes into
+# the config is deleted below.
+PIRI_PDP_LOTUS_AUTH_TOKEN="${PIRI_PDP_LOTUS_AUTH_TOKEN:?PIRI_PDP_LOTUS_AUTH_TOKEN must be set}"
 PUBLIC_URL="${PUBLIC_URL:?PUBLIC_URL must be set}"
 PORT="${PORT:-3000}"
 HOST="${HOST:-0.0.0.0}"
@@ -37,7 +40,7 @@ REGISTRAR_URL="${REGISTRAR_URL:?REGISTRAR_URL must be set}"
 PLC_DIRECTORY_URL="${PLC_DIRECTORY_URL:?PLC_DIRECTORY_URL must be set}"
 
 echo "=== Piri entrypoint ==="
-echo "  Chain RPC:  $LOTUS_ENDPOINT"
+echo "  Chain RPC:  $PIRI_PDP_LOTUS_ENDPOINT"
 echo "  Public URL: $PUBLIC_URL"
 echo "  Registrar:  $REGISTRAR_URL"
 echo "  PLC:        $PLC_DIRECTORY_URL"
@@ -94,7 +97,7 @@ else
         --temp-dir="$TEMP_DIR" \
         --key-file="$KEY_FILE" \
         --wallet-file="$WALLET_FILE" \
-        --lotus-endpoint="$LOTUS_ENDPOINT" \
+        --lotus-endpoint="$PIRI_PDP_LOTUS_ENDPOINT" \
         --public-url="$PUBLIC_URL" \
         --port="$PORT" \
         --host="$HOST" \
@@ -115,6 +118,11 @@ else
     cp "$BASE_CONFIG" "$BASE_CONFIG_SNAPSHOT"
     echo "  init complete"
 fi
+
+# `piri init` copies the chain RPC token into the config it writes. `serve`
+# reads it from the environment, so the copy on the data volume only leaks it.
+# Runs on every start, so it also cleans configs an older entrypoint left.
+sed -i '/^[[:space:]]*lotus_auth_token[[:space:]]*=/d' "$CONFIG_FILE"
 
 echo "[3/3] Serving"
 # No "$@" here. The init branch above rebuilt it with `set --`, so on a first
