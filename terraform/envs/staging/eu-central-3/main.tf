@@ -29,9 +29,13 @@ locals {
   server_ip = "23.83.66.244"
 }
 
+# One record per Piri, piri-0 to piri-2, the services in
+# nodes/staging/eu-central-3/apps/compose.yml.
 resource "aws_route53_record" "piri" {
+  for_each = toset(["piri-0", "piri-1", "piri-2"])
+
   zone_id = data.aws_route53_zone.forge.zone_id
-  name    = "piri-0.staging.fil-forge.com"
+  name    = "${each.key}.eu-central-3.staging.fil-forge.com"
   type    = "A"
   ttl     = 300
   records = [local.server_ip]

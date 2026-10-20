@@ -304,6 +304,43 @@ sampling ratio of 1), and follow the caller's sampling decision when it sends on
 its health check (Piri's `/healthz`, `/livez` and `/readyz`, Ingot's `/health`), so a node that
 only answers health checks shows few or no traces.
 
+## Adding a signal
+
+What a new service or feature needs so that its logs and metrics reach Grafana, and where its alerts
+go.
+
+- **Logs.** Container stdout and stderr ship without any extra work, under the labels above. Dev
+  ships the whole host journal, but staging ships only the reconcile service's unit. The staging
+  host's Alloy config lives outside this repository, so for a new host service there, add what it
+  must ship to the staging section of the [runbook](RUNBOOK.md) and say in the PR that the host's
+  config needs the change.
+- **Metrics pushed over OTLP**, as Piri does. The service sets `service.name` to its Compose
+  service name and `service.namespace="forge"`, and sends to Alloy on port 4318: `alloy:4318` on
+  dev and `host.docker.internal:4318` on staging, configured as Ingot's entry in each stage's
+  `apps/compose.yml` is. Neither Alloy then needs a change; on staging, a series without that
+  namespace is dropped.
+
+  Replicas are the exception. Dev's `piri-0` to `piri-2` share one `service.name` (`piri`) and are
+  told apart by `service.instance.id`, but dev's `config.alloy` keeps replicas apart only for Piri:
+  its `prometheus.relabel "apps"` keeps `instance` for `job="forge/piri"` alone, and its container
+  log rules map only `piri-<n>` to the shared `service_name`. A new replicated service needs those
+  rules extended to it. Staging sets `instance` to the node for every series and names logs per
+  Compose service, so replicas there would need rules of their own too.
+- **Metrics scraped on dev.** Add a scrape to `nodes/dev/platform/config/alloy/config.alloy`,
+  routed through a `prometheus.relabel` that sets `service_name` (built as
+  `sys.env("SERVICE_NAME_PREFIX") + "-<service>"`) and `instance`, as the host and Caddy ones do.
+  `appliance`, `node` and `region` come from the writer's `external_labels`.
+- **Metrics scraped on staging.** Only `appliance` is on the writer, so add the scrape to the
+  staging section of the runbook with rules that set `service_name`, `node`, `region` and
+  `instance` as the existing staging rules do, and say in the PR that the host's Alloy config
+  needs it.
+- **Host-side signals**, such as a timer that has to keep running, can follow the deploy stamp: a
+  textfile-collector gauge written by `scripts/host/lib.sh`.
+- **This page.** Add each new log or metric here, with an example query.
+- **Alerts and dashboard panels** live in fil-forge/infra-central, under `terraform/envs/grafana/`:
+  the Forge Regions rule groups and the `forge-regions` dashboard. Open a companion PR there, or
+  say in this PR that one is needed.
+
 ## Is the pipeline itself healthy
 
 Alloy scrapes its own node exporter, so `up` says whether the host metrics scrape is working, one

@@ -45,9 +45,16 @@ services:
       - |
         set -eu
         export PGPASSWORD="$$POSTGRES_ADMIN_PASSWORD"
-        ensure() { printf '%s\n' "SELECT 'CREATE ROLE \"$$1\"' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$$1')" '\gexec' "ALTER ROLE \"$$1\" WITH LOGIN PASSWORD '$$2';" "SELECT 'CREATE DATABASE \"$$1\" OWNER \"$$1\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$$1')" '\gexec' | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet; }
-        ensure piri "$$PIRI_POSTGRES_PASSWORD"
-        ensure ingot "$$INGOT_POSTGRES_PASSWORD"
+        ensure_role() { printf '%s\n' "SELECT 'CREATE ROLE \"$$1\"' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$$1')" '\gexec' "ALTER ROLE \"$$1\" WITH LOGIN PASSWORD '$$2';" | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet; }
+        ensure_database() { printf '%s\n' "SELECT 'CREATE DATABASE \"$$1\" OWNER \"$$2\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$$1')" '\gexec' | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet; }
+        # One role for every Piri, and one database each, named after its
+        # compose service with _ for - so a one-off query needs no quoting.
+        ensure_role piri "$$PIRI_POSTGRES_PASSWORD"
+        ensure_database piri_0 piri
+        ensure_database piri_1 piri
+        ensure_database piri_2 piri
+        ensure_role ingot "$$INGOT_POSTGRES_PASSWORD"
+        ensure_database ingot ingot
     environment:
       POSTGRES_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
       PIRI_POSTGRES_PASSWORD: ${PIRI_POSTGRES_PASSWORD}
