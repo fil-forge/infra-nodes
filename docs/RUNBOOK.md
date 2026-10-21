@@ -1277,14 +1277,15 @@ for example `n=0`: its container is `filone-piri-$n` and its database `piri_$n`.
 these commands fail rather than reach the wrong Piri. Staging may still hold a database named `piri`
 from when it ran one Piri, now `piri-0`; nothing reads it any more.
 
-Most checks run inside the Piri container (`docker exec -it filone-piri-$n sh`): `piri status` for
-the node, `piri client pdp proofset state` for its proof set. Both need `--config
-/data/piri/piri-config.toml`, which also gives them the proof set; without it they stop on a config
-error before reaching the node. Curio's task logs are in the container's output, named by task:
-`docker logs "filone-piri-${n:?}" 2>&1 | grep -e PDPv0_Prove -e 'No such container'`, or
-`PDPv0_ProvPeriod` for scheduling. The `${n:?}` and the second pattern are there because `grep`
-would otherwise swallow docker's error for an unset or wrong `n` and print nothing, which looks like
-a Prove task that never ran.
+Most checks run inside the Piri container, from its data directory: `docker exec -it -w /data/piri
+filone-piri-$n sh`. There, `piri status` checks the node and `piri client pdp proofset state` its
+proof set, both reading `piri-config.toml` from the current directory, which also names the proof
+set; add `--proof-set <id>` for another one. Run from anywhere else, they need `--config
+/data/piri/piri-config.toml`, and without it stop on a config error before reaching the node.
+Curio's task logs are in the container's output, named by task: `docker logs "filone-piri-${n:?}"
+2>&1 | grep -e PDPv0_Prove -e 'No such container'`, or `PDPv0_ProvPeriod` for scheduling. The
+`${n:?}` and the second pattern are there because `grep` would otherwise swallow docker's error for
+an unset or wrong `n` and print nothing, which looks like a Prove task that never ran.
 
 #### Piri's chain head is stale
 
@@ -1300,8 +1301,8 @@ Epoch is Chain.Love's head, read when the command runs. A Current Epoch of 0 mea
 not initialised yet, not that Chain.Love is behind. Compare it with Calibration's current height on
 a block explorer. If it is behind, Chain.Love is lagging, and there is nothing to fix on the node;
 wait for it to catch up. If the command fails with `failed to get chain head`, Piri cannot reach
-Chain.Love: check the token as in "A Piri crash-loops on the chain endpoint" above, using the key
-check under [The eu-central-3 staging appliance on
+Chain.Love (any other error is not the chain endpoint's): check the token as in "A Piri crash-loops
+on the chain endpoint" above, using the key check under [The eu-central-3 staging appliance on
 Servers.com](#the-eu-central-3-staging-appliance-on-serverscom), which works on dev too. If
 Chain.Love is current while the alert still fires, Piri's own subscription is stale. Piri
 resubscribes on its own after five minutes without a new tipset, so a head that stays old for longer
