@@ -192,23 +192,26 @@ The two rules let Piri call its public Ingot URL and send telemetry to the host'
 FilOne rules tied to `docker0` or another Docker bridge after confirming these source-subnet rules.
 
 Piri dials Chain.Love for chain RPC. Staging has its own chain.love token,
-separate from dev's, in OpenBao at `external#chain_rpc_token`. Confirm the token works with a
-one-shot JSON-RPC request; the token goes in through a file descriptor, so it never appears in a
-command line:
+separate from dev's, in OpenBao at `external#chain_rpc_token`. The token is the bare API key, not
+the endpoint URL the Chain.Love dashboard shows with it. The key accepts WebSocket connections only,
+so check it with a WebSocket upgrade request; the token goes in through a file descriptor, so it
+never appears in a command line:
 
 ```sh
 token="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
   filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
-curl --fail --show-error --max-time 10 \
+curl --http1.1 -sS -i --max-time 5 \
   -H @<(printf 'Authorization: Bearer %s\n' "$token") \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","method":"Filecoin.Version","params":[],"id":1}' \
-  https://calibration.filecoin.chain.love/rpc/v1
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  https://calibration.filecoin.chain.love/ws/rpc/v1 | head -1
 unset token
 ```
 
-The response contains the node version. Do not use `curl wss://…` for this check: a WebSocket stays
-open after connecting, so curl waits for the server to close it.
+A working key prints `HTTP/1.1 101 Switching Protocols`, followed by curl's timeout error, because
+the WebSocket stays open until `--max-time` closes it. A rejected key gets a 403. A plain JSON-RPC
+request over HTTPS proves nothing here: Chain.Love answers it with 403 for this key and with 200
+for no key at all, since it also serves anonymous, rate-limited traffic.
 
 Confirm the same network can reach the host-owned Caddy listener:
 
@@ -1247,8 +1250,9 @@ provider registration sends to the registry. Fund it with at least 6, as [step
 6](#6-onboarding-then-the-apps) describes, then re-run `provision-apps.sh`. Exactly 5 is not enough,
 because the 5 is the transaction's value and the gas comes out of the same wallet.
 
-**A Piri crash-loops on the chain endpoint.** A 401 from the provider means the chain.love token in
-OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri sends the token
+**A Piri crash-loops on the chain endpoint.** A 403 with JSON-RPC error -32156 ("Access denied")
+from Chain.Love means the chain.love token in OpenBao is wrong, expired, disabled, or not allowed
+from this host's IP; rotate it there and re-run `deploy-apps.sh`. Piri sends the token
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
 `docker inspect filone-piri-0` shows its environment.
 
