@@ -207,9 +207,10 @@ else
         echo "ERROR: $INIT_DIR is not a tmpfs; init would write the chain RPC token to disk" >&2
         exit 1
     fi
-    # init writes into the tmpfs, and CONFIG_FILE is replaced only once it has
-    # succeeded, so a run that dies on a network call partway through still
-    # leaves the node a config to serve.
+    # init writes into the tmpfs. Its output replaces CONFIG_FILE once it
+    # returns, and the proof set check below puts the copy back after a failed
+    # re-run, so a run that dies partway through still leaves the node a config
+    # to serve.
     cd "$INIT_DIR"
     rm -f piri-config.toml
     # A re-run is bounded; see INIT_TIMEOUT. The timeout is BusyBox's in the
@@ -251,12 +252,13 @@ else
     fi
     # `serve` reads the token from the environment, so CONFIG_FILE gets init's
     # config without it. The rename keeps a crash from leaving half a config on
-    # the data volume. Whatever init wrote goes there even when it failed, so
-    # the proof set check below sees a proof set a failed run created; the
-    # check puts the old config back after any failure. When init cannot create
-    # the file it prints the config to stdout instead, which goes nowhere, and
-    # still exits 0; that counts as a failed run.
-    if [ -s piri-config.toml ]; then
+    # the data volume. On a re-run, whatever init wrote goes there even when it
+    # failed, so the proof set check below sees a proof set a failed run
+    # created; the check puts the copy back after any failure. A failed first
+    # run has no copy to go back to, so its output is not installed. When init
+    # cannot create the file it prints the config to stdout instead, which goes
+    # nowhere, and still exits 0; that counts as a failed run.
+    if [ -s piri-config.toml ] && { [ "$INIT_STATUS" -eq 0 ] || [ -f "$CONFIG_BEFORE" ]; }; then
         if ! { grep -v '^[[:space:]]*lotus_auth_token[[:space:]]*=' piri-config.toml >"$CONFIG_FILE.new" &&
                mv "$CONFIG_FILE.new" "$CONFIG_FILE"; }; then
             echo "ERROR: could not write $CONFIG_FILE from init's output" >&2

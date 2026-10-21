@@ -1325,7 +1325,7 @@ replaced the snapshot and the old snapshot still matches the base config, or ini
 then serves the config already on disk, which holds its proof set; `N` is that config's version. A
 preceding `did not finish within` line means init was killed with SIGKILL (exit 137): usually by the
 timeout, but the kernel's OOM killer exits the same way, and `dmesg` on the host tells the two
-apart. The first-start case can hide a `node.env` or token change that lands in the same deploy: the
+apart. The first-start case can hide a `node.env` change that lands in the same deploy: the
 config served lacks it until init next succeeds. Any other failure of a re-run still exits, and
 Docker restarts the container into the same init. The lines before the warning in the Piri's `docker
 logs` carry init's own error, most often the registrar or chain RPC being unreachable. A kill

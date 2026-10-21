@@ -120,7 +120,8 @@ else
   esac
   grep -q " $INIT_DIR tmpfs " /proc/mounts ||
     { echo "ERROR: $INIT_DIR is not a tmpfs; init would write the chain RPC token to disk" >&2; exit 1; }
-  # init writes into the tmpfs; CONFIG_FILE is replaced only once it succeeds.
+  # init writes into the tmpfs; its output replaces CONFIG_FILE once it
+  # returns, and the check below puts the copy back after a failed re-run.
   cd "$INIT_DIR"
   rm -f piri-config.toml
   # Only a re-run is bounded: a first init has no config to fall back to.
@@ -147,11 +148,12 @@ else
   fi
   # `serve` reads the token from the environment, so CONFIG_FILE gets init's
   # config without it; the rename keeps a crash from leaving half a config on
-  # the disk. It goes there even after a failed run, so the proof set check
-  # below sees a proof set that run created. init falls back to stdout, which
-  # goes to /dev/null, when it cannot create the file, and still exits 0: a
-  # failed run.
-  if [ -s piri-config.toml ]; then
+  # the disk. On a re-run it goes there even after a failure, so the proof set
+  # check below sees a proof set that run created; a failed first run has no
+  # copy to go back to, so its output is not installed. init falls back to
+  # stdout, which goes to /dev/null, when it cannot create the file, and still
+  # exits 0: a failed run.
+  if [ -s piri-config.toml ] && { [ "$INIT_STATUS" -eq 0 ] || [ -f "$CONFIG_BEFORE" ]; }; then
     if ! { grep -v '^[[:space:]]*lotus_auth_token[[:space:]]*=' piri-config.toml >"$CONFIG_FILE.new" &&
            mv "$CONFIG_FILE.new" "$CONFIG_FILE"; }; then
       echo "ERROR: could not write $CONFIG_FILE from init's output" >&2
