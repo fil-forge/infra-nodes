@@ -27,5 +27,12 @@ role or other AWS host resource. Appliance control state and data live in separa
 `/mnt/data/fil-one/control` and `/mnt/data/fil-one/data`.
 
 Piri reaches the host's Lotus RPC through `host.docker.internal:1234` without an authorization
-token. Staging has no Indexer/IPNI configuration. Indexer and Swarf identities remain registered
+token.
+
+UPDATE (2026-10): Staging no longer uses the host's Lotus. Its Piris dial Chain.Love at
+`wss://calibration.filecoin.chain.love/ws/rpc/v1` with a staging token of their own, the same way
+dev does, so the appliance stops depending on a host workload FilOne does not own. The host keeps
+its Lotus for its own workloads, and the TCP 1234 UFW rule is gone.
+
+Staging has no Indexer/IPNI configuration. Indexer and Swarf identities remain registered
 centrally and are not appliance dependencies.

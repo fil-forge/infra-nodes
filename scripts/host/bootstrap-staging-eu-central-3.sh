@@ -65,7 +65,6 @@ if ! grep -qxF "$IMPORT" "$CADDYFILE"; then
 fi
 
 ufw allow from "$FILONE_SUBNET" to any port 443 proto tcp comment 'FilOne Docker to host Caddy'
-ufw allow from "$FILONE_SUBNET" to any port 1234 proto tcp comment 'FilOne Docker to host Lotus RPC'
 ufw allow from "$FILONE_SUBNET" to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
 
 "$CHECKOUT/scripts/host/reload-staging-host-caddy.sh"
