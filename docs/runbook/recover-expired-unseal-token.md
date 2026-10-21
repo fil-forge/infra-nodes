@@ -88,13 +88,13 @@ argument, shell history, or captured log.
 ## Stop the applications
 
 ```sh
-docker stop filone-ingot filone-piri
+docker stop filone-piri-0 filone-piri-1 filone-piri-2 filone-ingot
 ```
 
 The next step removes paths that are bind-mount sources of these containers,
 and `provision-platform.sh` ends by calling `deploy-platform.sh`, which brings
 back whatever it stopped before `deploy-apps.sh` has rendered the files again.
-With both already down, `deploy-platform.sh` reports them as left running and
+With all of them down, `deploy-platform.sh` reports them as left running and
 `deploy-apps.sh` starts them on a complete set of secrets. A stopped Piri also
 has no proof in flight, so the proving gate passes at once.
 
@@ -108,7 +108,8 @@ where secret files should be. Remove only those known, empty placeholders:
 set -euo pipefail
 
 for name in openbao.env platform.env apps.env \
-  piri.pem piri-owner-wallet.hex piri-base-config.toml \
+  piri-0.pem piri-0-owner-wallet.hex piri-1.pem piri-1-owner-wallet.hex \
+  piri-2.pem piri-2-owner-wallet.hex piri-base-config.toml \
   ingot.pem ingot-config.yaml hilt-ingot-proof.txt; do
   path="/run/fil-one/secrets/$name"
   if [ -d "$path" ]; then
