@@ -1294,14 +1294,17 @@ retries it ([FIL-1508](https://linear.app/filecoin-foundation/issue/FIL-1508)). 
 for the fix below.
 
 Dev and staging read the chain from Chain.Love (`LOTUS_RPC_URL` in `node.env`), not from a Lotus of
-their own. Run `piri status` for Piri's head, and compare its height with Calibration's current
-height on a block explorer. If Chain.Love itself is behind, there is nothing to fix on the node;
-wait for it to catch up. If Piri cannot reach it, check the token as in "A Piri crash-loops on the
-chain endpoint" above and the key check under [The eu-central-3 staging appliance on
-Servers.com](#the-eu-central-3-staging-appliance-on-serverscom). Piri resubscribes on its own after
-five minutes without a new tipset, so an endpoint that is current while Piri's head stays old for
-longer than that needs a restart of Piri: `docker restart filone-piri-$n`. The proving-window gate
-that deploys wait for doesn't apply here, since Piri isn't proving without a head.
+their own. `piri status` shows no chain head, but `piri client pdp proofset state` does: its Current
+Epoch is Chain.Love's head, read when the command runs. Compare it with Calibration's current height
+on a block explorer. If it is behind, Chain.Love is, and there is nothing to fix on the node; wait
+for it to catch up. If the command fails with `failed to get chain head`, Piri cannot reach
+Chain.Love: check the token as in "A Piri crash-loops on the chain endpoint" above, and with the key
+check under [The eu-central-3 staging appliance on
+Servers.com](#the-eu-central-3-staging-appliance-on-serverscom), which works on dev too. If
+Chain.Love is current while the alert still fires, Piri's own subscription is stale. Piri
+resubscribes on its own after five minutes without a new tipset, so a head that stays old for longer
+than that needs a restart of Piri: `docker restart filone-piri-$n`. The proving-window gate that
+deploys wait for doesn't apply here, since Piri isn't proving without a head.
 
 Once the head moves again, look for stranded batches, and free them if there are any. The next
 AddRoots run picks them up.
@@ -1322,9 +1325,10 @@ docker exec filone-platform-postgres-1 psql -U admin -d "piri_$n" -c "
 #### Piri is reporting but has no chain head
 
 **Act within about three hours**, for the reason above. Piri has not seen a single tipset since it
-started, usually because the chain endpoint was unreachable then. Check that Piri's endpoint and
-token are right (see "A Piri crash-loops on the chain endpoint" above). Then restart Piri (`docker
-restart filone-piri-$n`), and once it has a head, check for stranded batches as above.
+started, usually because the chain endpoint was unreachable then. `piri client pdp proofset state`
+failing with `failed to get chain head` confirms it still is; check the endpoint and token as in "A
+Piri crash-loops on the chain endpoint" above. Then restart Piri (`docker restart filone-piri-$n`),
+and once it has a head, check for stranded batches as above.
 
 #### Piri proving is failing
 
