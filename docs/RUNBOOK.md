@@ -1252,6 +1252,13 @@ OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri s
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
 `docker inspect filone-piri-0` shows its environment.
 
+A Piri that stays up after the provider starts rejecting its token keeps the old token until it is
+recreated. The proving gate asks that Piri whether a restart is safe, the Piri cannot reach the
+chain to answer, and the deploy waits out the gate's timeout before it aborts. Such a Piri cannot
+submit a proof either, so stopping it first costs nothing: rotate the token, run
+`docker stop filone-piri-<n>` for each Piri the gate reports as "cannot determine", then re-run
+`deploy-apps.sh`.
+
 ### The node rebooted
 
 The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
