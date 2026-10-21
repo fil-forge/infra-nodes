@@ -277,6 +277,11 @@ is the signal, one query per Piri:
 absent(target_info{job="forge/piri", instance="staging/eu-central-3/piri-1"})
 ```
 
+Chain RPC failures Piri cannot get past, such as Chain.Love answering 403 to a revoked token,
+crash-loop it, and they show up as this absence. The runbook's "Piri crash-loops on the chain
+endpoint" entry covers the response. Rate limits and dropped WebSockets that Piri survives have no
+signal yet.
+
 ### Ingot
 
 Ingot pushes its metrics to the same Alloy receiver as Piri, at the `OTEL_EXPORTER_OTLP_ENDPOINT`

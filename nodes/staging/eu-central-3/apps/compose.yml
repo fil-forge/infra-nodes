@@ -10,8 +10,16 @@ x-piri-base: &piri-base
   user: "0:0"
   entrypoint: ["/entrypoint.sh"]
   extra_hosts: ["host.docker.internal:host-gateway"]
+  # Where `piri init` writes its config, which holds the chain RPC token. The
+  # entrypoint copies it to the data disk without the token.
+  tmpfs: ["/run/piri-init:mode=0700"]
   environment: &piri-environment
-    LOTUS_ENDPOINT: ${LOTUS_RPC_URL}
+    # Piri reads both as overrides of its `[pdp]` config, so `piri serve`
+    # dials this endpoint even when the piri-config.toml on the data disk was
+    # generated for another one. The token is the raw value; Piri prepends
+    # "Bearer ". The entrypoint keeps it out of the config on the data disk.
+    PIRI_PDP_LOTUS_ENDPOINT: ${LOTUS_RPC_URL}
+    PIRI_PDP_LOTUS_AUTH_TOKEN: ${CHAIN_RPC_TOKEN}
     PORT: 3000
     HOST: 0.0.0.0
     REGISTRAR_URL: ${REGISTRAR_URL}
