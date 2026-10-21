@@ -22,17 +22,21 @@ x-piri-base: &piri-base
   # neither read its identity nor write its blobs.
   user: "0:0"
   entrypoint: ["/entrypoint.sh"]
+  # Where `piri init` writes its config, which holds the chain RPC token. The
+  # entrypoint copies it to the data volume without the token.
+  tmpfs: ["/run/piri-init:mode=0700"]
   environment: &piri-environment
-    LOTUS_ENDPOINT: ${LOTUS_RPC_URL}
+    # Piri reads both as overrides of its `[pdp]` config, so `piri serve`
+    # dials this endpoint even when the piri-config.toml on the data volume
+    # was generated for another one.
+    PIRI_PDP_LOTUS_ENDPOINT: ${LOTUS_RPC_URL}
     # Hosted RPC providers want an Authorization header, and Piri sends one
-    # from this. The raw token; Piri prepends "Bearer ". The setting has no
-    # CLI flag, so it comes in by environment, to init and to serve. Init
-    # does write it into the config it generates on the data volume, and can
-    # print that config to stdout (older binaries always do, newer ones when
-    # stdout is not a terminal); the entrypoint sends init's stdout to
-    # /dev/null so the token stays out of the log Alloy ships to Grafana
-    # Cloud, and hashes the token into init's stamp so a rotation re-runs init
-    # and replaces it.
+    # from this. The raw token; Piri prepends "Bearer ". Passed by environment
+    # rather than written into the config, because `piri init` writes the
+    # config it generates onto the data volume and echoes it to stdout, where
+    # Alloy would ship it to Grafana Cloud. The setting has no CLI flag for
+    # the same family of reasons. The entrypoint keeps it out of the config on
+    # the data volume.
     PIRI_PDP_LOTUS_AUTH_TOKEN: ${CHAIN_RPC_TOKEN}
     PORT: "3000"
     HOST: 0.0.0.0

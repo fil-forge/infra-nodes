@@ -20,11 +20,11 @@ DATA_DIR="/data/piri"
 TEMP_DIR="/tmp/piri"
 CONFIG_FILE="${DATA_DIR}/piri-config.toml"
 # A hash of everything init's output depends on apart from the binary: the base
-# config, init's own arguments and the chain RPC token init writes into the
-# config. Compared on every boot, because a changed address, service URL, flag
-# or token has to reach the generated config. A hash rather than a copy, so the
-# arguments' Postgres password is not written out once more; that is tidiness
-# rather than protection, since the config beside it holds the same DSN.
+# config and init's own arguments. Compared on every boot, because a changed
+# address, service URL or flag has to reach the generated config. A hash rather
+# than a copy, so the arguments' Postgres password is not written out once more;
+# that is tidiness rather than protection, since the config beside it holds the
+# same DSN.
 INIT_STAMP="${DATA_DIR}/piri-init.stamp"
 # What earlier versions of this script kept instead: a copy of the base config
 # alone. No longer written. It is left on disk rather than deleted, so a revert
@@ -60,8 +60,15 @@ case "$INIT_TIMEOUT" in
         echo "WARNING: PIRI_INIT_TIMEOUT='$INIT_TIMEOUT' is not a whole number of seconds without leading zeros; using 300" >&2
         INIT_TIMEOUT=300 ;;
 esac
+# `piri init` writes piri-config.toml into its working directory, and the file
+# holds the chain RPC token. Init runs in this tmpfs, so the token never reaches
+# the data volume; only a copy without it does.
+INIT_DIR="/run/piri-init"
 
-LOTUS_ENDPOINT="${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
+PIRI_PDP_LOTUS_ENDPOINT="${PIRI_PDP_LOTUS_ENDPOINT:?PIRI_PDP_LOTUS_ENDPOINT must be set}"
+# Not echoed. `serve` reads it from here only, since the config on the data
+# volume is kept without it.
+PIRI_PDP_LOTUS_AUTH_TOKEN="${PIRI_PDP_LOTUS_AUTH_TOKEN:?PIRI_PDP_LOTUS_AUTH_TOKEN must be set}"
 PUBLIC_URL="${PUBLIC_URL:?PUBLIC_URL must be set}"
 PORT="${PORT:-3000}"
 HOST="${HOST:-0.0.0.0}"
@@ -76,7 +83,7 @@ REGISTRAR_URL="${REGISTRAR_URL:?REGISTRAR_URL must be set}"
 PLC_DIRECTORY_URL="${PLC_DIRECTORY_URL:?PLC_DIRECTORY_URL must be set}"
 
 echo "=== Piri entrypoint ==="
-echo "  Chain RPC:  $LOTUS_ENDPOINT"
+echo "  Chain RPC:  $PIRI_PDP_LOTUS_ENDPOINT"
 echo "  Public URL: $PUBLIC_URL"
 echo "  Registrar:  $REGISTRAR_URL"
 echo "  PLC:        $PLC_DIRECTORY_URL"
@@ -126,20 +133,20 @@ set -- /usr/bin/piri init \
     --temp-dir="$TEMP_DIR" \
     --key-file="$KEY_FILE" \
     --wallet-file="$WALLET_FILE" \
-    --lotus-endpoint="$LOTUS_ENDPOINT" \
+    --lotus-endpoint="$PIRI_PDP_LOTUS_ENDPOINT" \
     --public-url="$PUBLIC_URL" \
     --port="$PORT" \
     --host="$HOST" \
     --operator-email="$OPERATOR_EMAIL" \
     --db-type=postgres \
     --db-postgres-url="${PIRI_DB_POSTGRES_URL:?PIRI_DB_POSTGRES_URL must be set}"
-# The token is in the hash because init writes it into CONFIG_FILE, so a
-# rotation has to re-run init or the revoked token stays on disk. The key and
-# wallet files' contents are deliberately not: init run with a different wallet
-# could register a new provider and create a new proof set on chain, and that
-# should never happen as a side effect of a restart.
-INPUTS=$( { cat "$BASE_CONFIG"; printf '%s\n' "$@" "${PIRI_PDP_LOTUS_AUTH_TOKEN:-}"; } |
-    sha256sum | cut -d' ' -f1)
+# The chain RPC token is not in the hash: CONFIG_FILE is kept without it and
+# `serve` reads it from the environment, so a rotation needs only a recreate.
+# The key and wallet files' contents are deliberately not in it either: init
+# run with a different wallet could register a new provider and create a new
+# proof set on chain, and that should never happen as a side effect of a
+# restart.
+INPUTS=$( { cat "$BASE_CONFIG"; printf '%s\n' "$@"; } | sha256sum | cut -d' ' -f1)
 
 # A copy left by a re-run that never finished -- the container was killed after
 # init wrote its config but before the check below ran -- goes back first.
@@ -178,7 +185,7 @@ if [ ! -f "$CONFIG_FILE" ] || ! grep -q "proof_set" "$CONFIG_FILE" 2>/dev/null; 
 elif [ ! -f "$INIT_STAMP" ] && cmp -s "$LEGACY_SNAPSHOT" "$BASE_CONFIG"; then
     REASON="migration"
 elif [ "$(cat "$INIT_STAMP" 2>/dev/null)" != "$INPUTS" ]; then
-    REASON="the base config, init's arguments or the RPC token changed"
+    REASON="the base config or init's arguments changed"
 elif [ -n "$WANT_VERSION" ] && [ "$WANT_VERSION" != "$HAVE_VERSION" ]; then
     REASON="version"
 fi
@@ -196,11 +203,15 @@ else
         migration) echo "  re-running init once to write its stamp" ;;
         *) echo "  running init: $REASON" ;;
     esac
-    # CONFIG_FILE is left in place, so a run that dies on a network call partway
-    # through still leaves the node a config to serve. Piri since
-    # fil-forge/piri#138 replaces it atomically; older binaries truncate it
-    # before writing.
-    cd "$DATA_DIR"
+    if ! grep -q " $INIT_DIR tmpfs " /proc/mounts; then
+        echo "ERROR: $INIT_DIR is not a tmpfs; init would write the chain RPC token to disk" >&2
+        exit 1
+    fi
+    # init writes into the tmpfs, and CONFIG_FILE is replaced only once it has
+    # succeeded, so a run that dies on a network call partway through still
+    # leaves the node a config to serve.
+    cd "$INIT_DIR"
+    rm -f piri-config.toml
     # A re-run is bounded; see INIT_TIMEOUT. The timeout is BusyBox's in the
     # Alpine-based Piri image.
     if [ "$REASON" != "no config yet" ]; then
@@ -230,14 +241,33 @@ else
     # Older binaries always print the config there; since fil-forge/piri#138
     # init prints it only when stdout is not a terminal, which /dev/null counts
     # as, but the log pipe does not. Nothing is lost: the same bytes are what
-    # init writes to CONFIG_FILE. Progress and every error go to stderr and stay
-    # on the console.
+    # init writes to piri-config.toml. Progress and every error go to stderr and
+    # stay on the console.
     INIT_STATUS=0
     if [ -n "$INIT_SKIPPED" ]; then
         INIT_STATUS=1
     else
         "$@" >/dev/null || INIT_STATUS=$?
     fi
+    # `serve` reads the token from the environment, so CONFIG_FILE gets init's
+    # config without it. The rename keeps a crash from leaving half a config on
+    # the data volume. Whatever init wrote goes there even when it failed, so
+    # the proof set check below sees a proof set a failed run created; the
+    # check puts the old config back after any failure. When init cannot create
+    # the file it prints the config to stdout instead, which goes nowhere, and
+    # still exits 0; that counts as a failed run.
+    if [ -s piri-config.toml ]; then
+        if ! { grep -v '^[[:space:]]*lotus_auth_token[[:space:]]*=' piri-config.toml >"$CONFIG_FILE.new" &&
+               mv "$CONFIG_FILE.new" "$CONFIG_FILE"; }; then
+            echo "ERROR: could not write $CONFIG_FILE from init's output" >&2
+            rm -f "$CONFIG_FILE.new" 2>/dev/null || true
+            INIT_STATUS=1
+        fi
+    elif [ "$INIT_STATUS" -eq 0 ]; then
+        echo "ERROR: piri init wrote no piri-config.toml in $INIT_DIR" >&2
+        INIT_STATUS=1
+    fi
+    rm -f piri-config.toml 2>/dev/null || true
     # 124 or 137: the timeout killed it (137 also covers any other SIGKILL).
     INIT_TIMED_OUT=""
     if [ "$REASON" != "no config yet" ]; then
@@ -301,6 +331,13 @@ else
         fi
         exit 1
     fi
+fi
+
+# Entrypoints before the tmpfs ran init in the data directory and left the
+# token in CONFIG_FILE. A config that skipped init above may still hold it.
+if grep -q '^[[:space:]]*lotus_auth_token[[:space:]]*=' "$CONFIG_FILE"; then
+    echo "  removing the chain RPC token an older init left in the config"
+    sed -i '/^[[:space:]]*lotus_auth_token[[:space:]]*=/d' "$CONFIG_FILE"
 fi
 
 echo "[3/3] Serving"

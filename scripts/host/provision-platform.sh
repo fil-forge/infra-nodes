@@ -249,11 +249,7 @@ prompt_secret() {
   bao_put_if_absent "$path" "$field" "$value"
 }
 
-if [ "${LOTUS_RPC_AUTH_REQUIRED:-true}" = true ]; then
-  prompt_secret external chain_rpc_token "chain.love access token"
-else
-  echo "  local Lotus RPC is unauthenticated"
-fi
+prompt_secret external chain_rpc_token "chain.love access token"
 
 if node_ships_telemetry; then
   prompt_secret external grafana_push_token "Grafana Cloud push token"

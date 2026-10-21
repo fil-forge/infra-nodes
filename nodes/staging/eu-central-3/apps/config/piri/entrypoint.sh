@@ -33,8 +33,13 @@ case "$INIT_TIMEOUT" in
     echo "WARNING: PIRI_INIT_TIMEOUT='$INIT_TIMEOUT' is not a whole number of seconds without leading zeros; using 300" >&2
     INIT_TIMEOUT=300 ;;
 esac
+# `piri init` writes piri-config.toml into its working directory, and the
+# file holds the chain RPC token. Init runs in this tmpfs, so the token never
+# reaches the data disk; only a copy without it does.
+INIT_DIR=/run/piri-init
 
-: "${LOTUS_ENDPOINT:?LOTUS_ENDPOINT must be set}"
+: "${PIRI_PDP_LOTUS_ENDPOINT:?PIRI_PDP_LOTUS_ENDPOINT must be set}"
+: "${PIRI_PDP_LOTUS_AUTH_TOKEN:?PIRI_PDP_LOTUS_AUTH_TOKEN must be set}"
 : "${PUBLIC_URL:?PUBLIC_URL must be set}"
 : "${REGISTRAR_URL:?REGISTRAR_URL must be set}"
 # Passed to both init and serve, so serve uses the current directory even when
@@ -54,7 +59,7 @@ set -- /usr/bin/piri init \
   --temp-dir="$TEMP_DIR" \
   --key-file="$KEY_FILE" \
   --wallet-file="$WALLET_FILE" \
-  --lotus-endpoint="$LOTUS_ENDPOINT" \
+  --lotus-endpoint="$PIRI_PDP_LOTUS_ENDPOINT" \
   --public-url="$PUBLIC_URL" \
   --port="${PORT:-3000}" \
   --host="${HOST:-0.0.0.0}" \
@@ -113,7 +118,11 @@ else
     migration) echo "Running piri init once to write its stamp" ;;
     *) echo "Running piri init: $REASON" ;;
   esac
-  cd "$DATA_DIR"
+  grep -q " $INIT_DIR tmpfs " /proc/mounts ||
+    { echo "ERROR: $INIT_DIR is not a tmpfs; init would write the chain RPC token to disk" >&2; exit 1; }
+  # init writes into the tmpfs; CONFIG_FILE is replaced only once it succeeds.
+  cd "$INIT_DIR"
+  rm -f piri-config.toml
   # Only a re-run is bounded: a first init has no config to fall back to.
   if [ "$REASON" != "no config yet" ]; then
     set -- timeout -s KILL "$INIT_TIMEOUT" "$@"
@@ -136,6 +145,24 @@ else
   else
     "$@" >/dev/null || INIT_STATUS=$?
   fi
+  # `serve` reads the token from the environment, so CONFIG_FILE gets init's
+  # config without it; the rename keeps a crash from leaving half a config on
+  # the disk. It goes there even after a failed run, so the proof set check
+  # below sees a proof set that run created. init falls back to stdout, which
+  # goes to /dev/null, when it cannot create the file, and still exits 0: a
+  # failed run.
+  if [ -s piri-config.toml ]; then
+    if ! { grep -v '^[[:space:]]*lotus_auth_token[[:space:]]*=' piri-config.toml >"$CONFIG_FILE.new" &&
+           mv "$CONFIG_FILE.new" "$CONFIG_FILE"; }; then
+      echo "ERROR: could not write $CONFIG_FILE from init's output" >&2
+      rm -f "$CONFIG_FILE.new" 2>/dev/null || true
+      INIT_STATUS=1
+    fi
+  elif [ "$INIT_STATUS" -eq 0 ]; then
+    echo "ERROR: piri init wrote no piri-config.toml" >&2
+    INIT_STATUS=1
+  fi
+  rm -f piri-config.toml 2>/dev/null || true
   # 124 or 137: the timeout killed it.
   INIT_TIMED_OUT=""
   if [ "$REASON" != "no config yet" ]; then
@@ -190,6 +217,13 @@ else
     fi
     exit 1
   fi
+fi
+
+# A config served without a successful init, or written before init ran in the
+# tmpfs, may still hold the chain RPC token.
+if grep -q '^[[:space:]]*lotus_auth_token[[:space:]]*=' "$CONFIG_FILE"; then
+  echo "Removing the chain RPC token an older init left in the config"
+  sed -i '/^[[:space:]]*lotus_auth_token[[:space:]]*=/d' "$CONFIG_FILE"
 fi
 
 exec /usr/bin/piri serve full --config "$CONFIG_FILE" \
