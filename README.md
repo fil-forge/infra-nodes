@@ -2,11 +2,11 @@
 
 Deployment configuration for FilOne Appliance nodes: the regional half of the Forge network.
 
-An appliance is one Piri storage node and one Ingot S3 gateway, running under Docker Compose on a
-single host, with the local OpenBao and Postgres they need. Dev runs Grafana Alloy in the platform
-project; staging uses the host-owned Alloy service. Central services
-live in [infra-central](https://github.com/fil-forge/infra-central); a node talks to them over public
-HTTPS and unseals its OpenBao against theirs.
+An appliance is one Piri storage node per storage volume and one Ingot S3 gateway in front of them,
+running under Docker Compose on a single host, with the local OpenBao and Postgres they need. Dev
+runs Grafana Alloy in the platform project; staging uses the host-owned Alloy service. Central
+services live in [infra-central](https://github.com/fil-forge/infra-central); a node talks to them
+over public HTTPS and unseals its OpenBao against theirs.
 
 Two nodes: `dev`, an EC2 node in us-east-2 paired with infra-central's dev stage; and
 `staging/eu-central-3`, a bare-metal Servers.com appliance paired with the staging services.
@@ -26,35 +26,39 @@ Two nodes: `dev`, an EC2 node in us-east-2 paired with infra-central's dev stage
 ## How a node fits together
 
 ```
-                    Caddy  (80/443, ACME)
-                      │
-        ┌─────────────┴─────────────┐
- piri-0.<forge>            s3.<region>.<content>
-        │                           │
-      Piri ──────────────────────► Ingot
-        │                           │
-        ├──────── Postgres ─────────┘
-        │              │
-   chain.love      OpenBao ──── unseals against ssm.<forge> (infra-central)
+                         Caddy  (80/443, ACME)
+                           │
+          ┌────────────────┴─────────────┐
+ piri-<n>.<region>.<forge>      s3.<region>.<content>
+          │                              │
+  piri-0, piri-1, piri-2 ◄──────────── Ingot
+          │                              │
+          ├────────── Postgres ──────────┘
+          │              │
+     chain.love      OpenBao ──── unseals against ssm.<forge> (infra-central)
 ```
 
-On the dev node `<forge>` is `latest.dev.fil-forge.com` and `<content>` is
-`latest.dev.filonecontent.com`. Piri and the central services answer on the Forge domain; Ingot
-answers on the content one, and that hostname with `did:web:` in front is the identity central
-addresses its delegation to. Both names come from [RFC 16][rfc-16].
+On the dev node `<forge>` is `latest.dev.fil-forge.com`, `<content>` is
+`latest.dev.filonecontent.com` and `<region>` is `us-east-9`. The Piris and the central services
+answer on the Forge domain; Ingot answers on the content one, and that hostname with `did:web:` in
+front is the identity central addresses its delegation to. Both names come from [RFC 16][rfc-16].
+Each Piri is a storage node of its own, with its own key, wallet and database; sprue spreads
+uploads across them. On dev each Piri also has its own volume, as it will in production, while
+staging's Piris share one data disk.
+[The decision record](docs/decisions/2026-10-multiple-piri-per-appliance.md) explains the layout.
 
 [rfc-16]: https://github.com/fil-one/RFC/blob/main/rfcs/2026-07-forge-service-identities.md
 
 Two Compose projects. **platform** is OpenBao and Postgres; dev also runs Caddy and Alloy there,
 while staging imports its Caddy configuration into the host-owned service and uses its host-owned
-Alloy. **apps** is Piri and Ingot. They are separate because they restart on different terms: an
-apps deploy restarts only the app whose files changed, while a platform deploy that has anything
-to apply stops both apps first, because they run on top of Postgres and Caddy. Both wait for
-Piri's proving window.
+Alloy. **apps** is the Piris and Ingot. They are separate because they restart on different terms:
+an apps deploy restarts only the apps whose files changed, one Piri at a time, while a platform
+deploy that has anything to apply stops all of them first, because they run on top of Postgres and
+Caddy. Both wait for the Piris' proving windows.
 
-Piri, Ingot, Postgres and OpenBao publish no public ports. Dev Caddy reaches the apps on the shared
-`filone` Docker network. On staging, Piri and Ingot bind only to host loopback and the host-owned
-Caddy proxies them; OpenBao is not on the Docker network.
+The Piris, Ingot, Postgres and OpenBao publish no public ports. Dev Caddy reaches the apps on the
+shared `filone` Docker network. On staging, the Piris and Ingot bind only to host loopback and the
+host-owned Caddy proxies them; OpenBao is not on the Docker network.
 
 ## Repository layout
 
@@ -63,7 +67,7 @@ terraform/
   modules/
     shared/constants/   account ids, the Route53 zones, the state bucket name
     tfstate/            the state bucket, created by the bootstrap root
-    node/               a node: EC2, two EBS volumes, an Elastic IP, a security
+    node/               a node: EC2, its EBS volumes, an Elastic IP, a security
                         group, DNS, IAM, and the cloud-init that prepares the box
   envs/
     bootstrap/nonprod/  applied by hand, once per account
@@ -74,7 +78,7 @@ nodes/
   dev/
     node.env            everything about this node that is not a secret
     platform/           OpenBao, Postgres, Caddy, Alloy
-    apps/               Piri, Ingot
+    apps/               the Piris, Ingot
   staging/
     eu-central-3/       the same three, for the staging appliance
 scripts/
@@ -108,8 +112,8 @@ An image bump starts in the service repository rather than here. When piri or in
 in `nodes/dev/apps/versions.env` and opens a pull request with auto-merge armed. The required checks
 still gate it. Merging queues the image; the node deploys it on its next pass.
 
-An apps deploy waits for `piri status upgrade-check` to report a safe window before restarting Piri,
-so an image bump never costs a proof. The gate runs in dev too — a mechanism that only runs in
+An apps deploy waits for `piri status upgrade-check` to report a safe window before restarting each
+Piri, so an image bump never costs a proof. The gate runs in dev too — a mechanism that only runs in
 production is a mechanism nobody has tested.
 
 Each completed pass stamps `deploy_last_success_timestamp`, which Alloy ships to Grafana Cloud. It
@@ -117,10 +121,11 @@ is stamped even when nothing was deployed, because it exists to go stale when th
 reconciling.
 
 The node also publishes what it is running, at
-`https://<piri hostname>/.well-known/filone-node-status.json`: the commit each pass and each project
-last stamped, and the image digests the two containers are actually on. `reconcile` is the commit the
-node has reached, stamped on every pass; `apps` and `platform` move only when that project deploys.
-The digests are read off the containers, so a pin the node never applied shows up as a mismatch.
+`https://<every piri hostname>/.well-known/filone-node-status.json`: the commit each pass and each
+project last stamped, and the image digest each Piri and Ingot is actually on. `reconcile` is the
+commit the node has reached, stamped on every pass; `apps` and `platform` move only when that
+project deploys. The digests are read off the containers, so a pin the node never applied shows up
+as a mismatch.
 
 ## Secrets
 
@@ -164,13 +169,14 @@ produce itself, and neither needs a credential for the other's account.
 The instance is disposable. Terminating and replacing it loses the OS, the images and the checkout,
 all of which are rebuilt from this repository.
 
-`prevent_destroy` is on the two EBS volumes and the Elastic IP:
+`prevent_destroy` is on the EBS volumes and the Elastic IP:
 
 - the **control volume** holds the node's identity, its Postgres data and its certificates
-- the **data volume** holds Piri's blobs and Ingot's spool
-- the **Elastic IP** is what the unseal token is bound to and what both hostnames resolve to
+- the **data volume** holds Ingot's spool
+- each **Piri volume** holds that Piri's blobs
+- the **Elastic IP** is what the unseal token is bound to and what every hostname resolves to
 
-Losing the control volume loses the node's keys, which means a new Piri DID and a full
+Losing the control volume loses the node's keys, which means new Piri DIDs and a full
 re-onboarding at central. Ingot's `did:web` is derived from the region label and the content domain,
 both of which central holds, so a rebuilt node publishes a new key under the same DID and central's
 delegation to it survives. Dev takes no backups, by decision.

@@ -104,6 +104,7 @@ The node's identity survives the reset:
 
 sprue is empty after the reset, so all three Piris are onboarded from scratch, piri-0 at its new
 URL. Each Piri creates a new proof set when it first starts. piri-0's old data set faults and is
-left to fault, with about 0.9 USDFC of the payer's lockup stranded in it. Piri's on-chain
-registration carries only its DID and is found again by wallet address, so nothing else changes on
-chain.
+left to fault. Its payment rail stays active until someone terminates it at central, so until then
+the payer keeps paying about 0.03 USDFC a day for it and its lockup of about 0.9 USDFC stays tied
+up. Piri's on-chain registration carries only its DID and is found again by wallet address, so
+nothing else changes on chain.
