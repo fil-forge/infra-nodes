@@ -108,18 +108,34 @@ generate_identity ingot
 # sitting in OpenBao; without a recorded audience to compare against, a stale
 # proof would look "already issued" forever while every call it backs is
 # addressed to a DID sprue no longer answers to.
+#
+# The commands travel with it for the same reason: sprue invokes each of them
+# on Piri, and one added here does not reach a proof issued before it.
 echo "[2/4] Piri delegations to sprue"
+sprue_proof_commands=(
+  /blob/allocate
+  /blob/accept
+  /blob/release
+  /blob/reject
+  /blob/replica/allocate
+  /pdp/info
+)
+
 issue_sprue_proof() {
-  local service="$1" pem proof
+  local service="$1" commands pem proof cmd
+  local -a command_flags=()
+  commands="${sprue_proof_commands[*]}"
 
   if bao_has "$service" sprue_proof && bao_has "$service" sprue_proof_audience &&
-    [ "$(bao_get "$service" sprue_proof_audience)" = "$SPRUE_DID" ]; then
+    bao_has "$service" sprue_proof_commands &&
+    [ "$(bao_get "$service" sprue_proof_audience)" = "$SPRUE_DID" ] &&
+    [ "$(bao_get "$service" sprue_proof_commands)" = "$commands" ]; then
     echo "  $service: already issued"
     return 0
   fi
 
   if bao_has "$service" sprue_proof; then
-    echo "  $service: stored delegation predates SPRUE_DID=$SPRUE_DID; reissuing"
+    echo "  $service: stored delegation predates SPRUE_DID=$SPRUE_DID or commands \"$commands\"; reissuing"
   fi
 
   pem="$WORK_DIR/$service-signing.pem"
@@ -131,19 +147,18 @@ issue_sprue_proof() {
   # No expiration: the delegation authorises Piri's ongoing relationship with
   # sprue, and one that expires takes the node's uploads down at a moment
   # nobody chose. Revocation is by removing the provider at sprue.
+  for cmd in "${sprue_proof_commands[@]}"; do
+    command_flags+=("--command=$cmd")
+  done
   proof="$(ucantool delegate \
     --issuer-private-key-file="$pem" \
     --audience="$SPRUE_DID" \
-    --command=/blob/allocate \
-    --command=/blob/accept \
-    --command=/blob/release \
-    --command=/blob/reject \
-    --command=/blob/replica/allocate \
-    --command=/pdp/info \
+    "${command_flags[@]}" \
     --container=base64+gzip)"
 
   rm -f "$pem"
-  bao_replace_fields "$service" sprue_proof "$proof" sprue_proof_audience "$SPRUE_DID"
+  bao_replace_fields "$service" sprue_proof "$proof" sprue_proof_audience "$SPRUE_DID" \
+    sprue_proof_commands "$commands"
   echo "  $service: issued"
 }
 
