@@ -100,7 +100,7 @@ with this node's own values:
 | Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
 | Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>` | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
 | Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` |
-| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | neither: Lotus RPC is local and unauthenticated, Alloy is the host's |
+| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | the chain.love token; Alloy is the host's |
 
 #### The dev node on EC2
 
@@ -159,7 +159,7 @@ scripts/host/bootstrap-staging-eu-central-3.sh
 ```
 
 Bootstrap creates only FilOne directories, tmpfs paths, the shared Docker
-network, node config, systemd units, the Caddy import and the three FilOne UFW
+network, node config, systemd units, the Caddy import and the two FilOne UFW
 rules. The `filone` network uses the fixed `172.18.0.0/16` subnet. Bootstrap
 stops if an existing network with that name uses another subnet. It validates
 the combined host Caddy configuration before reloading `caddy-guppy`.
@@ -183,29 +183,32 @@ Confirm both source-subnet rules are present after bootstrap:
 ```sh
 ufw allow from 172.18.0.0/16 to any port 443 proto tcp \
   comment 'FilOne Docker to host Caddy'
-ufw allow from 172.18.0.0/16 to any port 1234 proto tcp \
-  comment 'FilOne Docker to host Lotus RPC'
+ufw allow from 172.18.0.0/16 to any port 4318 proto tcp \
+  comment 'FilOne Docker to host Alloy OTLP'
 ufw status numbered
 ```
 
-The two rules let Piri call its public Ingot URL and the host-owned Lotus RPC.
-Do not allow TCP 1234 from the public internet. Remove old FilOne rules tied to
-`docker0` or another Docker bridge after confirming these source-subnet rules.
+The two rules let Piri call its public Ingot URL and send telemetry to the host's Alloy. Remove old
+FilOne rules tied to `docker0` or another Docker bridge after confirming these source-subnet rules.
 
-Confirm that a container can call Lotus with a one-shot JSON-RPC request:
+Piri dials Chain.Love for chain RPC. Staging has its own chain.love token,
+separate from dev's, in OpenBao at `external#chain_rpc_token`. Confirm the token works with a
+one-shot JSON-RPC request; the token goes in through a file descriptor, so it never appears in a
+command line:
 
 ```sh
-docker run --rm --network filone \
-  --add-host host.docker.internal:host-gateway curlimages/curl \
-  --fail --show-error --max-time 10 \
+token="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
+  filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
+curl --fail --show-error --max-time 10 \
+  -H @<(printf 'Authorization: Bearer %s\n' "$token") \
   -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","method":"Filecoin.Version","params":[],"id":1}' \
-  http://host.docker.internal:1234/rpc/v1
+  https://calibration.filecoin.chain.love/rpc/v1
+unset token
 ```
 
-The response contains the Lotus version. Do not use `curl ws://…` for this
-check: a WebSocket stays open after connecting, so curl waits for the server to
-close it.
+The response contains the node version. Do not use `curl wss://…` for this check: a WebSocket stays
+open after connecting, so curl waits for the server to close it.
 
 Confirm the same network can reach the host-owned Caddy listener:
 
@@ -216,6 +219,39 @@ docker run --rm --network filone \
   --connect-to s3.eu-central-3.staging.filonecontent.com:443:host.docker.internal:443 \
   https://s3.eu-central-3.staging.filonecontent.com/health
 ```
+
+A host bootstrapped while staging still used its Lotus carries a third rule, for TCP 1234, and no
+chain.love token. Move it over in this order, because `deploy-apps.sh` stops when the token is
+missing:
+
+1. Store the token. `external` holds nothing else on this host, so `put` replaces nothing; check
+   that first:
+
+   ```sh
+   bao_exec() {
+     docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
+       filone-openbao bao "$@"
+   }
+   bao_exec kv get -mount=filone external   # expect "No value found"
+   read -rsp 'chain.love token: ' token; echo
+   bao_exec kv put -mount=filone external chain_rpc_token=- <<<"$token"
+   unset token
+   ```
+
+2. Deploy the commit that moved staging to Chain.Love with `scripts/host/deploy-apps.sh`. The same
+   commit changed a comment in the base config, so each Piri re-runs `piri init` against Chain.Love
+   as it restarts. They restart one at a time.
+3. Confirm each Piri is healthy, that none still holds a connection to the host's Lotus, and that
+   no token is left on the data disk:
+
+   ```sh
+   docker ps --filter name=filone-piri                                       # all three healthy
+   ss -tn state established '( sport = :1234 )' | grep 172.18.             # expect no output
+   grep -l lotus_auth_token /mnt/data/fil-one/data/piri-*/piri-config.toml   # expect no output
+   ```
+
+4. Delete the TCP 1234 rule: `ufw status numbered`, then `ufw delete <n>` for the rule commented
+   `FilOne Docker to host Lotus RPC`.
 
 The host-owned Alloy ships the FilOne container logs and the host's metrics, and
 its configuration is maintained outside this repository. The appliance's output
@@ -1215,6 +1251,13 @@ because the 5 is the transaction's value and the gas comes out of the same walle
 OpenBao is wrong or expired; rotate it there and re-run `deploy-apps.sh`. Piri sends the token
 itself, from `PIRI_PDP_LOTUS_AUTH_TOKEN`, so check that the variable actually reached the container:
 `docker inspect filone-piri-0` shows its environment.
+
+A Piri that stays up after the provider starts rejecting its token keeps the old token until it is
+recreated. The proving gate asks that Piri whether a restart is safe, the Piri cannot reach the
+chain to answer, and the deploy waits out the gate's timeout before it aborts. Such a Piri cannot
+submit a proof either, so stopping it first costs nothing: rotate the token, run
+`docker stop filone-piri-<n>` for each Piri the gate reports as "cannot determine", then re-run
+`deploy-apps.sh`.
 
 ### The node rebooted
 
