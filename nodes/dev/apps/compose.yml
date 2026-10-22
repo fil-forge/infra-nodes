@@ -81,7 +81,14 @@ services:
       # The password reaches the container's environment, where `docker
       # inspect` shows it to root. Piri takes its DSN as one string and has no
       # file option, so the alternative is a file with the same string in it.
-      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_0?sslmode=disable
+      # pool_max_conns sizes the PDP pipeline's connection pool (blob/accept
+      # and the task scheduler), which otherwise defaults to one connection per
+      # CPU core, minimum four. 16 per Piri keeps the three of them at 48 of
+      # Postgres's default 100 connections, with the rest for Ingot and admin
+      # sessions. The entrypoint passes the URL to `piri init`, which writes it
+      # into the generated config, so a change here only reaches a running node
+      # when init re-runs (see the base config template).
+      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_0?sslmode=disable&pool_max_conns=16
       # Names this Piri in its metrics and traces. Without it, instance is the
       # Piri's DID, and nothing says which DID is piri-0.
       OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${FILONE_NODE}/piri-0
@@ -114,7 +121,7 @@ services:
     environment:
       <<: *piri-environment
       PUBLIC_URL: https://piri-1.${PIRI_HOSTNAME_SUFFIX}
-      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_1?sslmode=disable
+      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_1?sslmode=disable&pool_max_conns=16
       OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${FILONE_NODE}/piri-1
     volumes:
       - type: bind
@@ -147,7 +154,7 @@ services:
     environment:
       <<: *piri-environment
       PUBLIC_URL: https://piri-2.${PIRI_HOSTNAME_SUFFIX}
-      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_2?sslmode=disable
+      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_2?sslmode=disable&pool_max_conns=16
       OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${FILONE_NODE}/piri-2
     volumes:
       - type: bind
