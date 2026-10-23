@@ -1299,8 +1299,9 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
    The `piri` commands below run there, because they read `piri-config.toml` from the current
    directory. Anywhere else they need `--config /data/piri/piri-config.toml`, or they stop on a
    config error before reaching the node. Keep a second terminal on the host, with the same `n`
-   set, for the steps that say "on the host". If `docker exec` says the container is not running,
-   restart it as in step 4's **Anything else** bullet.
+   set, for the steps that say "on the host". If `docker exec` says the container is not running
+   or is restarting, restart it as in step 4's **Anything else** bullet, then come back to this
+   step.
 3. The commands each entry uses:
 
    | To see | Run |
@@ -1324,12 +1325,11 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
    - **Anything else:** restart Piri on the host, `docker restart filone-piri-$n`. It can show
      `health: starting` in `docker ps` for about eight minutes, or longer if its probes time out,
      before Docker marks it `unhealthy`.
-     - **It becomes healthy and the error is gone:** come back to the entry you started from.
-     - **The restart fails, or it ends `unhealthy` or keeps restarting:** read the error `docker
-       restart` printed, or `docker inspect -f '{{.State.Error}}' filone-piri-$n`, and `docker logs
-       filone-piri-$n`. `bind source path does not exist` or `is a directory` means the node has
-       rebooted: follow [The node rebooted](#the-node-rebooted). Otherwise record both on the
-       incident.
+     - **It becomes healthy and the error is gone:** come back to where you started from.
+     - **The restart fails, or it ends `unhealthy` or keeps restarting:** on the host, run `ls -ld
+       /run/fil-one/secrets/piri-$n.pem`. If it's missing, or is a directory, the node has
+       rebooted: follow [The node rebooted](#the-node-rebooted). Otherwise record the error `docker
+       restart` printed and `docker logs filone-piri-$n` on the incident.
      - **It becomes healthy but the error comes back:** record the error in full on the incident.
 5. The task logs are read on the host, not in the container. Prove tasks:
 
