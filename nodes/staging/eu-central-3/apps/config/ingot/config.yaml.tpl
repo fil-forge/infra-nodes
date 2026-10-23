@@ -6,6 +6,8 @@ cors_allowed_origins:
   - "https://staging.fil.one"
   - "https://staging.filone.ai"
   - "https://*.dev.fil.one"
+  # Fil One's console on a local stack (Vite on floci, a local AWS emulator),
+  # which Fil One's E2E jobs drive.
   - "https://localhost:5173"
 identity:
   key_file: /keys/ingot.pem
