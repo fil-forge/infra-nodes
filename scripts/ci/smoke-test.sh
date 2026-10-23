@@ -24,7 +24,9 @@
 # Without the flag the node is checked as it stands.
 #
 # The hostnames come from nodes/<node>/node.env, so they are the ones Caddy
-# holds certificates for.
+# holds certificates for. The Piris are the services nodes/<node>/apps/compose.yml
+# defined at the revision the node deployed apps from; each answers at
+# piri-<n>.$PIRI_HOSTNAME_SUFFIX, or a node with a single `piri` at $PIRI_HOSTNAME.
 #
 # Prerequisites:
 #   - curl, jq, and a git work tree deep enough to hold the revisions compared
@@ -59,15 +61,33 @@ cd "$ROOT"
 
 NODE_ENV="nodes/$NODE/node.env"
 PINS="nodes/$NODE/apps/versions.env"
+COMPOSE="nodes/$NODE/apps/compose.yml"
 [ -f "$NODE_ENV" ] || { echo "ERROR: no such node '$NODE': $NODE_ENV does not exist" >&2; exit 1; }
 
 read_env() { sed -nE "s/^$1=(.*)\$/\1/p" "$NODE_ENV" | tail -1; }
+PIRI_HOSTNAME_SUFFIX="$(read_env PIRI_HOSTNAME_SUFFIX)"
 PIRI_HOSTNAME="$(read_env PIRI_HOSTNAME)"
 INGOT_HOSTNAME="$(read_env INGOT_HOSTNAME)"
-[ -n "$PIRI_HOSTNAME" ] || { echo "ERROR: no PIRI_HOSTNAME in $NODE_ENV" >&2; exit 1; }
 [ -n "$INGOT_HOSTNAME" ] || { echo "ERROR: no INGOT_HOSTNAME in $NODE_ENV" >&2; exit 1; }
 
-STATUS_URL="https://$PIRI_HOSTNAME/.well-known/filone-node-status.json"
+# The Piri services in a compose file read on stdin, in index order. The
+# services are the two-space-indented keys under `services:`.
+piri_services_in() { sed -nE 's/^  (piri(-[0-9]+)?):[[:space:]]*$/\1/p' | sort -V; }
+
+# shellcheck disable=SC2207 # one service name per word
+CHECKOUT_PIRIS=($(piri_services_in <"$COMPOSE"))
+[ "${#CHECKOUT_PIRIS[@]}" -gt 0 ] || { echo "ERROR: $COMPOSE defines no Piri service" >&2; exit 1; }
+
+piri_hostname() {
+  if [ -n "$PIRI_HOSTNAME_SUFFIX" ]; then
+    echo "$1.$PIRI_HOSTNAME_SUFFIX"
+  elif [ "$1" = piri ] && [ -n "$PIRI_HOSTNAME" ]; then
+    echo "$PIRI_HOSTNAME"
+  else
+    echo "ERROR: $NODE_ENV has no PIRI_HOSTNAME_SUFFIX to name $1 by" >&2
+    exit 1
+  fi
+}
 
 # Every request is bounded. A hung smoke test is worse than a failing one.
 #
@@ -75,25 +95,55 @@ STATUS_URL="https://$PIRI_HOSTNAME/.well-known/filone-node-status.json"
 # results, and every failure below already names the URL and the reason.
 CURL=(curl --silent --max-time 10)
 
+# Every Piri hostname serves the document. It is read first, from the first
+# Piri the checkout names, because it says which Piris to check: the ones
+# compose.yml defined at the revision the node deployed apps from. A merge that
+# adds a Piri reaches the checkout before the node deploys it, and the proving
+# gate can hold that deploy for 45 minutes.
+#
+# When the document gives no usable revision, the Piris the checkout names are
+# checked instead, and check_status reports why.
+STATUS_URL="https://$(piri_hostname "${CHECKOUT_PIRIS[0]}")/.well-known/filone-node-status.json"
+STATUS_BODY="$("${CURL[@]}" --fail "$STATUS_URL" 2>/dev/null || true)"
+DEPLOYED="$(jq -r '.projects.apps.revision // empty' <<<"$STATUS_BODY" 2>/dev/null || true)"
+
+PIRIS=()
+if [ -n "$DEPLOYED" ] && git cat-file -e "$DEPLOYED:$COMPOSE" 2>/dev/null; then
+  # shellcheck disable=SC2207 # one service name per word
+  PIRIS=($(git show "$DEPLOYED:$COMPOSE" | piri_services_in))
+fi
+[ "${#PIRIS[@]}" -gt 0 ] || PIRIS=("${CHECKOUT_PIRIS[@]}")
+for service in "${PIRIS[@]}"; do piri_hostname "$service" >/dev/null; done
+
 PASS='  ✓'
 FAIL='  ✗'
 
 pass() { printf '%s %s\n' "$PASS" "$1"; }
 fail() { printf '%s %s\n' "$FAIL" "$1"; }
 
-# check_piri — 200 with .status == "ok", the same condition Piri's own container
-# health check uses, now asked over the public path.
+# check_piri <service> — 200 with .status == "ok", the same condition Piri's own
+# container health check uses, now asked over the public path. And the status
+# document is served on that hostname too.
 check_piri() {
-  local url="https://$PIRI_HOSTNAME/readyz" body status
+  local host url body status
+  host="$(piri_hostname "$1")"
+  url="https://$host/readyz"
   if ! body="$("${CURL[@]}" --fail "$url" 2>/dev/null)"; then
     fail "$url — not served (DNS, TLS, HTTP error or timeout)"
-    return
-  fi
-  status="$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)"
-  if [ "$status" = ok ]; then
-    pass "$url — status ok"
   else
-    fail "$url — reports status '${status:-none}', expected ok"
+    status="$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)"
+    if [ "$status" = ok ]; then
+      pass "$url — status ok"
+    else
+      fail "$url — reports status '${status:-none}', expected ok"
+    fi
+  fi
+
+  url="https://$host/.well-known/filone-node-status.json"
+  if "${CURL[@]}" --fail --output /dev/null "$url" 2>/dev/null; then
+    pass "$url — served"
+  else
+    fail "$url — not served"
   fi
 }
 
@@ -127,9 +177,9 @@ pin_at() {
 # deployed nothing. `apps` moves only when the apps project deploys, and it is
 # the revision the running digests have to be compared against.
 check_status() {
-  local body reached deployed service key want got
+  local body="$STATUS_BODY" reached deployed service key want got deployed_piris
 
-  if ! body="$("${CURL[@]}" --fail "$STATUS_URL" 2>/dev/null)"; then
+  if [ -z "$body" ]; then
     fail "$STATUS_URL — not served"
     return
   fi
@@ -169,9 +219,18 @@ check_status() {
   # Against the pins at the revision apps was deployed from, not the working
   # tree. A merge that changed neither compose project leaves apps where it was,
   # so the working tree is routinely ahead of it and comparing against that would
-  # fail every honest node.
-  for service in piri ingot; do
-    key="$(tr '[:lower:]' '[:upper:]' <<<"$service")_IMAGE"
+  # fail every honest node. The Piris to compare are the ones compose.yml defined
+  # at that revision too, and all of them run the one PIRI_IMAGE pin.
+  deployed_piris="$(git show "$deployed:$COMPOSE" 2>/dev/null | piri_services_in || true)"
+  if [ -z "$deployed_piris" ]; then
+    fail "apps — $COMPOSE at ${deployed:0:7} defines no Piri service"
+    return
+  fi
+  for service in $deployed_piris ingot; do
+    case "$service" in
+      piri*) key=PIRI_IMAGE ;;
+      *) key="$(tr '[:lower:]' '[:upper:]' <<<"$service")_IMAGE" ;;
+    esac
     want="$(pin_at "$deployed" "$key")"
     got="$(jq -r --arg service "$service" '.images[$service] // empty' <<<"$body" 2>/dev/null || true)"
     got="${got##*@}"
@@ -189,8 +248,10 @@ check_status() {
 }
 
 echo "=== Smoke-test the $NODE node ==="
-echo "  Piri:  https://$PIRI_HOSTNAME"
-echo "  Ingot: https://$INGOT_HOSTNAME"
+for service in "${PIRIS[@]}"; do
+  echo "  $service: https://$(piri_hostname "$service")"
+done
+echo "  ingot: https://$INGOT_HOSTNAME"
 [ -z "$REVISION" ] || echo "  Waiting on revision ${REVISION:0:7} or a descendant"
 echo
 
@@ -199,14 +260,21 @@ echo
 # and three of those in sequence is half a minute of nothing. Each job writes to
 # its own file and the results are printed in table order afterwards, so a
 # parallel run reads exactly like a sequential one.
-CHECKS=("piri:Piri" "ingot:Ingot" "status:Node status")
+#
+# Each entry is <result file>:<label>:<check function> [argument].
+CHECKS=()
+for service in "${PIRIS[@]}"; do
+  CHECKS+=("$service:Piri ($service):check_piri $service")
+done
+CHECKS+=("ingot:Ingot:check_ingot" "status:Node status:check_status")
 
 results="$(mktemp -d "${TMPDIR:-/tmp}/filone-smoke.XXXXXX")"
 trap 'rm -rf "$results"' EXIT
 
 pids=()
 for entry in "${CHECKS[@]}"; do
-  "check_${entry%%:*}" >"$results/${entry%%:*}" 2>&1 &
+  # shellcheck disable=SC2086 # the function name and its argument
+  ${entry##*:} >"$results/${entry%%:*}" 2>&1 &
   pids+=("$!")
 done
 
@@ -220,7 +288,8 @@ for i in "${!CHECKS[@]}"; do
 done
 
 for entry in "${CHECKS[@]}"; do
-  echo "${entry#*:}"
+  label="${entry#*:}"
+  echo "${label%%:*}"
   cat "$results/${entry%%:*}"
   echo
 done

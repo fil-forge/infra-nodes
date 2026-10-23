@@ -10,6 +10,11 @@ snippet directly from `/root/fil-one/infra-nodes`, validates the combined config
 `127.0.0.1:15200`.
 Forge services on this host keep to ports 15000-15999, the range the Smelt deployment used. The
 host's other workloads sit on common defaults, and Guppy already listens on 3000.
+
+UPDATE: Staging now runs three Piris, at `piri-<n>.eu-central-3.staging.fil-forge.com` and
+`127.0.0.1:15100` to `15102`; see
+[An appliance runs one Piri per storage volume](2026-10-multiple-piri-per-appliance.md).
+
 Their Docker network uses the fixed `172.18.0.0/16` subnet. Source-subnet UFW rules permit that
 network to reach the host's TCP 443 Caddy listener and TCP 1234 Lotus RPC listener without depending
 on Docker's generated bridge name.
@@ -22,5 +27,12 @@ role or other AWS host resource. Appliance control state and data live in separa
 `/mnt/data/fil-one/control` and `/mnt/data/fil-one/data`.
 
 Piri reaches the host's Lotus RPC through `host.docker.internal:1234` without an authorization
-token. Staging has no Indexer/IPNI configuration. Indexer and Swarf identities remain registered
+token.
+
+UPDATE (2026-10): Staging no longer uses the host's Lotus. Its Piris dial Chain.Love at
+`wss://calibration.filecoin.chain.love/ws/rpc/v1` with a staging token of their own, the same way
+dev does, so the appliance stops depending on a host workload FilOne does not own. The host keeps
+its Lotus for its own workloads, and the TCP 1234 UFW rule is gone.
+
+Staging has no Indexer/IPNI configuration. Indexer and Swarf identities remain registered
 centrally and are not appliance dependencies.

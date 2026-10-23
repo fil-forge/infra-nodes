@@ -21,11 +21,14 @@ region: ${REGION_LABEL}
 data_dir: /data
 log_level: info
 
-# Browser origins the S3 listener answers CORS for.
+# Browser origins the S3 listener answers CORS for. Matching is over the raw
+# Origin header, so the localhost entry's wildcard is what covers a dev
+# server's port; it matches no other host.
 cors_allowed_origins:
   - "https://staging.fil.one"
   - "https://staging.filone.ai"
   - "https://*.dev.fil.one"
+  - "http://localhost:*"
   - "https://localhost:5173"
 
 # Ingot signs as this did:web and serves the matching document at

@@ -1,88 +1,177 @@
-# The two services this node exists to run: Piri, the storage node, and Ingot,
-# the S3 gateway in front of it.
+# The services this node exists to run: the Piris, one storage node per storage
+# volume, and Ingot, the S3 gateway in front of them.
 #
-# Separate from the platform project because these two are the ones that cannot
-# restart at an arbitrary moment. Piri restarting during its challenge window
+# Separate from the platform project because these are the ones that cannot
+# restart at an arbitrary moment. A Piri restarting during its challenge window
 # means a missed proof, so deploy-apps.sh waits for the window to pass. A
-# platform deploy with something to apply waits on the same gate and stops both
+# platform deploy with something to apply waits on the same gate and stops all
 # of these while it works.
 #
-# Neither publishes a port. Caddy, in the platform project, is the only listener
-# on a public interface, and it reaches both over the shared filone network.
+# None publishes a port. Caddy, in the platform project, is the only listener on
+# a public interface, and it reaches them over the shared filone network.
 name: filone-apps
 
+# What every Piri shares. Compose ignores a top-level key only when it starts
+# with `x-`, which marks it as an extension field; the rest of the name is free.
+# Each service below merges this in with `<<: *piri-base` and adds what is its
+# own: its name, its URL, its database, its key and wallet, and its volume.
+x-piri-base: &piri-base
+  image: ${PIRI_IMAGE}
+  # The image runs as `nobody`, the rendered key files are 0400 root and the
+  # data directory on the volume is root-owned, so a non-root process can
+  # neither read its identity nor write its blobs.
+  user: "0:0"
+  entrypoint: ["/entrypoint.sh"]
+  # Where `piri init` writes its config, which holds the chain RPC token. The
+  # entrypoint copies it to the data volume without the token.
+  tmpfs: ["/run/piri-init:mode=0700"]
+  environment: &piri-environment
+    # Piri reads both as overrides of its `[pdp]` config, so `piri serve`
+    # dials this endpoint even when the piri-config.toml on the data volume
+    # was generated for another one.
+    PIRI_PDP_LOTUS_ENDPOINT: ${LOTUS_RPC_URL}
+    # Hosted RPC providers want an Authorization header, and Piri sends one
+    # from this. The raw token; Piri prepends "Bearer ". Passed by environment
+    # rather than written into the config, because `piri init` writes the
+    # config it generates onto the data volume and echoes it to stdout, where
+    # Alloy would ship it to Grafana Cloud. The setting has no CLI flag for
+    # the same family of reasons. The entrypoint keeps it out of the config on
+    # the data volume.
+    PIRI_PDP_LOTUS_AUTH_TOKEN: ${CHAIN_RPC_TOKEN}
+    PORT: "3000"
+    HOST: 0.0.0.0
+    REGISTRAR_URL: ${REGISTRAR_URL}
+    # The same variable Ingot's config is rendered from, so the services on
+    # this host resolve tenant did:plc identities from one directory. Left
+    # out, Piri falls back to the public plc.directory and rejects every
+    # tenant this stage minted.
+    PLC_DIRECTORY_URL: ${PLC_DIRECTORY_URL}
+    OPERATOR_EMAIL: ${OPERATOR_EMAIL}
+    PIRI_DB_BACKEND: postgres
+    PIRI_BLOB_BACKEND: filesystem
+  healthcheck:
+    test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/readyz | grep -qE '\"status\":[[:space:]]*\"ok\"'"]
+    start_interval: 2s
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    # First boot runs `piri init`, which talks to the registrar and the chain.
+    start_period: 180s
+  restart: unless-stopped
+  networks: [filone]
+
 services:
-  piri:
-    image: ${PIRI_IMAGE}
-    container_name: filone-piri
-    # The image runs as `nobody`, the rendered key files are 0400 root and the
-    # data directory on the volume is root-owned, so a non-root process can
-    # neither read its identity nor write its blobs.
-    user: "0:0"
-    entrypoint: ["/entrypoint.sh"]
+  # Each Piri's mounts. The key, wallet and base config are rendered from
+  # OpenBao into a root-only tmpfs by deploy-apps.sh. Nothing there survives a
+  # reboot, so when Docker restarts a container at boot the files are missing.
+  # create_host_path: false makes that a start that fails; the default would put
+  # an empty directory where each file belongs, and every later render would
+  # land inside it. Run deploy-apps.sh after a reboot to render the files and
+  # recreate the containers. The blobs and the config `piri init` writes go on
+  # the Piri's own EBS volume.
+  piri-0:
+    <<: *piri-base
+    container_name: filone-piri-0
     environment:
-      - LOTUS_ENDPOINT=${LOTUS_RPC_URL}
-      # Hosted RPC providers want an Authorization header, and Piri sends one
-      # from this. The raw token; Piri prepends "Bearer ". Passed by environment
-      # rather than written into the config, because `piri init` writes the
-      # config it generates onto the data volume and echoes it to stdout, where
-      # Alloy would ship it to Grafana Cloud. The setting has no CLI flag for
-      # the same family of reasons.
-      - PIRI_PDP_LOTUS_AUTH_TOKEN=${CHAIN_RPC_TOKEN}
-      - PUBLIC_URL=${PIRI_PUBLIC_URL}
-      - PORT=3000
-      - HOST=0.0.0.0
-      - REGISTRAR_URL=${REGISTRAR_URL}
-      # The same variable Ingot's config is rendered from, so the two services
-      # on this host resolve tenant did:plc identities from one directory. Left
-      # out, Piri falls back to the public plc.directory and rejects every
-      # tenant this stage minted.
-      - PLC_DIRECTORY_URL=${PLC_DIRECTORY_URL}
-      - OPERATOR_EMAIL=${OPERATOR_EMAIL}
-      - PIRI_DB_BACKEND=postgres
-      # The password reaches the container's environment, where `docker inspect`
-      # shows it to root. Piri takes its DSN as one string and has no file
-      # option, so the alternative is a file with the same string in it.
-      - PIRI_DB_POSTGRES_URL=postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri?sslmode=disable
-      - PIRI_BLOB_BACKEND=filesystem
+      <<: *piri-environment
+      PUBLIC_URL: https://piri-0.${PIRI_HOSTNAME_SUFFIX}
+      # The password reaches the container's environment, where `docker
+      # inspect` shows it to root. Piri takes its DSN as one string and has no
+      # file option, so the alternative is a file with the same string in it.
+      # pool_max_conns sizes the PDP pipeline's connection pool (blob/accept
+      # and the task scheduler), which otherwise defaults to one connection per
+      # CPU core, minimum four. 16 per Piri keeps the three of them at 48 of
+      # Postgres's default 100 connections, with the rest for Ingot and admin
+      # sessions. The entrypoint passes the URL to `piri init`, which writes it
+      # into the generated config, so a change here only reaches a running node
+      # when init re-runs (see the base config template).
+      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_0?sslmode=disable&pool_max_conns=16
+      # Names this Piri in its metrics and traces. Without it, instance is the
+      # Piri's DID, and nothing says which DID is piri-0.
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${FILONE_NODE}/piri-0
     volumes:
-      # Rendered from OpenBao into a root-only tmpfs by deploy-apps.sh. Nothing
-      # here survives a reboot, so when Docker restarts this container at boot
-      # the files are missing. create_host_path: false makes that a start that
-      # fails; the default would put an empty directory where each file belongs,
-      # and every later render would land inside it. Run deploy-apps.sh after a
-      # reboot to render the files and recreate the container.
       - type: bind
-        source: /run/fil-one/secrets/piri.pem
+        source: /run/fil-one/secrets/piri-0.pem
         target: /keys/piri.pem
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: /run/fil-one/secrets/piri-owner-wallet.hex
+        source: /run/fil-one/secrets/piri-0-owner-wallet.hex
         target: /keys/owner-wallet.hex
         read_only: true
         bind:
           create_host_path: false
-      - type: bind
+      - &piri-base-config
+        type: bind
         source: /run/fil-one/secrets/piri-base-config.toml
         target: /config/piri-base-config.toml
         read_only: true
         bind:
           create_host_path: false
-      - ./config/piri/entrypoint.sh:/entrypoint.sh:ro
-      # Blobs and the config `piri init` writes, on the data volume.
-      - /mnt/fil-one/data/piri:/data/piri
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/readyz | grep -qE '\"status\":[[:space:]]*\"ok\"'"]
-      start_interval: 2s
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      # First boot runs `piri init`, which talks to the registrar and the chain.
-      start_period: 180s
-    restart: unless-stopped
-    networks: [filone]
+      - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
+      - /mnt/fil-one/piri-0:/data/piri
+
+  piri-1:
+    <<: *piri-base
+    container_name: filone-piri-1
+    environment:
+      <<: *piri-environment
+      PUBLIC_URL: https://piri-1.${PIRI_HOSTNAME_SUFFIX}
+      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_1?sslmode=disable&pool_max_conns=16
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${FILONE_NODE}/piri-1
+    volumes:
+      - type: bind
+        source: /run/fil-one/secrets/piri-1.pem
+        target: /keys/piri.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/fil-one/secrets/piri-1-owner-wallet.hex
+        target: /keys/owner-wallet.hex
+        read_only: true
+        bind:
+          create_host_path: false
+      - *piri-base-config
+      - *piri-entrypoint
+      - /mnt/fil-one/piri-1:/data/piri
+    # The Piris start one at a time. `piri init` estimates gas for the
+    # createDataSet transaction against the chain's pending state, and two
+    # Piris estimating at once underestimate it: the loser's transaction
+    # reverts out of gas (storacha/piri#466). deploy-apps.sh recreates them one
+    # at a time anyway; this covers a first start and `docker compose up`.
+    depends_on:
+      piri-0:
+        condition: service_healthy
+
+  piri-2:
+    <<: *piri-base
+    container_name: filone-piri-2
+    environment:
+      <<: *piri-environment
+      PUBLIC_URL: https://piri-2.${PIRI_HOSTNAME_SUFFIX}
+      PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_2?sslmode=disable&pool_max_conns=16
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${FILONE_NODE}/piri-2
+    volumes:
+      - type: bind
+        source: /run/fil-one/secrets/piri-2.pem
+        target: /keys/piri.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/fil-one/secrets/piri-2-owner-wallet.hex
+        target: /keys/owner-wallet.hex
+        read_only: true
+        bind:
+          create_host_path: false
+      - *piri-base-config
+      - *piri-entrypoint
+      - /mnt/fil-one/piri-2:/data/piri
+    depends_on:
+      piri-1:
+        condition: service_healthy
 
   # S3 in front of Forge. Ships object data to sprue and authorizes every S3
   # request against hilt, under the delegation hilt issued to this node's Ingot
@@ -91,7 +180,7 @@ services:
   ingot:
     image: ${INGOT_IMAGE}
     container_name: filone-ingot
-    user: "0:0" # same reason as piri: 0400 key files, root-owned data directory
+    user: "0:0" # same reason as the Piris: 0400 key files, root-owned data directory
     command: ["serve", "--config", "/etc/ingot/config.yaml"]
     environment:
       # Ingot exports traces over OTLP/HTTP only when an OTLP endpoint is set,
@@ -102,7 +191,7 @@ services:
       # environment, so one TraceQL filter tells the stages apart for both.
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=${STAGE}
     volumes:
-      # Same tmpfs, same create_host_path reason, as Piri's mounts above.
+      # Same tmpfs, same create_host_path reason, as the Piris' mounts above.
       - type: bind
         source: /run/fil-one/secrets/ingot.pem
         target: /keys/ingot.pem

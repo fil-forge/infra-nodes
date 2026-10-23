@@ -28,7 +28,9 @@ install -d -m 0755 \
   /mnt/data/fil-one/control/openbao \
   /mnt/data/fil-one/control/postgres \
   /mnt/data/fil-one/control/state/metrics \
-  /mnt/data/fil-one/data/piri \
+  /mnt/data/fil-one/data/piri-0 \
+  /mnt/data/fil-one/data/piri-1 \
+  /mnt/data/fil-one/data/piri-2 \
   /mnt/data/fil-one/data/ingot
 install -d -m 0700 /run/fil-one /run/fil-one/secrets /run/fil-one/bao
 install -d -m 0755 /etc/fil-one
@@ -63,7 +65,6 @@ if ! grep -qxF "$IMPORT" "$CADDYFILE"; then
 fi
 
 ufw allow from "$FILONE_SUBNET" to any port 443 proto tcp comment 'FilOne Docker to host Caddy'
-ufw allow from "$FILONE_SUBNET" to any port 1234 proto tcp comment 'FilOne Docker to host Lotus RPC'
 ufw allow from "$FILONE_SUBNET" to any port 4318 proto tcp comment 'FilOne Docker to host Alloy OTLP'
 
 "$CHECKOUT/scripts/host/reload-staging-host-caddy.sh"

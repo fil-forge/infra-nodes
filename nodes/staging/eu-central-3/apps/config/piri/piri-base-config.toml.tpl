@@ -1,3 +1,8 @@
+# The Postgres URL is not here: the entrypoint passes it to `piri init` from
+# PIRI_DB_POSTGRES_URL in compose.yml, and its pool_max_conns parameter sizes
+# the PDP pipeline's connection pool. Changing that URL needs an init re-run,
+# which only a change to this file triggers.
+
 [pdp]
 chain_id = "${CHAIN_ID}"
 payer_address = "${PAYER_ADDRESS}"
@@ -19,9 +24,9 @@ usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 did = "${SPRUE_DID}"
 url = "${SPRUE_URL}"
 
-# OTLP metrics and traces go to the host's Alloy, reached the same way as Lotus. The host
-# Alloy's receiver is configured outside this repository; docs/RUNBOOK.md says
-# what it needs.
+# OTLP metrics and traces go to the host's Alloy, through the Docker host
+# gateway that compose's extra_hosts maps. The host Alloy's receiver is
+# configured outside this repository; docs/RUNBOOK.md says what it needs.
 # `environment` becomes the deployment.environment.name resource attribute, and
 # so the deployment_environment_name label on target_info. Piri otherwise takes
 # it from the configured network, which a base-config node has none of.
