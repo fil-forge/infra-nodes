@@ -1263,6 +1263,248 @@ submit a proof either, so stopping it first costs nothing: rotate the token, run
 `docker stop filone-piri-<n>` for each Piri the gate reports as "cannot determine", then re-run
 `deploy-apps.sh`.
 
+### Piri's proving alerts
+
+Piri's proving rules in infra-central's `terraform/envs/grafana/alerts.tf` link here. Each entry
+below starts with how soon to act, then gives the steps in order. The severity definitions are in
+infra-central's `docs/observability.md`.
+
+#### Before you start
+
+Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say which one:
+
+- The chain-head and Prove-task alerts carry the Piri's `instance` label, for example
+  `staging/eu-central-3/piri-1`. Its last digit is the Piri's number.
+- The proving-failing and proving-period alerts carry the `proof_set` instead. To find its Piri,
+  list each one's proof sets on the host:
+
+  ```sh
+  for i in 0 1 2; do
+    echo "piri-$i"
+    docker exec -w /data/piri filone-piri-$i piri client pdp proofset list
+  done
+  ```
+
+- The unrecoverable alert names only the node. Work through each Piri in turn.
+
+1. On the host, run `bash` first if the login shell is Fish (it is on staging), so the commands
+   paste as written. Set the Piri's number, for example `n=1` for `staging/eu-central-3/piri-1`.
+   Its container is `filone-piri-$n`, its database `piri_$n`. The commands below fail if `n` is
+   unset, rather than reach the wrong Piri.
+2. Open a shell in it, in its data directory:
+
+   ```sh
+   docker exec -it -w /data/piri "filone-piri-${n:?}" sh
+   ```
+
+   The `piri` commands below run there, because they read `piri-config.toml` from the current
+   directory. Anywhere else they need `--config /data/piri/piri-config.toml`, or they stop on a
+   config error before reaching the node. Keep a second terminal on the host, in `bash` as in step
+   1 and with the same `n` set, for the steps that say "on the host". If `docker exec` says the
+   container is not running or is restarting, restart it as in step 4's **Anything else** bullet,
+   then come back to this step.
+3. The commands each entry uses:
+
+   | To see | Run |
+   |---|---|
+   | Whether the node answers, and whether it's safe to restart | `piri status` |
+   | The proof set's state and the chain's current epoch | `piri client pdp proofset state` |
+   | Every proof set this Piri has | `piri client pdp proofset list` |
+
+   `piri client pdp proofset state` shows the proof set named in the config; add `--proof-set <id>`
+   for another one. `piri status` makes the same call, so it fails with the same errors.
+4. If `piri client pdp proofset state` fails (or `piri status`, which makes the same call):
+   - **`failed to get chain head`:** the chain endpoint. Run only the key check in step 2 of
+     [Piri's chain head is stale](#piris-chain-head-is-stale) and fix what it finds, ignoring that
+     entry's "go to" steps. Then restart Piri on the host, and come back to the entry you started
+     from.
+   - **`no proof set found`:** the database has no proof set with that ID. Check the ID against
+     `piri client pdp proofset list`. If the one in `piri-config.toml` (`proof_set`) isn't listed,
+     its data set has been deleted: record that on the incident, as for [Piri proof set is
+     unrecoverable](#piri-proof-set-is-unrecoverable). Otherwise, use a listed ID and come back to
+     the entry you started from.
+   - **Anything else:** restart Piri on the host, `docker restart "filone-piri-${n:?}"`. It can show
+     `health: starting` in `docker ps` for about eight minutes, or longer if its probes time out,
+     before Docker marks it `unhealthy`.
+     - **It becomes healthy and the error is gone:** come back to where you started from.
+     - **The restart fails, or it ends `unhealthy` or keeps restarting:** on the host, check the
+       files it mounts from the tmpfs:
+
+       ```sh
+       for f in "piri-${n:?}.pem" "piri-${n:?}-owner-wallet.hex" piri-base-config.toml; do
+         test -f "/run/fil-one/secrets/$f" || echo "missing or a directory: $f"
+       done
+       ```
+
+       If it prints `missing or a directory`, the node has rebooted: follow [The node
+       rebooted](#the-node-rebooted). If it prints an error about `n` (`parameter null or not
+       set`), set `n` as in step 1 and start this bullet again. If it prints nothing, record the
+       error `docker restart` printed and `docker logs "filone-piri-${n:?}"` on the incident.
+     - **It becomes healthy but the error comes back:** record the error in full on the incident.
+5. The task logs are read on the host, not in the container. Prove tasks:
+
+   ```sh
+   docker logs "filone-piri-${n:?}" 2>&1 | grep -e PDPv0_Prove -e 'No such container'
+   ```
+
+   For scheduling, use `PDPv0_ProvPeriod` in place of `PDPv0_Prove`. Keep `${n:?}` and the second
+   pattern: without them, an unset or wrong `n` prints nothing, which looks like a task that never
+   ran.
+
+Staging may still hold a database named `piri`, from when it ran one Piri. Nothing reads it.
+
+#### Free stranded batches
+
+Several entries end here. When Piri cannot add pieces on chain, each batch gets about 3.5 hours of
+retries if the chain endpoint is unreachable, or 6.9 if it answers but is stale. After that Piri
+gives up on the batch for good ([FIL-1508](https://linear.app/filecoin-foundation/issue/FIL-1508)).
+Run this only after the cause is fixed, on the host:
+
+1. Count the stranded batches:
+
+   ```sh
+   docker exec filone-platform-postgres-1 psql -U admin -d "piri_${n:?}" -c "
+     SELECT count(DISTINCT s.add_task_id) AS batches, count(*) AS roots
+     FROM curio.pdp_root_submissions s
+     WHERE s.add_task_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM curio.harmony_task h WHERE h.id = s.add_task_id)"
+   ```
+
+2. If `batches` is 0, stop: nothing is stranded.
+3. Otherwise free them. The next AddRoots run picks them up:
+
+   ```sh
+   docker exec filone-platform-postgres-1 psql -U admin -d "piri_${n:?}" -c "
+     UPDATE curio.pdp_root_submissions s SET add_task_id = NULL
+     WHERE s.add_task_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM curio.harmony_task h WHERE h.id = s.add_task_id)"
+   ```
+
+4. Run step 1 again. It should now show 0.
+
+#### Piri's chain head is stale
+
+**Act within about three hours.** Uploads and reads keep working, but Piri cannot add pieces on
+chain, and after a few hours it gives up on them (see [Free stranded
+batches](#free-stranded-batches)).
+
+Dev and staging read the chain from Chain.Love (`LOTUS_RPC_URL` in `node.env`), not from a Lotus of
+their own.
+
+1. In the Piri's shell, run `piri client pdp proofset state`.
+   - **It fails with `failed to get chain head`:** Piri cannot reach Chain.Love. Go to step 2.
+   - **It fails with any other error:** read it as in [Before you start](#before-you-start),
+     step 4.
+   - **It prints a Current Epoch:** that is Chain.Love's head right now. Go to step 3.
+2. On the host, check the Chain.Love token with the key check under [The eu-central-3 staging
+   appliance on Servers.com](#the-eu-central-3-staging-appliance-on-serverscom); it works on dev
+   too.
+   - **403:** fix it as in "A Piri crash-loops on the chain endpoint" above, then go to step 5.
+   - **101 Switching Protocols:** the token is fine. Go to step 4.
+   - **No `HTTP/1.1` line at all, only curl's timeout, or another status:** the host can't reach
+     Chain.Love. Check the host's network and Chain.Love's status page, then come back to step 1
+     once it answers.
+
+   A working key prints the `101` line and then a timeout, because the WebSocket stays open; that
+   timeout is expected.
+3. Compare Current Epoch with Calibration's current height on a block explorer. A Current Epoch of
+   0 doesn't mean Chain.Love is behind: it means this proof set is not initialised, or Curio has
+   given up on it, so the command shows no head. Run it again with `--proof-set <id>` for an
+   initialised proof set from `piri client pdp proofset list`. If this Piri has none, go to step 4.
+   - **Behind:** Chain.Love is lagging. Nothing to fix on the node; wait for it to catch up, then go
+     to step 5.
+   - **Current:** go to step 4.
+4. Chain.Love is fine, so Piri's own subscription is stuck. Piri resubscribes after five minutes
+   without a tipset, so if the alert has fired, restart it, on the host: `docker restart
+   "filone-piri-${n:?}"`. The proving-window gate doesn't apply, since Piri isn't proving without
+   a head.
+5. Wait for the alert to clear, then [free stranded batches](#free-stranded-batches).
+
+#### Piri is reporting but has no chain head
+
+**Act within about three hours**, as for a stale head. Piri has not seen a single tipset since it
+started, usually because the chain endpoint was unreachable then.
+
+1. In the Piri's shell, run `piri client pdp proofset state`.
+   - **It fails with `failed to get chain head`:** run only the key check in step 2 of [Piri's
+     chain head is stale](#piris-chain-head-is-stale), and fix what it finds, ignoring that
+     entry's "go to" steps. Then come back to step 2 here.
+   - **It fails with any other error:** read it as in [Before you start](#before-you-start),
+     step 4.
+   - **It prints a Current Epoch:** the endpoint answers now. Go to step 2.
+2. Restart Piri, on the host: `docker restart "filone-piri-${n:?}"`.
+3. Wait for the alert to clear, then [free stranded batches](#free-stranded-batches).
+
+#### Piri proving is failing
+
+**Act now.** The contract rejected a proving transaction. Curio gives up on a proof set for good on
+its fifth rejection without a successful proof between. The retries wait 100, 200, 400 and 800
+epochs, so the fifth can come 12.5 hours after the first, and nothing on the node brings the proof
+set back after that.
+
+1. On the host, find the rejection in the `PDPv0_Prove` logs, then in `PDPv0_ProvPeriod` if Prove
+   has none. The revert reason says what the contract refused.
+2. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names. If
+   it fails, read the error as in [Before you start](#before-you-start), step 4.
+3. Act on the revert reason:
+   - **The data set's payment has ended or been terminated:** Curio gives up at once, and the next
+     alert is [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
+   - **Anything else:** the node can't fix a revert. Send the revert reason, the proof set's ID
+     and its state to whoever runs infra-central, now. The data set's payments are set up from
+     central, which pays from `PAYER_ADDRESS`. The clock is the 12.5 hours above.
+
+   The node's own owner wallet is not the cause here. If it can't pay for gas, the send fails
+   before it reaches the contract, which Curio doesn't count as a rejection.
+
+#### Piri's proving period has not advanced
+
+**Act within a day.** A challenge window closed and Piri didn't schedule the next one. Each day
+costs that day's proving period, and nothing more: once scheduling runs again, Curio carries on.
+
+1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
+   firing. If either is, follow that entry first; a head that isn't moving is the usual cause.
+2. In the Piri's shell, run `piri status`. If it fails, read the error as in [Before you
+   start](#before-you-start), step 4. If it answers, go on: the task engine can still be stalled
+   behind a node that answers, which the logs show.
+3. Check the owner wallet. An empty one stops scheduling and AddRoots without paging. Each Piri has
+   its own; print its address on the host:
+
+   ```sh
+   docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
+     filone-openbao bao kv get -mount=filone -field=owner_wallet_address "piri-${n:?}"
+   ```
+
+   Look the address up on a Calibration block explorer. If it holds little or no tFIL, fund it as
+   [step 6](#6-onboarding-then-the-apps) describes.
+4. On the host, read the `PDPv0_ProvPeriod` logs for whether scheduling ran, and why not.
+5. Once scheduling runs again, if the logs showed AddRoots failing too, [free stranded
+   batches](#free-stranded-batches).
+
+#### Piri's Prove task has not run in 1.5 proving periods
+
+**Act within a day.** No proof has gone out for one and a half proving periods: one period's
+payment is already lost, and each further day loses another. Proving resumes once the cause is
+fixed. Causes that can lose more page on their own, as "Piri proving is failing" and "Piri's chain
+head is stale"; follow those first if they're firing.
+
+1. Run steps 2 and 3 of [Piri's proving period has not
+   advanced](#piris-proving-period-has-not-advanced):
+   `piri status`, then the owner wallet.
+2. In the Piri's shell, run `piri client pdp proofset state` for each proof set.
+3. On the host, read the `PDPv0_Prove` logs for why no run finished.
+4. Once it's fixed, if the logs showed AddRoots failing too, [free stranded
+   batches](#free-stranded-batches).
+
+#### Piri proof set is unrecoverable
+
+**Act within a day.** Curio has given up on a proof set and won't prove it again. The loss has
+already happened, so there is nothing to race.
+
+1. On the host, find why in the `PDPv0_Prove` and `PDPv0_ProvPeriod` logs: the last rejection
+   before Curio gave up.
+2. Record the proof set's ID and the reason on the incident. What to do with the data set is
+   decided outside this runbook.
+
 ### The node rebooted
 
 The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
