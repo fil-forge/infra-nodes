@@ -1299,10 +1299,10 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
 
    The `piri` commands below run there, because they read `piri-config.toml` from the current
    directory. Anywhere else they need `--config /data/piri/piri-config.toml`, or they stop on a
-   config error before reaching the node. Keep a second terminal on the host, with the same `n`
-   set, for the steps that say "on the host". If `docker exec` says the container is not running
-   or is restarting, restart it as in step 4's **Anything else** bullet, then come back to this
-   step.
+   config error before reaching the node. Keep a second terminal on the host, in `bash` as in step
+   1 and with the same `n` set, for the steps that say "on the host". If `docker exec` says the
+   container is not running or is restarting, restart it as in step 4's **Anything else** bullet,
+   then come back to this step.
 3. The commands each entry uses:
 
    | To see | Run |
@@ -1337,9 +1337,9 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
        ```
 
        If it prints `missing or a directory`, the node has rebooted: follow [The node
-       rebooted](#the-node-rebooted). If it prints `n: parameter null or not set`, set `n` as in
-       step 1 and start this bullet again. If it prints nothing, record the error `docker restart`
-       printed and `docker logs "filone-piri-${n:?}"` on the incident.
+       rebooted](#the-node-rebooted). If it prints an error about `n` (`parameter null or not
+       set`), set `n` as in step 1 and start this bullet again. If it prints nothing, record the
+       error `docker restart` printed and `docker logs "filone-piri-${n:?}"` on the incident.
      - **It becomes healthy but the error comes back:** record the error in full on the incident.
 5. The task logs are read on the host, not in the container. Prove tasks:
 
