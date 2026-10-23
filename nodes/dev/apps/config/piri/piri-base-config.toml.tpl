@@ -11,8 +11,8 @@
 
 # The Postgres URL is not here: the entrypoint passes it to `piri init` from
 # PIRI_DB_POSTGRES_URL in compose.yml, and its pool_max_conns parameter sizes
-# the PDP pipeline's connection pool. Changing that URL needs an init re-run,
-# which only a change to this file triggers.
+# the PDP pipeline's connection pool. The entrypoint hashes init's arguments
+# with this file, so changing that URL re-runs init as a change here does.
 
 [pdp]
 chain_id = "${CHAIN_ID}"

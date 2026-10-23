@@ -36,7 +36,11 @@ PDP_GATE_INTERVAL="${PDP_GATE_INTERVAL:-30}"
 # Paths inside the container, the same for every Piri: each one mounts its own
 # data directory at /data/piri.
 PIRI_CONFIG=/data/piri/piri-config.toml
-# Written by `piri init` once it has finished. See the config probe below.
+# Written by the entrypoint once `piri init` has returned. See the config probe
+# below. The stamp replaced the snapshot; a Piri that has not re-run init since
+# still has only the snapshot, and the entrypoint never deletes it, so a Piri
+# where init has ever completed has at least one of them.
+PIRI_INIT_STAMP=/data/piri/piri-init.stamp
 PIRI_BASE_SNAPSHOT=/data/piri/piri-base-config.applied.toml
 
 main() {
@@ -131,7 +135,7 @@ owes_proofs() {
   # config it loaded at startup keeps proving without it. So a missing config sends
   # the gate to a second question, below, and only a Piri that answers "init has
   # never completed" skips the wait.
-  local config_probe snapshot_probe proof_set_probe
+  local config_probe init_probe proof_set_probe
   set +e
   docker exec -i "$container" sh -c 'test -f "$1"' sh "$PIRI_CONFIG" >/dev/null 2>&1
   config_probe=$?
@@ -140,30 +144,31 @@ owes_proofs() {
   case "$config_probe" in
     0) ;;
     1)
-      # `piri init` copies the base config it merged from to PIRI_BASE_SNAPSHOT as
-      # its last step, so the snapshot exists only where init has once returned.
-      # No snapshot and no config is the state a first deploy is in: nothing on
-      # chain, nothing to miss, and interrupting init costs nothing because init
-      # is safe to re-run.
+      # The entrypoint writes PIRI_INIT_STAMP (PIRI_BASE_SNAPSHOT, before it) as
+      # its last step after `piri init` returns, so one exists only where init
+      # has once completed. Neither, and no config, is the state a first deploy
+      # is in: nothing on chain, nothing to miss, and interrupting init costs
+      # nothing because init is safe to re-run.
       set +e
-      docker exec -i "$container" sh -c 'test -f "$1"' sh "$PIRI_BASE_SNAPSHOT" >/dev/null 2>&1
-      snapshot_probe=$?
+      docker exec -i "$container" sh -c 'test -f "$1" || test -f "$2"' sh \
+        "$PIRI_INIT_STAMP" "$PIRI_BASE_SNAPSHOT" >/dev/null 2>&1
+      init_probe=$?
       set -e
 
-      case "$snapshot_probe" in
+      case "$init_probe" in
         1)
           echo "  $service has not run init yet; nothing to wait for"
           return 1
           ;;
         0)
-          die "$PIRI_CONFIG is gone from $container but $PIRI_BASE_SNAPSHOT is still there,
-       so init has completed before and this Piri may hold a proof set and owe a proof.
-       The deploy stops rather than restarting it. Restore the config, or if this Piri
-       is being decommissioned, 'docker stop $container' and re-run: a Piri that is
-       already down has no proof in flight."
+          die "$PIRI_CONFIG is gone from $container but init's stamp (or the older
+       snapshot) is still there, so init has completed before and this Piri may hold a
+       proof set and owe a proof. The deploy stops rather than restarting it. Restore
+       the config, or if this Piri is being decommissioned, 'docker stop $container' and
+       re-run: a Piri that is already down has no proof in flight."
           ;;
         *)
-          die "could not look for $PIRI_BASE_SNAPSHOT in $container (docker exec exited $snapshot_probe).
+          die "could not look for init's stamp or snapshot in $container (docker exec exited $init_probe).
        Whether this Piri owes a proof is unknown, so the deploy stops rather than restarting it."
           ;;
       esac
