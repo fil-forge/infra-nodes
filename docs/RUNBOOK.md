@@ -1322,14 +1322,22 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
      its data set has been deleted: record that on the incident, as for [Piri proof set is
      unrecoverable](#piri-proof-set-is-unrecoverable). Otherwise, use a listed ID and come back to
      the entry you started from.
-   - **Anything else:** restart Piri on the host, `docker restart filone-piri-$n`. It can show
+   - **Anything else:** restart Piri on the host, `docker restart "filone-piri-${n:?}"`. It can show
      `health: starting` in `docker ps` for about eight minutes, or longer if its probes time out,
      before Docker marks it `unhealthy`.
      - **It becomes healthy and the error is gone:** come back to where you started from.
-     - **The restart fails, or it ends `unhealthy` or keeps restarting:** on the host, run `ls -ld
-       /run/fil-one/secrets/piri-$n.pem`. If it's missing, or is a directory, the node has
-       rebooted: follow [The node rebooted](#the-node-rebooted). Otherwise record the error `docker
-       restart` printed and `docker logs filone-piri-$n` on the incident.
+     - **The restart fails, or it ends `unhealthy` or keeps restarting:** on the host, check the
+       files it mounts from the tmpfs:
+
+       ```sh
+       for f in "piri-${n:?}.pem" "piri-${n:?}-owner-wallet.hex" piri-base-config.toml; do
+         test -f "/run/fil-one/secrets/$f" || echo "missing or a directory: $f"
+       done
+       ```
+
+       If it prints anything, the node has rebooted: follow [The node
+       rebooted](#the-node-rebooted). Otherwise record the error `docker restart` printed and
+       `docker logs "filone-piri-${n:?}"` on the incident.
      - **It becomes healthy but the error comes back:** record the error in full on the incident.
 5. The task logs are read on the host, not in the container. Prove tasks:
 
