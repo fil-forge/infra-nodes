@@ -1275,11 +1275,20 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
 
 - The chain-head and Prove-task alerts carry the Piri's `instance` label, for example
   `staging/eu-central-3/piri-1`. Its last digit is the Piri's number.
-- The proving-failing and proving-period alerts carry the `proof_set` instead. `piri client pdp
-  proofset list` in each Piri shows which one has it.
+- The proving-failing and proving-period alerts carry the `proof_set` instead. To find its Piri,
+  list each one's proof sets on the host:
+
+  ```sh
+  for i in 0 1 2; do
+    echo "piri-$i"
+    docker exec -w /data/piri filone-piri-$i piri client pdp proofset list
+  done
+  ```
+
 - The unrecoverable alert names only the node. Work through each Piri in turn.
 
-1. Set the Piri's number: `n=1`. Its container is `filone-piri-$n`, its database `piri_$n`.
+1. Set the Piri's number, for example `n=1` for `staging/eu-central-3/piri-1`. Its container is
+   `filone-piri-$n`, its database `piri_$n`.
    The commands below fail if `n` is unset, rather than reach the wrong Piri.
 2. Open a shell in it, in its data directory:
 
@@ -1301,15 +1310,20 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
 
    `piri client pdp proofset state` shows the proof set named in the config; add `--proof-set <id>`
    for another one. `piri status` makes the same call, so it fails with the same errors.
-4. If `piri client pdp proofset state` fails, its error says where to look:
-   - **`failed to get chain head` or `failed to get contract state`:** the chain endpoint. Follow
-     [Piri's chain head is stale](#piris-chain-head-is-stale) from step 2.
-   - **`no proof set found`, or `failed to retrieve proof set`:** Piri's database. On the host,
-     check that `docker ps --filter name=postgres` shows Postgres up. If it is, send the error to
-     whoever runs infra-central.
-   - **Anything else, such as a refused connection:** the Piri isn't answering. On the host,
-     `docker ps --filter name=filone-piri-$n` shows whether it's running; if not, or if it's
-     unhealthy, restart it with `docker restart filone-piri-$n`.
+4. If `piri client pdp proofset state` fails (or `piri status`, which makes the same call):
+   - **`failed to get chain head`:** the chain endpoint. Run only the key check in step 2 of
+     [Piri's chain head is stale](#piris-chain-head-is-stale) and fix what it finds, ignoring that
+     entry's "go to" steps. Then restart Piri on the host, and come back to the entry you started
+     from.
+   - **`no proof set found`:** the database has no proof set with that ID. Check the ID against
+     `piri client pdp proofset list`. If the one in `piri-config.toml` (`proof_set`) isn't listed,
+     its data set has been deleted: record that on the incident, as for [Piri proof set is
+     unrecoverable](#piri-proof-set-is-unrecoverable).
+   - **Anything else:** restart Piri on the host, `docker restart filone-piri-$n`. It shows
+     `health: starting` in `docker ps` for up to three minutes; wait for that before deciding the
+     restart failed. If the restart fails on a missing file, the node has rebooted: follow [The node
+     rebooted](#the-node-rebooted). If the error comes back after a healthy restart, record it in
+     full on the incident.
 5. The task logs are read on the host, not in the container. Prove tasks:
 
    ```sh
