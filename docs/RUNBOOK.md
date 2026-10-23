@@ -1287,13 +1287,14 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
 
 - The unrecoverable alert names only the node. Work through each Piri in turn.
 
-1. Set the Piri's number, for example `n=1` for `staging/eu-central-3/piri-1`. Its container is
-   `filone-piri-$n`, its database `piri_$n`.
-   The commands below fail if `n` is unset, rather than reach the wrong Piri.
+1. On the host, run `bash` first if the login shell is Fish (it is on staging), so the commands
+   paste as written. Set the Piri's number, for example `n=1` for `staging/eu-central-3/piri-1`.
+   Its container is `filone-piri-$n`, its database `piri_$n`. The commands below fail if `n` is
+   unset, rather than reach the wrong Piri.
 2. Open a shell in it, in its data directory:
 
    ```sh
-   docker exec -it -w /data/piri filone-piri-$n sh
+   docker exec -it -w /data/piri "filone-piri-${n:?}" sh
    ```
 
    The `piri` commands below run there, because they read `piri-config.toml` from the current
@@ -1335,9 +1336,10 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
        done
        ```
 
-       If it prints anything, the node has rebooted: follow [The node
-       rebooted](#the-node-rebooted). Otherwise record the error `docker restart` printed and
-       `docker logs "filone-piri-${n:?}"` on the incident.
+       If it prints `missing or a directory`, the node has rebooted: follow [The node
+       rebooted](#the-node-rebooted). If it prints `n: parameter null or not set`, set `n` as in
+       step 1 and start this bullet again. If it prints nothing, record the error `docker restart`
+       printed and `docker logs "filone-piri-${n:?}"` on the incident.
      - **It becomes healthy but the error comes back:** record the error in full on the incident.
 5. The task logs are read on the host, not in the container. Prove tasks:
 
@@ -1414,7 +1416,8 @@ their own.
    - **Current:** go to step 4.
 4. Chain.Love is fine, so Piri's own subscription is stuck. Piri resubscribes after five minutes
    without a tipset, so if the alert has fired, restart it, on the host: `docker restart
-   filone-piri-$n`. The proving-window gate doesn't apply, since Piri isn't proving without a head.
+   "filone-piri-${n:?}"`. The proving-window gate doesn't apply, since Piri isn't proving without
+   a head.
 5. Wait for the alert to clear, then [free stranded batches](#free-stranded-batches).
 
 #### Piri is reporting but has no chain head
@@ -1429,7 +1432,7 @@ started, usually because the chain endpoint was unreachable then.
    - **It fails with any other error:** read it as in [Before you start](#before-you-start),
      step 4.
    - **It prints a Current Epoch:** the endpoint answers now. Go to step 2.
-2. Restart Piri, on the host: `docker restart filone-piri-$n`.
+2. Restart Piri, on the host: `docker restart "filone-piri-${n:?}"`.
 3. Wait for the alert to clear, then [free stranded batches](#free-stranded-batches).
 
 #### Piri proving is failing
