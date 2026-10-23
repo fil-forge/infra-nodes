@@ -1299,7 +1299,8 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
    The `piri` commands below run there, because they read `piri-config.toml` from the current
    directory. Anywhere else they need `--config /data/piri/piri-config.toml`, or they stop on a
    config error before reaching the node. Keep a second terminal on the host, with the same `n`
-   set, for the steps that say "on the host".
+   set, for the steps that say "on the host". If `docker exec` says the container is not running,
+   restart it as in step 4's last bullet.
 3. The commands each entry uses:
 
    | To see | Run |
@@ -1318,12 +1319,15 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
    - **`no proof set found`:** the database has no proof set with that ID. Check the ID against
      `piri client pdp proofset list`. If the one in `piri-config.toml` (`proof_set`) isn't listed,
      its data set has been deleted: record that on the incident, as for [Piri proof set is
-     unrecoverable](#piri-proof-set-is-unrecoverable).
-   - **Anything else:** restart Piri on the host, `docker restart filone-piri-$n`. It shows
-     `health: starting` in `docker ps` for up to three minutes; wait for that before deciding the
-     restart failed. If the restart fails on a missing file, the node has rebooted: follow [The node
-     rebooted](#the-node-rebooted). If the error comes back after a healthy restart, record it in
-     full on the incident.
+     unrecoverable](#piri-proof-set-is-unrecoverable). Otherwise, use a listed ID and come back to
+     the entry you started from.
+   - **Anything else:** restart Piri on the host, `docker restart filone-piri-$n`. It can show
+     `health: starting` in `docker ps` for up to about eight minutes before Docker gives up on it.
+     - **It becomes healthy and the error is gone:** come back to the entry you started from.
+     - **The restart fails, or it ends `unhealthy` or keeps restarting:** read `docker logs
+       filone-piri-$n`. A missing file or `is a directory` means the node has rebooted: follow [The
+       node rebooted](#the-node-rebooted). Otherwise record the logs on the incident.
+     - **It becomes healthy but the error comes back:** record the error in full on the incident.
 5. The task logs are read on the host, not in the container. Prove tasks:
 
    ```sh
@@ -1426,7 +1430,8 @@ set back after that.
 
 1. On the host, find the rejection in the `PDPv0_Prove` logs, then in `PDPv0_ProvPeriod` if Prove
    has none. The revert reason says what the contract refused.
-2. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names.
+2. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names. If
+   it fails, read the error as in [Before you start](#before-you-start), step 4.
 3. Act on the revert reason:
    - **The data set's payment has ended or been terminated:** Curio gives up at once, and the next
      alert is [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
