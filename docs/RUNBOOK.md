@@ -1271,10 +1271,15 @@ infra-central's `docs/observability.md`.
 
 #### Before you start
 
-Dev and staging each run three Piris, `piri-0` to `piri-2`. The alerts name the node, not the Piri,
-so work through each Piri in turn.
+Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say which one:
 
-1. Pick a Piri and set its number: `n=0`. Its container is `filone-piri-$n`, its database `piri_$n`.
+- The chain-head and Prove-task alerts carry the Piri's `instance` label, for example
+  `staging/eu-central-3/piri-1`. Its last digit is the Piri's number.
+- The proving-failing and proving-period alerts carry the `proof_set` instead. `piri client pdp
+  proofset list` in each Piri shows which one has it.
+- The unrecoverable alert names only the node. Work through each Piri in turn.
+
+1. Set the Piri's number: `n=1`. Its container is `filone-piri-$n`, its database `piri_$n`.
    The commands below fail if `n` is unset, rather than reach the wrong Piri.
 2. Open a shell in it, in its data directory:
 
@@ -1290,13 +1295,22 @@ so work through each Piri in turn.
 
    | To see | Run |
    |---|---|
-   | Whether the node is up | `piri status` |
+   | Whether the node answers, and whether it's safe to restart | `piri status` |
    | The proof set's state and the chain's current epoch | `piri client pdp proofset state` |
    | Every proof set this Piri has | `piri client pdp proofset list` |
 
    `piri client pdp proofset state` shows the proof set named in the config; add `--proof-set <id>`
-   for another one.
-4. The task logs are read on the host, not in the container. Prove tasks:
+   for another one. `piri status` makes the same call, so it fails with the same errors.
+4. If `piri client pdp proofset state` fails, its error says where to look:
+   - **`failed to get chain head` or `failed to get contract state`:** the chain endpoint. Follow
+     [Piri's chain head is stale](#piris-chain-head-is-stale) from step 2.
+   - **`no proof set found`, or `failed to retrieve proof set`:** Piri's database. On the host,
+     check that `docker ps --filter name=postgres` shows Postgres up. If it is, send the error to
+     whoever runs infra-central.
+   - **Anything else, such as a refused connection:** the Piri isn't answering. On the host,
+     `docker ps --filter name=filone-piri-$n` shows whether it's running; if not, or if it's
+     unhealthy, restart it with `docker restart filone-piri-$n`.
+5. The task logs are read on the host, not in the container. Prove tasks:
 
    ```sh
    docker logs "filone-piri-${n:?}" 2>&1 | grep -e PDPv0_Prove -e 'No such container'
@@ -1348,20 +1362,24 @@ their own.
 
 1. In the Piri's shell, run `piri client pdp proofset state`.
    - **It fails with `failed to get chain head`:** Piri cannot reach Chain.Love. Go to step 2.
-   - **It fails with any other error:** the chain endpoint is not the problem. Check `piri status`
-     and the logs.
+   - **It fails with any other error:** read it as in [Before you start](#before-you-start),
+     step 4.
    - **It prints a Current Epoch:** that is Chain.Love's head right now. Go to step 3.
 2. On the host, check the Chain.Love token with the key check under [The eu-central-3 staging
    appliance on Servers.com](#the-eu-central-3-staging-appliance-on-serverscom); it works on dev
    too.
    - **403:** fix it as in "A Piri crash-loops on the chain endpoint" above, then go to step 5.
    - **101 Switching Protocols:** the token is fine. Go to step 4.
-   - **A timeout or any other status:** the host can't reach Chain.Love. Check the host's network
-     and Chain.Love's status page, then come back to step 1 once it answers.
+   - **No `HTTP/1.1` line at all, only curl's timeout, or another status:** the host can't reach
+     Chain.Love. Check the host's network and Chain.Love's status page, then come back to step 1
+     once it answers.
+
+   A working key prints the `101` line and then a timeout, because the WebSocket stays open; that
+   timeout is expected.
 3. Compare Current Epoch with Calibration's current height on a block explorer. A Current Epoch of
-   0 doesn't mean Chain.Love is behind: it means this proof set is not initialised yet, so the
-   command shows no head. Run it again with `--proof-set <id>` for an initialised proof set from
-   `piri client pdp proofset list`. If this Piri has none, go to step 4.
+   0 doesn't mean Chain.Love is behind: it means this proof set is not initialised, or Curio has
+   given up on it, so the command shows no head. Run it again with `--proof-set <id>` for an
+   initialised proof set from `piri client pdp proofset list`. If this Piri has none, go to step 4.
    - **Behind:** Chain.Love is lagging. Nothing to fix on the node; wait for it to catch up, then go
      to step 5.
    - **Current:** go to step 4.
@@ -1376,11 +1394,11 @@ their own.
 started, usually because the chain endpoint was unreachable then.
 
 1. In the Piri's shell, run `piri client pdp proofset state`.
-   - **It fails with `failed to get chain head`:** check the token as in step 2 of [Piri's chain
-     head is stale](#piris-chain-head-is-stale), and fix what it finds. Then come back to step 2
-     here.
-   - **It fails with any other error:** the chain endpoint is not the problem. Check `piri status`
-     and the logs.
+   - **It fails with `failed to get chain head`:** run only the key check in step 2 of [Piri's
+     chain head is stale](#piris-chain-head-is-stale), and fix what it finds, ignoring that
+     entry's "go to" steps. Then come back to step 2 here.
+   - **It fails with any other error:** read it as in [Before you start](#before-you-start),
+     step 4.
    - **It prints a Current Epoch:** the endpoint answers now. Go to step 2.
 2. Restart Piri, on the host: `docker restart filone-piri-$n`.
 3. Wait for the alert to clear, then [free stranded batches](#free-stranded-batches).
@@ -1412,9 +1430,9 @@ costs that day's proving period, and nothing more: once scheduling runs again, C
 
 1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
    firing. If either is, follow that entry first; a head that isn't moving is the usual cause.
-2. In the Piri's shell, run `piri status`. If it fails or reports the node unhealthy, restart Piri,
-   on the host, with `docker restart filone-piri-$n`. If it reports healthy, go on: the task engine
-   can still be stalled behind a healthy node, which step 4's logs show.
+2. In the Piri's shell, run `piri status`. If it fails, read the error as in [Before you
+   start](#before-you-start), step 4. If it answers, go on: the task engine can still be stalled
+   behind a node that answers, which the logs show.
 3. Check the owner wallet. An empty one stops scheduling and AddRoots without paging. Each Piri has
    its own; print its address on the host:
 
