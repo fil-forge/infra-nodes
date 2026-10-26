@@ -37,6 +37,12 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
   die "PAYER_ADDRESS in nodes/$FILONE_NODE/node.env is still the placeholder.
        Read the real address from the central dev stage (docs/RUNBOOK.md says how) and commit it."
 
+# Ingot reads 0 as no budget, and then its cache keeps every body until the
+# disk fills.
+[[ "${INGOT_LOCAL_BLOB_MAX_BYTES:-}" =~ ^[1-9][0-9]*$ ]] ||
+  die "INGOT_LOCAL_BLOB_MAX_BYTES in nodes/$FILONE_NODE/node.env is '${INGOT_LOCAL_BLOB_MAX_BYTES:-}', not a
+       positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
+
 piri_services="$(piri_services)"
 # shellcheck disable=SC2206 # one service name per word
 piris=($piri_services)

@@ -19,6 +19,11 @@ addr: "0.0.0.0:9000"
 region: ${REGION_LABEL}
 
 data_dir: /data
+
+# Byte budget for the spool and the cache under data_dir, from node.env. The
+# sweeper evicts cached bodies down to 90% of it every 30 seconds.
+local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
+
 log_level: info
 
 # Browser origins the S3 listener answers CORS for. Matching is over the raw
