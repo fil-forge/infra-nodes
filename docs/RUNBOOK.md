@@ -1449,8 +1449,9 @@ set back after that.
    - **The data set's payment has ended or been terminated:** Curio gives up at once, and the next
      alert is [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
    - **Anything else:** the node can't fix a revert. Post the revert reason, the proof set's ID
-     and its state in `#filone-eng` on Slack, now. The data set's payments are set up from
-     central, which pays from `PAYER_ADDRESS`. The clock is the 12.5 hours above.
+     and its state in `#filone-eng` on Slack, now, and record them on the incident. The data
+     set's payments are set up from central, which pays from `PAYER_ADDRESS`. The clock is the
+     12.5 hours above.
 
    The node's own owner wallet is not the cause here. If it can't pay for gas, the send fails
    before it reaches the contract, which Curio doesn't count as a rejection.
