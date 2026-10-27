@@ -85,6 +85,51 @@ otherwise deploy green and ship nothing.
 Only the central account can read it, so ask whoever runs infra-central; their runbook says where
 they get it. It is a public address, so any channel will do.
 
+`INGOT_LOCAL_BLOB_MAX_BYTES` becomes Ingot's `local_blob_max_bytes`: one byte budget for its spool
+(bodies being written or waiting for upload to Piri) and its cache (copies of bodies Piri already
+holds). Every 30 seconds a sweeper evicts cached bodies, oldest first, down to 90% of it. Ingot reads
+0 as no budget, and its cache then keeps every body until the disk fills, so `deploy-apps.sh`
+refuses anything but a positive byte count. Where Ingot has its filesystem to itself, size it from
+that filesystem:
+
+1. Start from 60% of that filesystem's size, the most it can hold before the "Appliance free disk
+   space below 40%" alert in infra-central fires. The cache stays near the budget, so a budget
+   above that line keeps the alert firing.
+2. Subtract the filesystem's root reserve (5% on the ext4 volumes bootstrap creates), which the
+   alert counts as used.
+3. Subtract everything else on that filesystem at its peak: Postgres, OpenBao and the Piris, where
+   they share it.
+4. Subtract the ingest rate × 30 seconds, by which usage can exceed the budget between sweeps. With
+   no measured rate, use the filesystem's write throughput: every body lands there first.
+5. Subtract room for the catalog log, `/data/segments`, which the budget does not cover. With
+   Ingot's defaults it holds up to 6 shipped segments of 64 MiB per bucket, plus the open and
+   unshipped ones.
+
+What is left is the budget. It should also exceed the ingest rate × 10 minutes
+(`cache_min_residency`); below that, the sweeper evicts bodies written within that window. Ingot's
+README, "Local disk", has the full sizing list.
+
+Dev: Ingot is alone on the 500 GiB data volume (`data_volume_size` in
+`terraform/envs/dev/terraform.tfvars`). 60% of it is 300 GiB; less the 25 GiB root reserve, 275 GiB;
+less gp3's default 125 MiB/s for 30 seconds, about 4 GiB; less about 31 GiB for the catalog log:
+240 GiB, or 257698037760 bytes. That exceeds the 73 GiB that 125 MiB/s writes in ten minutes.
+
+A node whose Piris share Ingot's filesystem is sized from ingest instead. The Piris' data is what
+that disk is for, and every cached body is a second copy of bytes a Piri already holds on it, so a
+cache sized from the disk only stores the same data twice. Take at least twice the peak ingest rate
+× 10 minutes, using the highest median of recent valid runs on
+[forge-perf](https://fil-forge.github.io/forge-perf/) where the node has not measured its own, check it against the largest spool-plus-cache usage the node has shown
+(`max_over_time(sum(ingot_local_blobs_usage_bytes{appliance="<appliance>"})[30d:5m])`), and keep it
+a small share of the filesystem. A ZFS pool has no root reserve to subtract: `df` already leaves out
+the space ZFS keeps for itself.
+
+Staging: `/mnt/data` is the ZFS pool `sp-pool`, about 349 TiB usable, holding Postgres, OpenBao, the
+Piris and Ingot. forge-perf's highest median from its valid runs of 19 and 20 October 2026 is 3.96
+GB/s, on one m9gd.16xlarge running every service; ten minutes of that is 2.38 TB. Twice that, rounded
+up, is 5 TiB, or 5497558138880 bytes. That is over 18 times the 298 GB spool-plus-cache peak of the
+30 days to 2026-10-26, and about 1.4% of the pool. The staging host is not the forge-perf box, so its
+own rate may be lower; the budget errs on the large side.
+
 ### 3. The node's host
 
 Everything before this step is the same for any node; everything after it is the same procedure run
@@ -756,8 +801,8 @@ missing; `connection refused` means Alloy is not listening on 4318.
 
 Each service's series then arrive in Grafana under `job="forge/<service>"` (Piri's as
 `job="forge/piri"`), and each service's traces under `service.name="<service>"` with
-`service.namespace="forge"`; `docs/observability.md` has the queries. Ingot sends traces only, so
-far.
+`service.namespace="forge"`; `docs/observability.md` has the queries. Ingot's series arrive under
+`job="forge/ingot"`, among them the `ingot_local_blobs_*` budget metrics that infra-central alerts on.
 
 A host set up from an earlier version of this snippet selects Forge's services by name instead: its
 `where` clauses match `service.name="piri"` (and `"ingot"`), and its relabel is `filone_piri`,

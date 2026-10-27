@@ -24,11 +24,14 @@ which is where the public error rate is read from. Staging also ships per-contai
 network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
 mount, and container health there is read from the journal and the deploy stamp instead.
 Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds.
+Ingot's application metrics, also pushed over OTLP to Alloy, under `job="forge/ingot"`: among them
+`ingot_local_blobs_usage_bytes` and `ingot_local_blobs_budget_bytes`, which infra-central's
+"Ingot local disk over budget" alert reads.
 
 **Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's Tempo
 unchanged apart from the node's identity.
 
-**Not shipped.** Ingot's own application metrics; the network interface collector, which
+**Not shipped.** The network interface collector, which
 inside the Alloy container would report the container's namespace rather than the host's.
 
 ## Where to look
