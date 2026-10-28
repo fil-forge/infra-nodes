@@ -35,6 +35,11 @@ x-piri-base: &piri-base
     timeout: 5s
     retries: 30
     start_period: 180s
+  # Per Piri. Limits give the capacity alerts a denominator and keep one
+  # service from starving the shared host. Sized well above observed peaks
+  # (FIL-1214).
+  mem_limit: 2g
+  cpus: 2
   restart: unless-stopped
   networks: [filone]
 
@@ -195,6 +200,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    # Same reason and sizing as the Piris above.
+    mem_limit: 2g
+    cpus: 2
     restart: unless-stopped
     networks: [filone]
 
