@@ -200,9 +200,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    # Same reason and sizing as the Piris above.
+    # Same reason as the Piris' limits above. Twice their CPU: Ingot reached
+    # 1.3 cores in the 2026-09-24 load test.
     mem_limit: 2g
-    cpus: 2
+    cpus: 4
     restart: unless-stopped
     networks: [filone]
 
