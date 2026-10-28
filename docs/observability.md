@@ -305,6 +305,15 @@ As with Piri, an Ingot that stops pushing shows as an absence:
 absent(target_info{job="forge/ingot", node="staging/eu-central-3"})
 ```
 
+Ingot streams Swarf's revocation firehose to drop revoked keys from its authorization caches. It
+logs `revocation: record processed` for each revocation and `revocation: stream error` each time
+the stream fails and it reconnects. A run of stream errors means policy changes and key deletions
+are not reaching the node, so a revoked key keeps working until its cache entry expires:
+
+```logql
+sum by (service_name) (count_over_time({service_name=~"appliance-.*-ingot"} |= "revocation: stream error" [15m]))
+```
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with

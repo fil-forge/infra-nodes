@@ -61,6 +61,13 @@ auth_service_did: "${HILT_DID}"
 # because it names a DID that only exists once the node is provisioned.
 auth_service_proofs: "/proofs/hilt-ingot-proof.txt"
 
+# Swarf's revocation firehose. Hilt publishes a UCAN revocation for every key a
+# bucket policy change or key deletion affects; Ingot drops those keys from its
+# per-key authorization caches. Without it, a cached key keeps its old
+# permissions until the cache entry expires.
+revocation_service_url: "${SWARF_URL}"
+revocation_service_did: "${SWARF_DID}"
+
 # Every object's content-encryption key is wrapped under this node's region KEK,
 # which lives in the transit engine of the node's own OpenBao and never enters
 # this process. The socket is on a bind mount the two containers share; OpenBao
