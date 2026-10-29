@@ -305,6 +305,25 @@ As with Piri, an Ingot that stops pushing shows as an absence:
 absent(target_info{job="forge/ingot", node="staging/eu-central-3"})
 ```
 
+Ingot streams Swarf's revocation firehose to drop revoked keys from its authorization caches, and
+logs `revocation: record processed` for each revocation. It logs `revocation: stream error` only
+when it cannot connect at all, such as at startup with Swarf down. Once connected, the Swarf client
+reconnects a dropped stream without reporting it, so an outage that starts later leaves no error.
+While the stream is down, policy changes and key deletions do not reach the node, and a revoked key
+keeps working until its cache entry expires.
+
+The signal is Hilt publishing revocations while Ingot processes none. Hilt logs
+`published revocation` for each one, under the `aws_log_group` of its stage
+(`/forge-central/staging/hilt`). The firehose is shared, so every Ingot on the stage processes every
+record, including ones Hilt did not publish, and the two counts are not equal. The query returns
+Hilt's count only when the node processed nothing in the same window:
+
+```logql
+sum(count_over_time({aws_log_group="/forge-central/staging/hilt"} |= "published revocation" [15m]))
+  unless on()
+sum(count_over_time({service_name="appliance-staging-eu-central-3-ingot"} |= "revocation: record processed" [15m]))
+```
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with
