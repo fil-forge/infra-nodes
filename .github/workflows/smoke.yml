@@ -5,6 +5,10 @@
 # restarts. So the run that merges a bump ends long before the node runs it, and
 # nothing else would tell us a merged image is broken. This waits for the node to
 # reach the commit, then tests it.
+#
+# The smoke test proves the services answer. The end-to-end test after it proves
+# the node serves a customer: it creates a tenant and a bucket, uploads and
+# downloads two objects, and deletes everything it created.
 name: Smoke test
 
 on:
@@ -41,13 +45,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [dev, staging/eu-central-3]
+        # env names the GitHub Environment holding the Hilt partner key for the
+        # node's stage. Prod nodes stay out until FIL-1491 finds a credential
+        # that cannot reach customer tenants.
+        include:
+          - node: dev
+            env: dev
+          - node: staging/eu-central-3
+            env: staging
     runs-on: ubuntu-latest
-    # The wait budget below, the smoke retries, and room for the checkout and a
-    # slow first poll. Both steps stop themselves well inside it; a job that
-    # hits this timeout is cancelled, and the alert steps do not run on a
-    # cancel.
-    timeout-minutes: 85
+    # The end-to-end test needs HILT_PARTNER_KEY, which can manage every tenant
+    # on the stage's Hilt. Each Environment admits only main, so a pushed branch
+    # cannot read it. The cost is that this workflow cannot be dispatched from a
+    # branch either.
+    environment: ${{ matrix.env }}
+    # The wait budget below, the smoke retries, the end-to-end test and its
+    # cleanup, and room for the checkout and a slow first poll. Every step stops
+    # itself well inside it; a job that hits this timeout is cancelled, and the
+    # alert steps do not run on a cancel.
+    timeout-minutes: 105
     steps:
       # fetch-depth: 0 because the ancestor test needs both commits in the
       # checkout, and the node can be several commits behind.
@@ -111,6 +127,7 @@ jobs:
       # gate has already passed by then, so this is about the network rather
       # than about the node still coming up.
       - name: Run the smoke test
+        id: smoke
         env:
           # Only on a push: a schedule and a manual run check the node as it
           # stands, against whatever revision it reports.
@@ -133,25 +150,70 @@ jobs:
           done
           "$passed" || { echo "::error::$NODE did not pass: 5 attempts over 2 minutes"; exit 1; }
 
-      # The two failures need different responses, so the message says which one
-      # happened: the node never reached the commit, or it reached it and the
-      # smoke test failed. The wait step's outcome is `skipped` on a schedule and
-      # a manual run, and `failure` only when the node never arrived.
+      # A node that fails the smoke test skips this by default: one alert for a
+      # node that is down is enough.
+      #
+      # Not retried. Each run creates a new tenant, the next hourly run tests
+      # again, and a retry would hide an upload path that fails some of the
+      # time.
+      - name: Run the end-to-end test
+        id: e2e
+        timeout-minutes: 10
+        env:
+          HILT_PARTNER_KEY: ${{ secrets.HILT_PARTNER_KEY }}
+          NODE: ${{ matrix.node }}
+        run: scripts/ci/e2e-test.sh "$NODE"
+
+      # Runs after a failed test too, since a failure halfway leaves the tenant
+      # and bucket behind. The script deletes only what the test recorded
+      # creating, so it is safe after a test that never got going.
+      - name: Clean up after the end-to-end test
+        id: cleanup
+        if: always() && steps.e2e.outcome != 'skipped'
+        timeout-minutes: 15
+        env:
+          HILT_PARTNER_KEY: ${{ secrets.HILT_PARTNER_KEY }}
+          NODE: ${{ matrix.node }}
+        run: scripts/ci/e2e-test.sh "$NODE" --cleanup
+
+      # Each failure needs a different response, so the message says which one
+      # happened: the node never reached the commit, it failed the smoke test,
+      # it failed the end-to-end test, or the cleanup left something behind.
+      # The wait step's outcome is `skipped` on a schedule and a manual run, and
+      # `failure` only when the node never arrived.
       - id: what
         if: failure()
         env:
           WAIT_OUTCOME: ${{ steps.wait.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          E2E_OUTCOME: ${{ steps.e2e.outcome }}
+          E2E_FAILED_OP: ${{ steps.e2e.outputs.failed_op }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          LEFTOVER_TENANT: ${{ steps.cleanup.outputs.leftover_tenant }}
+          LEFTOVER_BUCKET: ${{ steps.cleanup.outputs.leftover_bucket }}
+          RUNBOOK: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/RUNBOOK.md#cleaning-up-after-the-end-to-end-test
           NODE: ${{ matrix.node }}
         run: |
           set -euo pipefail
           echo "subject=$(git log -1 --format=%s)" >> "$GITHUB_OUTPUT"
           if [ "$WAIT_OUTCOME" = failure ]; then
-            echo "headline=The $NODE node never reached this commit" >> "$GITHUB_OUTPUT"
-            echo "next=Check reconcile on the node: the proving gate, a failing deploy, or a node tracking another ref." >> "$GITHUB_OUTPUT"
+            headline="The $NODE node never reached this commit"
+            next="Check reconcile on the node: the proving gate, a failing deploy, or a node tracking another ref."
+          elif [ "$SMOKE_OUTCOME" = failure ]; then
+            headline="The $NODE node failed its smoke test"
+            next="The node has this commit and is not serving it. Suspect the image it pinned."
+          elif [ "$E2E_OUTCOME" = failure ]; then
+            headline="The $NODE node failed its end-to-end test: ${E2E_FAILED_OP:-see the run log}"
+            next="The node answers its health checks but cannot serve a customer. Suspect the image it pinned, or Hilt."
           else
-            echo "headline=The $NODE node failed its smoke test" >> "$GITHUB_OUTPUT"
-            echo "next=The node has this commit and is not serving it. Suspect the image it pinned." >> "$GITHUB_OUTPUT"
+            headline="The $NODE node passed its end-to-end test, but the cleanup failed"
+            next="Nothing is wrong with serving customers; the test could not delete what it created."
           fi
+          if [ "$CLEANUP_OUTCOME" = failure ]; then
+            next="$next Left behind: tenant ${LEFTOVER_TENANT:-none}, bucket ${LEFTOVER_BUCKET:-none}. Delete them by hand: <$RUNBOOK|runbook>."
+          fi
+          echo "headline=$headline" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
 
       # A bump commit says which service image changed and nothing about what
       # changed inside it, so the alert names a digest nobody recognises. Bump
