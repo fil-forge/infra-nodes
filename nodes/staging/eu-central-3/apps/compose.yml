@@ -218,6 +218,9 @@ services:
       - --model-id=BAAI/bge-small-en-v1.5
       - --revision=5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
       - --max-client-batch-size=64
+      # TEI defaults to one tokenizer per host core, not per core the
+      # container is allowed.
+      - --tokenization-workers=2
       - --json-output
     # The model downloads from Hugging Face on the first start and is cached
     # here, so a restart does not fetch it again.
@@ -253,9 +256,6 @@ services:
       EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
       ANSWER_PROVIDER: anthropic
       ANSWER_MODEL: claude-opus-5-5
-      # LanceDB's Node module reads LANCEDB_LOG, not LANCE_LOG. Without it
-      # every hybrid query logs two deprecation warnings.
-      LANCEDB_LOG: error
     # ENGINE_TOKEN and ANTHROPIC_API_KEY, rendered from OpenBao by
     # deploy-apps.sh. Not required here so CI can validate this file without
     # it; the engine refuses to start without ENGINE_TOKEN.
@@ -269,9 +269,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    # Started, not healthy: deploy-apps.sh waits for rag-embed itself, and a
+    # health condition here would fail every project-wide `up` while the
+    # embedding model is down, Piri and Ingot included.
     depends_on:
       rag-embed:
-        condition: service_healthy
+        condition: service_started
     mem_limit: 2g
     cpus: 2
     restart: unless-stopped

@@ -119,6 +119,12 @@ deploy_platform=0
 deploy_apps=0
 if project_is_stale platform "$shared_paths|^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
 if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
+# Left by an apps deploy that succeeded with Bucket Intelligence unhealthy, so
+# the engine is retried without waiting for a commit.
+if [ -e "$FILONE_STATE_DIR/apps-retry" ]; then
+  echo "  apps has a service to retry"
+  deploy_apps=1
+fi
 
 # --- 4. Renew the local OpenBao token ---------------------------------------
 

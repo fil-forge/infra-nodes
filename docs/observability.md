@@ -332,12 +332,21 @@ sum(count_over_time({service_name="appliance-staging-eu-central-3-ingot"} |= "re
 On staging, `rag-engine` and `rag-embed` (the embedding model it calls) ship container logs and
 cAdvisor metrics like the other containers, under `service_name="appliance-staging-eu-central-3-rag-engine"`
 and `-rag-embed`. Neither is on the storage path: when they are down, Bucket Intelligence fails in
-Forge regions and nothing else does. The engine logs one JSON line per failed request or sync, with
-`request_failed` or `sync_failed` in it. Its requests go through the host Caddy under `/_rag/` on
-Ingot's hostname, so Caddy's request metrics count them with Ingot's.
+Forge regions and Piri and Ingot keep serving. The apps deploy checks their health separately from
+Piri's and Ingot's. When either is unhealthy it still records the Piris and Ingot as deployed and
+moves the `apps` deploy stamp, logs a warning to the reconcile journal, and retries the two on every
+reconcile pass until they come up. The engine logs
+one JSON line per failed request or sync at level `error`. Its requests go through the host Caddy
+under `/_rag/` on Ingot's hostname, so Caddy's request metrics count them with Ingot's.
 
 ```logql
-{service_name="appliance-staging-eu-central-3-rag-engine"} |~ "request_failed|sync_failed"
+{service_name="appliance-staging-eu-central-3-rag-engine"} | json | level="error"
+```
+
+A deploy that left the engine unhealthy:
+
+```logql
+{node="staging/eu-central-3", unit="filone-reconcile.service"} |= "Bucket Intelligence"
 ```
 
 ### The deploy stamp

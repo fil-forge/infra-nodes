@@ -225,6 +225,13 @@ fi
 # Off the storage path, so no gate and no order relative to the above. Same
 # change detection as Ingot: --no-recreate alone would never apply a new digest
 # or a re-rendered env file to a running container.
+#
+# Their health does not decide the deploy's. Their waits run in a subshell, where
+# wait_healthy's die ends only the wait, so an unhealthy embedding model or
+# engine is logged as a warning and the Piris and Ingot still deploy, pass
+# their own health check and have their hashes recorded. The engine's hashes
+# stay unrecorded, so the next deploy recreates the two again.
+rag_healthy=1
 if [ "$has_rag" -eq 1 ]; then
   echo "  Bucket Intelligence"
   mark rag_embed_changed image_differs compose_apps rag-embed
@@ -239,13 +246,17 @@ if [ "$has_rag" -eq 1 ]; then
   else
     compose_apps up -d --no-recreate rag-embed
   fi
-  # --no-deps skips the depends_on wait in compose.yml, so wait here: an
-  # engine started before the embedding model is loaded fails its first sync.
-  wait_healthy compose_apps 420 rag-embed
-  if [ "$rag_engine_changed" -eq 1 ]; then
-    compose_apps up -d --force-recreate --no-deps rag-engine
+  # An engine started before the embedding model is loaded fails its first
+  # sync, so it waits for rag-embed here. Left as it is when rag-embed never
+  # gets there.
+  if (wait_healthy compose_apps 300 rag-embed); then
+    if [ "$rag_engine_changed" -eq 1 ]; then
+      compose_apps up -d --force-recreate --no-deps rag-engine
+    else
+      compose_apps up -d --no-recreate --no-deps rag-engine
+    fi
   else
-    compose_apps up -d --no-recreate --no-deps rag-engine
+    rag_healthy=0
   fi
 fi
 
@@ -257,7 +268,9 @@ compose_apps up -d --no-recreate --remove-orphans
 # --- 5. Health --------------------------------------------------------------
 
 echo "[5/5] Health"
-wait_healthy compose_apps 420
+# Every service but the engine's two, which are checked on their own below.
+# shellcheck disable=SC2046 # one service name per word
+wait_healthy compose_apps 420 $(grep -vxE 'rag-embed|rag-engine' <<<"$apps_services")
 
 # Only now, after the deploy is known good. Recording the hashes earlier would
 # make a failed deploy look like an up-to-date one on the next pass.
@@ -265,9 +278,25 @@ for service in "${piris[@]}"; do
   config_hash_record "apps-$service" "${piri_config_hash[$service]}"
 done
 config_hash_record apps-ingot "$ingot_config_hash"
+
+# A file reconcile.sh reads as a reason to deploy apps again on its next pass.
+# The deploy stamp below records this revision as deployed, so without it the
+# engine would wait for the next commit to be retried.
+rag_retry="$FILONE_STATE_DIR/apps-retry"
 if [ "$has_rag" -eq 1 ]; then
-  config_hash_record apps-rag-embed "$rag_embed_config_hash"
-  config_hash_record apps-rag-engine "$rag_engine_config_hash"
+  if [ "$rag_healthy" -eq 1 ] && (wait_healthy compose_apps 180 rag-engine); then
+    config_hash_record apps-rag-embed "$rag_embed_config_hash"
+    config_hash_record apps-rag-engine "$rag_engine_config_hash"
+  else
+    rag_healthy=0
+  fi
+fi
+if [ "$rag_healthy" -eq 1 ]; then
+  rm -f "$rag_retry"
+else
+  echo "WARNING: Bucket Intelligence (rag-embed, rag-engine) is not healthy. Piri and Ingot" >&2
+  echo "         deployed; the next reconcile pass retries the engine." >&2
+  touch "$rag_retry"
 fi
 
 stamp_deploy_success apps
