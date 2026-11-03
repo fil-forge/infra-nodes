@@ -18,6 +18,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    # Limits give the capacity alerts a denominator and keep one service from
+    # starving the shared host. Sized well above observed peaks (FIL-1214).
+    mem_limit: 512m
+    cpus: 1
     restart: unless-stopped
 
   postgres:
@@ -33,6 +37,9 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    # Same reason as openbao's limits above.
+    mem_limit: 4g
+    cpus: 4
     restart: unless-stopped
     networks: [filone]
 

@@ -23,6 +23,9 @@ metrics, also every minute: counts, durations and sizes per site, handler, metho
 which is where the public error rate is read from. Staging also ships per-container CPU, memory,
 network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
 mount, and container health there is read from the journal and the deploy stamp instead.
+Each staging container has a CPU and memory limit in its Compose file, which cAdvisor reports as
+`container_spec_memory_limit_bytes` and `container_spec_cpu_quota`; the capacity alerts read usage
+as a share of those.
 Piri's and Ingot's own application metrics, which each pushes over OTLP to Alloy: Piri every
 thirty seconds, Ingot every minute.
 
