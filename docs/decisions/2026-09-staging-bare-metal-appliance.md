@@ -36,3 +36,7 @@ its Lotus for its own workloads, and the TCP 1234 UFW rule is gone.
 
 Staging has no Indexer/IPNI configuration. Indexer and Swarf identities remain registered
 centrally and are not appliance dependencies.
+
+UPDATE (2026-10): Ingot now streams Swarf's revocation firehose, so a bucket policy change or
+key deletion reaches its per-key authorization caches. Ingot reconnects with backoff when Swarf is
+unreachable and keeps serving from its caches, so Swarf is still not needed to start or serve.
