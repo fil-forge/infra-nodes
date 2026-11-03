@@ -15,6 +15,9 @@ UPDATE: Staging now runs three Piris, at `piri-<n>.eu-central-3.staging.fil-forg
 `127.0.0.1:15100` to `15102`; see
 [An appliance runs one Piri per storage volume](2026-10-multiple-piri-per-appliance.md).
 
+UPDATE: The Bucket Intelligence engine (FIL-1708) listens on `127.0.0.1:15300`. The host Caddy
+proxies it under `/_rag/` on Ingot's hostname, so it needs no DNS record of its own.
+
 Their Docker network uses the fixed `172.18.0.0/16` subnet. Source-subnet UFW rules permit that
 network to reach the host's TCP 443 Caddy listener and TCP 1234 Lotus RPC listener without depending
 on Docker's generated bridge name.

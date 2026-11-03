@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bring the Piris and Ingot to what the checkout says they should be.
+# Bring the Piris, Ingot and, on a node that runs it, the Bucket Intelligence
+# engine to what the checkout says they should be.
 #
 # Runs on the node, as root, from the reconcile timer or by hand. Nothing here
 # restarts a Piri without first waiting for its proving window, because a
@@ -45,6 +46,17 @@ for service in "${piris[@]}"; do piri_changed[$service]=0; done
 # A change every Piri sees: the base config and the env file they share.
 piris_changed=0
 ingot_changed=0
+
+# Bucket Intelligence runs only where the node's compose.yml defines it, so a
+# node without it never asks OpenBao for its secrets. Read without
+# interpolation, as piri_services does.
+apps_services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
+  config --no-interpolate --services)" ||
+  die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
+has_rag=0
+if grep -qx rag-engine <<<"$apps_services"; then has_rag=1; fi
+rag_embed_changed=0
+rag_engine_changed=0
 
 # --- 1. Render --------------------------------------------------------------
 
@@ -111,6 +123,19 @@ bao_has ingot hilt_proof ||
 INGOT_HILT_PROOF="$(bao_get ingot hilt_proof)"
 mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/hilt-ingot-proof.txt" "$INGOT_HILT_PROOF
 "
+
+# The engine's bearer token and answer-model key, in an env file of their own
+# rather than apps.env, so a change to them restarts the engine and nothing
+# else.
+if [ "$has_rag" -eq 1 ]; then
+  RAG_ENGINE_TOKEN="$(bao_get rag-engine engine_token)"
+  RAG_ANTHROPIC_API_KEY="$(bao_get rag-engine anthropic_api_key)"
+  export RAG_ENGINE_TOKEN RAG_ANTHROPIC_API_KEY
+  mark rag_engine_changed render_template \
+    "$FILONE_NODE_DIR/apps/templates/rag-engine.env.tpl" \
+    "$FILONE_SECRETS_DIR/rag-engine.env"
+  unset RAG_ENGINE_TOKEN RAG_ANTHROPIC_API_KEY
+fi
 
 # --- 2. Pull ----------------------------------------------------------------
 
@@ -197,8 +222,35 @@ else
   compose_apps up -d --no-recreate ingot
 fi
 
+# Off the storage path, so no gate and no order relative to the above. Same
+# change detection as Ingot: --no-recreate alone would never apply a new digest
+# or a re-rendered env file to a running container.
+if [ "$has_rag" -eq 1 ]; then
+  echo "  Bucket Intelligence"
+  mark rag_embed_changed image_differs compose_apps rag-embed
+  rag_embed_config_hash="$(compose_config_hash compose_apps rag-embed)"
+  mark rag_embed_changed config_changed apps-rag-embed "$rag_embed_config_hash"
+  mark rag_engine_changed image_differs compose_apps rag-engine
+  rag_engine_config_hash="$(compose_config_hash compose_apps rag-engine)"
+  mark rag_engine_changed config_changed apps-rag-engine "$rag_engine_config_hash"
+
+  if [ "$rag_embed_changed" -eq 1 ]; then
+    compose_apps up -d --force-recreate --no-deps rag-embed
+  else
+    compose_apps up -d --no-recreate rag-embed
+  fi
+  # --no-deps skips the depends_on wait in compose.yml, so wait here: an
+  # engine started before the embedding model is loaded fails its first sync.
+  wait_healthy compose_apps 420 rag-embed
+  if [ "$rag_engine_changed" -eq 1 ]; then
+    compose_apps up -d --force-recreate --no-deps rag-engine
+  else
+    compose_apps up -d --no-recreate --no-deps rag-engine
+  fi
+fi
+
 # Catch a service added to compose.yml and remove one deleted from it, without
-# recreating either of the two above: whether they restart was decided, and
+# recreating any of the services above: whether they restart was decided, and
 # gated, further up.
 compose_apps up -d --no-recreate --remove-orphans
 
@@ -213,6 +265,10 @@ for service in "${piris[@]}"; do
   config_hash_record "apps-$service" "${piri_config_hash[$service]}"
 done
 config_hash_record apps-ingot "$ingot_config_hash"
+if [ "$has_rag" -eq 1 ]; then
+  config_hash_record apps-rag-embed "$rag_embed_config_hash"
+  config_hash_record apps-rag-engine "$rag_engine_config_hash"
+fi
 
 stamp_deploy_success apps
 echo "=== apps deploy complete ==="

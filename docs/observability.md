@@ -327,6 +327,19 @@ sum(count_over_time({aws_log_group="/forge-central/staging/hilt"} |= "published 
 sum(count_over_time({service_name="appliance-staging-eu-central-3-ingot"} |= "revocation: record processed" [15m]))
 ```
 
+### Bucket Intelligence
+
+On staging, `rag-engine` and `rag-embed` (the embedding model it calls) ship container logs and
+cAdvisor metrics like the other containers, under `service_name="appliance-staging-eu-central-3-rag-engine"`
+and `-rag-embed`. Neither is on the storage path: when they are down, Bucket Intelligence fails in
+Forge regions and nothing else does. The engine logs one JSON line per failed request or sync, with
+`request_failed` or `sync_failed` in it. Its requests go through the host Caddy under `/_rag/` on
+Ingot's hostname, so Caddy's request metrics count them with Ingot's.
+
+```logql
+{service_name="appliance-staging-eu-central-3-rag-engine"} |~ "request_failed|sync_failed"
+```
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with
