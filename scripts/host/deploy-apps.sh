@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Bring the Piris, Ingot and, on a node that runs it, the Bucket Intelligence
-# engine to what the checkout says they should be.
+# Bring the Piris and Ingot to what the checkout says they should be, then hand
+# Bucket Intelligence to deploy-rag.sh on a node that runs it.
 #
 # Runs on the node, as root, from the reconcile timer or by hand. Nothing here
 # restarts a Piri without first waiting for its proving window, because a
@@ -47,16 +47,13 @@ for service in "${piris[@]}"; do piri_changed[$service]=0; done
 piris_changed=0
 ingot_changed=0
 
-# Bucket Intelligence runs only where the node's compose.yml defines it, so a
-# node without it never asks OpenBao for its secrets. Read without
-# interpolation, as piri_services does.
+# Every service but Bucket Intelligence's two, which deploy-rag.sh deploys once
+# these are deployed and recorded, so nothing about them can fail this deploy.
+# Read without interpolation, as piri_services does.
 apps_services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
   config --no-interpolate --services)" ||
   die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
-has_rag=0
-if grep -qx rag-engine <<<"$apps_services"; then has_rag=1; fi
-rag_embed_changed=0
-rag_engine_changed=0
+core_services="$(grep -vxE 'rag-embed|rag-engine' <<<"$apps_services")"
 
 # --- 1. Render --------------------------------------------------------------
 
@@ -124,25 +121,13 @@ INGOT_HILT_PROOF="$(bao_get ingot hilt_proof)"
 mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/hilt-ingot-proof.txt" "$INGOT_HILT_PROOF
 "
 
-# The engine's bearer token and answer-model key, in an env file of their own
-# rather than apps.env, so a change to them restarts the engine and nothing
-# else.
-if [ "$has_rag" -eq 1 ]; then
-  RAG_ENGINE_TOKEN="$(bao_get rag-engine engine_token)"
-  RAG_ANTHROPIC_API_KEY="$(bao_get rag-engine anthropic_api_key)"
-  export RAG_ENGINE_TOKEN RAG_ANTHROPIC_API_KEY
-  mark rag_engine_changed render_template \
-    "$FILONE_NODE_DIR/apps/templates/rag-engine.env.tpl" \
-    "$FILONE_SECRETS_DIR/rag-engine.env"
-  unset RAG_ENGINE_TOKEN RAG_ANTHROPIC_API_KEY
-fi
-
 # --- 2. Pull ----------------------------------------------------------------
 
 echo "[2/5] Pulling images"
 # Before the gate, not after. Pulling can take minutes, and doing it inside the
 # safe window would spend the window on a download.
-compose_apps pull --quiet
+# shellcheck disable=SC2086 # one service name per word
+compose_apps pull --quiet $core_services
 
 mark ingot_changed image_differs compose_apps ingot
 
@@ -222,55 +207,18 @@ else
   compose_apps up -d --no-recreate ingot
 fi
 
-# Off the storage path, so no gate and no order relative to the above. Same
-# change detection as Ingot: --no-recreate alone would never apply a new digest
-# or a re-rendered env file to a running container.
-#
-# Their health does not decide the deploy's. Their waits run in a subshell, where
-# wait_healthy's die ends only the wait, so an unhealthy embedding model or
-# engine is logged as a warning and the Piris and Ingot still deploy, pass
-# their own health check and have their hashes recorded. The engine's hashes
-# stay unrecorded, so the next deploy recreates the two again.
-rag_healthy=1
-if [ "$has_rag" -eq 1 ]; then
-  echo "  Bucket Intelligence"
-  mark rag_embed_changed image_differs compose_apps rag-embed
-  rag_embed_config_hash="$(compose_config_hash compose_apps rag-embed)"
-  mark rag_embed_changed config_changed apps-rag-embed "$rag_embed_config_hash"
-  mark rag_engine_changed image_differs compose_apps rag-engine
-  rag_engine_config_hash="$(compose_config_hash compose_apps rag-engine)"
-  mark rag_engine_changed config_changed apps-rag-engine "$rag_engine_config_hash"
-
-  if [ "$rag_embed_changed" -eq 1 ]; then
-    compose_apps up -d --force-recreate --no-deps rag-embed
-  else
-    compose_apps up -d --no-recreate rag-embed
-  fi
-  # An engine started before the embedding model is loaded fails its first
-  # sync, so it waits for rag-embed here. Left as it is when rag-embed never
-  # gets there.
-  if (wait_healthy compose_apps 300 rag-embed); then
-    if [ "$rag_engine_changed" -eq 1 ]; then
-      compose_apps up -d --force-recreate --no-deps rag-engine
-    else
-      compose_apps up -d --no-recreate --no-deps rag-engine
-    fi
-  else
-    rag_healthy=0
-  fi
-fi
-
 # Catch a service added to compose.yml and remove one deleted from it, without
 # recreating any of the services above: whether they restart was decided, and
-# gated, further up.
-compose_apps up -d --no-recreate --remove-orphans
+# gated, further up. Bucket Intelligence's two are left out; a container whose
+# service is gone from compose.yml is still removed.
+# shellcheck disable=SC2086 # one service name per word
+compose_apps up -d --no-recreate --remove-orphans $core_services
 
 # --- 5. Health --------------------------------------------------------------
 
 echo "[5/5] Health"
-# Every service but the engine's two, which are checked on their own below.
-# shellcheck disable=SC2046 # one service name per word
-wait_healthy compose_apps 420 $(grep -vxE 'rag-embed|rag-engine' <<<"$apps_services")
+# shellcheck disable=SC2086 # one service name per word
+wait_healthy compose_apps 420 $core_services
 
 # Only now, after the deploy is known good. Recording the hashes earlier would
 # make a failed deploy look like an up-to-date one on the next pass.
@@ -279,25 +227,10 @@ for service in "${piris[@]}"; do
 done
 config_hash_record apps-ingot "$ingot_config_hash"
 
-# A file reconcile.sh reads as a reason to deploy apps again on its next pass.
-# The deploy stamp below records this revision as deployed, so without it the
-# engine would wait for the next commit to be retried.
-rag_retry="$FILONE_STATE_DIR/apps-retry"
-if [ "$has_rag" -eq 1 ]; then
-  if [ "$rag_healthy" -eq 1 ] && (wait_healthy compose_apps 180 rag-engine); then
-    config_hash_record apps-rag-embed "$rag_embed_config_hash"
-    config_hash_record apps-rag-engine "$rag_engine_config_hash"
-  else
-    rag_healthy=0
-  fi
-fi
-if [ "$rag_healthy" -eq 1 ]; then
-  rm -f "$rag_retry"
-else
-  echo "WARNING: Bucket Intelligence (rag-embed, rag-engine) is not healthy. Piri and Ingot" >&2
-  echo "         deployed; the next reconcile pass retries the engine." >&2
-  touch "$rag_retry"
-fi
-
 stamp_deploy_success apps
 echo "=== apps deploy complete ==="
+
+# Last, and outside this deploy's success: deploy-rag.sh logs its own warning
+# and leaves a marker that makes the next reconcile pass retry it alone. It
+# exits at once on a node without the engine.
+"$SCRIPT_DIR/deploy-rag.sh" || true

@@ -332,21 +332,22 @@ sum(count_over_time({service_name="appliance-staging-eu-central-3-ingot"} |= "re
 On staging, `rag-engine` and `rag-embed` (the embedding model it calls) ship container logs and
 cAdvisor metrics like the other containers, under `service_name="appliance-staging-eu-central-3-rag-engine"`
 and `-rag-embed`. Neither is on the storage path: when they are down, Bucket Intelligence fails in
-Forge regions and Piri and Ingot keep serving. The apps deploy checks their health separately from
-Piri's and Ingot's. When either is unhealthy it still records the Piris and Ingot as deployed and
-moves the `apps` deploy stamp, logs a warning to the reconcile journal, and retries the two on every
-reconcile pass until they come up. The engine logs
-one JSON line per failed request or sync at level `error`. Its requests go through the host Caddy
-under `/_rag/` on Ingot's hostname, so Caddy's request metrics count them with Ingot's.
+Forge regions and Piri and Ingot keep serving. The apps deploy hands them to `deploy-rag.sh` after
+it has recorded the Piris and Ingot as deployed and moved the `apps` deploy stamp. When the two fail
+to deploy or to come up healthy, `deploy-rag.sh` logs a warning to the reconcile journal, and every
+reconcile pass retries them on their own, without touching Piri or Ingot, until they come up. The
+`apps` stamp does not cover them, so the warning below is the signal. The engine logs one JSON line
+per failed request or sync at level `error`. Its requests go through the host Caddy under `/_rag/`
+on Ingot's hostname, so Caddy's request metrics count them with Ingot's.
 
 ```logql
 {service_name="appliance-staging-eu-central-3-rag-engine"} | json | level="error"
 ```
 
-A deploy that left the engine unhealthy:
+A deploy that left the engine undeployed or unhealthy:
 
 ```logql
-{node="staging/eu-central-3", unit="filone-reconcile.service"} |= "Bucket Intelligence"
+{node="staging/eu-central-3", unit="filone-reconcile.service"} |= "WARNING: Bucket Intelligence"
 ```
 
 ### The deploy stamp

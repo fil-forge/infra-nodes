@@ -210,7 +210,7 @@ services:
   # Bucket Intelligence (FIL-1708): the engine that keeps each bucket's search
   # index as a Lance dataset in the tenant's own storage, and the embedding
   # model it calls. Neither is on the storage path. Piri and Ingot do not
-  # depend on them, and deploy-apps.sh restarts them without a gate.
+  # depend on them, and deploy-rag.sh restarts them without a gate.
   rag-embed:
     image: ${RAG_EMBED_IMAGE}
     container_name: filone-rag-embed
@@ -257,7 +257,7 @@ services:
       ANSWER_PROVIDER: anthropic
       ANSWER_MODEL: claude-opus-5-5
     # ENGINE_TOKEN and ANTHROPIC_API_KEY, rendered from OpenBao by
-    # deploy-apps.sh. Not required here so CI can validate this file without
+    # deploy-rag.sh. Not required here so CI can validate this file without
     # it; the engine refuses to start without ENGINE_TOKEN.
     env_file:
       - path: /run/fil-one/secrets/rag-engine.env
@@ -269,9 +269,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    # Started, not healthy: deploy-apps.sh waits for rag-embed itself, and a
-    # health condition here would fail every project-wide `up` while the
-    # embedding model is down, Piri and Ingot included.
+    # Started, not healthy: deploy-rag.sh waits for rag-embed itself before it
+    # starts the engine, and a health condition here would fail any `up` that
+    # reaches the engine while the embedding model is down.
     depends_on:
       rag-embed:
         condition: service_started
