@@ -352,7 +352,7 @@ A deploy that left the engine undeployed or unhealthy:
 
 infra-central's "Appliance container is not running" alert fires when `rag-engine` or `rag-embed`
 stops, as it does for every appliance container. Nothing alerts on an engine that runs but fails
-requests, or that a deploy left unhealthy; the two queries above cover those. Add alerts for them
+requests, or that a deploy never started or left unhealthy; the two queries above cover those. Add alerts for them
 before the engine runs on a node that serves customers.
 
 ### The deploy stamp
