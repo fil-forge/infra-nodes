@@ -1203,10 +1203,12 @@ full order, and the on-chain cost of leaving the old proof sets behind.
 **Move Ingot's data directory on staging.** A one-off for the change that moved it from the ZFS pool
 to `/var/lib/fil-one/ingot` on the root SSD. The spool holds bodies not yet uploaded to Piri and the
 catalog log under `segments`, so copy them across before the new mount goes live. Before merging
-that change, stop reconcile and Ingot, and copy:
+that change, stop reconcile and Ingot, and copy. Stopping the timer leaves a pass already running,
+which could start Ingot again mid-copy, so wait for it to finish rather than kill a deploy halfway:
 
 ```sh
 sudo systemctl stop filone-reconcile.timer
+while systemctl is-active -q filone-reconcile.service; do sleep 10; done
 sudo docker stop filone-ingot
 sudo install -d -m 0755 /var/lib/fil-one/ingot
 sudo rsync -aHAX --numeric-ids /mnt/data/fil-one/data/ingot/ /var/lib/fil-one/ingot/
@@ -1222,8 +1224,8 @@ sudo systemctl start filone-reconcile.timer
 Staging takes no uploads from the `docker stop` until reconcile recreates Ingot. If reconcile runs
 before the copy, Ingot fails to start on the missing directory rather than starting empty. Once
 `docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' filone-ingot` lists
-`/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging` passes, remove the old copy:
-`sudo rm -rf /mnt/data/fil-one/data/ingot`.
+`/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, remove the old
+copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
 ## Re-onboarding after identity loss
 
