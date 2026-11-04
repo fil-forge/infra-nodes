@@ -92,11 +92,15 @@ echo "[3/3] rag-embed, then rag-engine"
 # as it is, the restart policy acts only when a container exits, and every retry
 # would wait on the same broken container.
 start_unchanged() {
-  local service="$1" health
-  health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
-    "filone-$service" 2>/dev/null || true)"
-  if [ "$health" = unhealthy ]; then
-    echo "  $service: nothing changed, but it is unhealthy; recreating it"
+  local service="$1" id state=""
+  id="$(compose_apps ps -aq "$service")" || die "could not list $service's container"
+  if [ -n "$id" ]; then
+    state="$(docker inspect --type container \
+      -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id")" ||
+      die "could not inspect $service's container"
+  fi
+  if [[ "$state" == *" unhealthy" ]]; then
+    echo "  $service: nothing changed, but it is ${state% unhealthy} and unhealthy; recreating it"
     compose_apps up -d --force-recreate --no-deps "$service"
   else
     echo "  $service: nothing changed"
