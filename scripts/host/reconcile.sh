@@ -119,6 +119,15 @@ deploy_platform=0
 deploy_apps=0
 if project_is_stale platform "$shared_paths|^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
 if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
+# Left by a Bucket Intelligence deploy that did not finish healthy, so the
+# engine is retried without waiting for a commit. With no apps commit to deploy,
+# the retry is deploy-rag.sh alone, which never starts, stops or recreates a
+# Piri or Ingot. A full apps deploy runs deploy-rag.sh itself.
+retry_rag=0
+if [ "$deploy_apps" -eq 0 ] && [ -e "$FILONE_STATE_DIR/rag-retry" ]; then
+  echo "  Bucket Intelligence has a deploy to retry"
+  retry_rag=1
+fi
 
 # --- 4. Renew the local OpenBao token ---------------------------------------
 
@@ -146,9 +155,14 @@ fi
 if [ "$deploy_apps" -eq 1 ]; then
   echo "==> apps changed"
   "$FILONE_CHECKOUT/scripts/host/deploy-apps.sh"
+elif [ "$retry_rag" -eq 1 ]; then
+  echo "==> retrying Bucket Intelligence"
+  # A failure is logged as a warning and leaves the marker for the next pass.
+  # It does not fail this one: Piri and Ingot are not involved.
+  "$FILONE_CHECKOUT/scripts/host/deploy-rag.sh" || true
 fi
 
-if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ]; then
+if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ] && [ "$retry_rag" -eq 0 ]; then
   echo "  nothing to deploy"
 fi
 

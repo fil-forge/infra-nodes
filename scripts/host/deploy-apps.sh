@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bring the Piris and Ingot to what the checkout says they should be.
+# Bring the Piris and Ingot to what the checkout says they should be, then hand
+# Bucket Intelligence to deploy-rag.sh on a node that runs it.
 #
 # Runs on the node, as root, from the reconcile timer or by hand. Nothing here
 # restarts a Piri without first waiting for its proving window, because a
@@ -45,6 +46,10 @@ for service in "${piris[@]}"; do piri_changed[$service]=0; done
 # A change every Piri sees: the base config and the env file they share.
 piris_changed=0
 ingot_changed=0
+
+# Every service but Bucket Intelligence's two, which deploy-rag.sh deploys once
+# these are deployed and recorded, so nothing about them can fail this deploy.
+core_services="$(apps_core_services)"
 
 # --- 1. Render --------------------------------------------------------------
 
@@ -117,7 +122,8 @@ mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/hilt-ingot-proof.txt" 
 echo "[2/5] Pulling images"
 # Before the gate, not after. Pulling can take minutes, and doing it inside the
 # safe window would spend the window on a download.
-compose_apps pull --quiet
+# shellcheck disable=SC2086 # one service name per word
+compose_apps pull --quiet $core_services
 
 mark ingot_changed image_differs compose_apps ingot
 
@@ -198,14 +204,17 @@ else
 fi
 
 # Catch a service added to compose.yml and remove one deleted from it, without
-# recreating either of the two above: whether they restart was decided, and
-# gated, further up.
-compose_apps up -d --no-recreate --remove-orphans
+# recreating any of the services above: whether they restart was decided, and
+# gated, further up. Bucket Intelligence's two are left out; a container whose
+# service is gone from compose.yml is still removed.
+# shellcheck disable=SC2086 # one service name per word
+compose_apps up -d --no-recreate --remove-orphans $core_services
 
 # --- 5. Health --------------------------------------------------------------
 
 echo "[5/5] Health"
-wait_healthy compose_apps 420
+# shellcheck disable=SC2086 # one service name per word
+wait_healthy compose_apps 420 $core_services
 
 # Only now, after the deploy is known good. Recording the hashes earlier would
 # make a failed deploy look like an up-to-date one on the next pass.
@@ -216,3 +225,8 @@ config_hash_record apps-ingot "$ingot_config_hash"
 
 stamp_deploy_success apps
 echo "=== apps deploy complete ==="
+
+# Last, and outside this deploy's success: deploy-rag.sh logs its own warning
+# and leaves a marker that makes the next reconcile pass retry it alone. It
+# exits at once on a node without the engine.
+"$SCRIPT_DIR/deploy-rag.sh" || true

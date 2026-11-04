@@ -327,6 +327,34 @@ sum(count_over_time({aws_log_group="/forge-central/staging/hilt"} |= "published 
 sum(count_over_time({service_name="appliance-staging-eu-central-3-ingot"} |= "revocation: record processed" [15m]))
 ```
 
+### Bucket Intelligence
+
+On staging, `rag-engine` and `rag-embed` (the embedding model it calls) ship container logs and
+cAdvisor metrics like the other containers, under `service_name="appliance-staging-eu-central-3-rag-engine"`
+and `-rag-embed`. Neither is on the storage path: when they are down, Bucket Intelligence fails in
+Forge regions and Piri and Ingot keep serving. The apps deploy hands them to `deploy-rag.sh` after
+it has recorded the Piris and Ingot as deployed and moved the `apps` deploy stamp. When the two fail
+to deploy or to come up healthy, `deploy-rag.sh` logs a warning to the reconcile journal, and every
+reconcile pass retries them on their own, without touching Piri or Ingot, until they come up. The
+`apps` stamp does not cover them, so the warning below is the signal. The engine logs one JSON line
+per failed request or sync at level `error`. Its requests go through the host Caddy under `/_rag/`
+on Ingot's hostname, so Caddy's request metrics count them with Ingot's.
+
+```logql
+{service_name="appliance-staging-eu-central-3-rag-engine"} | json | level="error"
+```
+
+A deploy that left the engine undeployed or unhealthy:
+
+```logql
+{node="staging/eu-central-3", unit="filone-reconcile.service"} |= "WARNING: Bucket Intelligence"
+```
+
+infra-central's "Appliance container is not running" alert fires when `rag-engine` or `rag-embed`
+stops, as it does for every appliance container. Nothing alerts on an engine that runs but fails
+requests, or that a deploy never started or left unhealthy; the two queries above cover those. Add alerts for them
+before the engine runs on a node that serves customers.
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with

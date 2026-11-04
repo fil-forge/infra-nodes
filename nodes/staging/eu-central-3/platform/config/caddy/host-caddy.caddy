@@ -1,6 +1,7 @@
 # Imported directly by the host-operated Caddy configuration.
 # The appliance exposes its apps only on loopback, on ports 15000-15999: the
-# Piris on 15100 to 15102, Ingot on 15200.
+# Piris on 15100 to 15102, Ingot on 15200, the Bucket Intelligence engine on
+# 15300.
 
 # A Piri, given its loopback port. Every Piri hostname serves the same status
 # document. Named with the filone- prefix because snippets share one namespace
@@ -28,6 +29,18 @@ https://piri-2.eu-central-3.staging.fil-forge.com {
   import filone-piri 15102
 }
 
+# Ingot, and under /_rag/ the Bucket Intelligence engine (FIL-1708). S3 bucket
+# names cannot contain "_", so no path-style S3 request reaches that prefix.
+# handle_path strips it, so the engine serves /v1/... and /healthz unchanged.
+# The engine checks its own bearer token; its requests are small JSON bodies.
 https://s3.eu-central-3.staging.filonecontent.com {
-  reverse_proxy 127.0.0.1:15200
+  handle_path /_rag/* {
+    request_body {
+      max_size 1MB
+    }
+    reverse_proxy 127.0.0.1:15300
+  }
+  handle {
+    reverse_proxy 127.0.0.1:15200
+  }
 }
