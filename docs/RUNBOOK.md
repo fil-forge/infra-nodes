@@ -113,21 +113,23 @@ default 125 MiB/s for 30 seconds, about 4 GiB; less about 31 GiB for the catalog
 rounded down to 380 GiB, or 408021893120 bytes. That exceeds the 73 GiB that 125 MiB/s writes in ten
 minutes.
 
-A node whose Piris share Ingot's filesystem is sized from ingest instead. The Piris' data is what
-that disk is for, and every cached body is a second copy of bytes a Piri already holds on it, so a
-cache sized from the disk only stores the same data twice. Take at least twice the peak ingest rate
-× 10 minutes, using the highest median of recent valid runs on
-[forge-perf](https://fil-forge.github.io/forge-perf/) where the node has not measured its own, check it against the largest spool-plus-cache usage the node has shown
-(`max_over_time(sum(ingot_local_blobs_usage_bytes{appliance="<appliance>"})[30d:5m])`), and keep it
-a small share of the filesystem. A ZFS pool has no root reserve to subtract: `df` already leaves out
-the space ZFS keeps for itself.
+A node where Ingot shares its filesystem is sized from ingest instead, so the budget does not crowd
+out what else lives there. Take at least twice the peak ingest rate × 10 minutes, using the highest
+median of recent valid runs on [forge-perf](https://fil-forge.github.io/forge-perf/) where the node
+has not measured its own, and check it against the largest spool-plus-cache usage the node has
+shown (`max_over_time(sum(ingot_local_blobs_usage_bytes{appliance="<appliance>"})[30d:5m])`). With
+everything else on the filesystem and its root reserve, it should leave the filesystem below 60%
+used, so the 40% free-space alert stays quiet.
 
-Staging: `/mnt/data` is the ZFS pool `sp-pool`, about 349 TiB usable, holding Postgres, OpenBao, the
-Piris and Ingot. forge-perf's highest median from its valid runs of 19 and 20 October 2026 is 3.96
-GB/s, on one m9gd.16xlarge running every service; ten minutes of that is 2.38 TB, or 2.16 TiB. Twice
-that is 4.33 TiB, rounded up to 5 TiB, or 5497558138880 bytes. That is over 18 times the 298 GB
-(278 GiB) spool-plus-cache peak of the 30 days to 2026-10-26, and about 1.4% of the pool. The staging host is not the forge-perf box, so its
-own rate may be lower; the budget errs on the large side.
+Staging: Ingot's data directory is `/var/lib/fil-one/ingot`, on the host's root filesystem: 15.2 TB
+(13.8 TiB) of ext4 on SSD, shared with the OS and Docker, about 1 TB of it in use on 2026-11-04. The
+Piris, Postgres and OpenBao stay on the ZFS pool at `/mnt/data`. forge-perf's highest median from
+its valid runs of 19 and 20 October 2026 is 3.96 GB/s, on one m9gd.16xlarge running every service;
+ten minutes of that is 2.38 TB, or 2.16 TiB. Twice that is 4.33 TiB, rounded up to 5 TiB, or
+5497558138880 bytes. That is over 18 times the 298 GB (278 GiB) spool-plus-cache peak of the 30 days
+to 2026-10-26. With the 5% root reserve
+and what was already there, it leaves the root filesystem about half used. The staging host is not
+the forge-perf box, so its own rate may be lower; the budget errs on the large side.
 
 ### 3. The node's host
 
@@ -1197,6 +1199,31 @@ starts them again. After that, the next `deploy-apps.sh` starts them, and each P
 proof set and needs onboarding again. infra-central's
 [app reset guide](https://github.com/fil-forge/infra-central/blob/main/docs/reset-apps.md) has the
 full order, and the on-chain cost of leaving the old proof sets behind.
+
+**Move Ingot's data directory on staging.** A one-off for the change that moved it from the ZFS pool
+to `/var/lib/fil-one/ingot` on the root SSD. The spool holds bodies not yet uploaded to Piri and the
+catalog log under `segments`, so copy them across before the new mount goes live. Before merging
+that change, stop reconcile and Ingot, and copy:
+
+```sh
+sudo systemctl stop filone-reconcile.timer
+sudo docker stop filone-ingot
+sudo install -d -m 0755 /var/lib/fil-one/ingot
+sudo rsync -aHAX --numeric-ids /mnt/data/fil-one/data/ingot/ /var/lib/fil-one/ingot/
+```
+
+Merge, then deploy and restart the timer:
+
+```sh
+sudo scripts/host/reconcile.sh
+sudo systemctl start filone-reconcile.timer
+```
+
+Staging takes no uploads from the `docker stop` until reconcile recreates Ingot. If reconcile runs
+before the copy, Ingot fails to start on the missing directory rather than starting empty. Once
+`docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' filone-ingot` lists
+`/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging` passes, remove the old copy:
+`sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
 ## Re-onboarding after identity loss
 

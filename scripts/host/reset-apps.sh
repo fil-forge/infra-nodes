@@ -42,8 +42,8 @@ app_databases() {
 
 # The host directory a container mounts its data from, resolved and checked
 # before anything is deleted in it. Only the data roots of the two layouts pass:
-# /mnt/fil-one on the cloud nodes and /mnt/data/fil-one on staging, with an app's
-# own name as the last component. The control volume is under the first root and
+# /mnt/fil-one on the cloud nodes, and /mnt/data/fil-one and /var/lib/fil-one
+# (Ingot) on staging, with an app's own name as the last component. The control volume is under the first root and
 # holds Postgres and OpenBao, so it is refused by name.
 checked_data_dir() {
   local container="$1" source_dir="$2" resolved
@@ -57,8 +57,8 @@ checked_data_dir() {
   case "$resolved" in
     "$FILONE_CONTROL_DIR" | "$FILONE_CONTROL_DIR"/*)
       die "$container mounts $resolved, on the control volume; refusing to empty it" ;;
-    /mnt/fil-one/* | /mnt/data/fil-one/*) ;;
-    *) die "$container mounts $resolved, outside /mnt/fil-one and /mnt/data/fil-one; refusing to empty it" ;;
+    /mnt/fil-one/* | /mnt/data/fil-one/* | /var/lib/fil-one/*) ;;
+    *) die "$container mounts $resolved, outside /mnt/fil-one, /mnt/data/fil-one and /var/lib/fil-one; refusing to empty it" ;;
   esac
   [[ "$(basename "$resolved")" =~ ^(piri(-[0-9]+)?|ingot)$ ]] ||
     die "$container mounts $resolved, which is not named for an app; refusing to empty it"
