@@ -350,10 +350,10 @@ A deploy that left the engine undeployed or unhealthy:
 {node="staging/eu-central-3", unit="filone-reconcile.service"} |= "WARNING: Bucket Intelligence"
 ```
 
-No alert in infra-central covers these two. They run only on staging and sit outside the storage
-path, so an outage pages nobody: a user who hits one sees the error in the console, and the two
-queries above are where to look. Add an alert before the engine runs on a node that serves
-customers.
+infra-central's "Appliance container is not running" alert fires when `rag-engine` or `rag-embed`
+stops, as it does for every appliance container. Nothing alerts on an engine that runs but fails
+requests, or that a deploy left unhealthy; the two queries above cover those. Add alerts for them
+before the engine runs on a node that serves customers.
 
 ### The deploy stamp
 

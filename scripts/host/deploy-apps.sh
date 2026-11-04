@@ -49,11 +49,7 @@ ingot_changed=0
 
 # Every service but Bucket Intelligence's two, which deploy-rag.sh deploys once
 # these are deployed and recorded, so nothing about them can fail this deploy.
-# Read without interpolation, as piri_services does.
-apps_services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
-  config --no-interpolate --services)" ||
-  die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
-core_services="$(grep -vxE 'rag-embed|rag-engine' <<<"$apps_services")"
+core_services="$(apps_core_services)"
 
 # --- 1. Render --------------------------------------------------------------
 

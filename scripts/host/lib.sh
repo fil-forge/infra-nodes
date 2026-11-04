@@ -766,6 +766,18 @@ for volume in service.get("volumes") or []:
 
 # The Piri containers on this box, in index order. Read from Docker rather than
 # from compose, for the reason given at container_exists below.
+# The apps project's services other than Bucket Intelligence's two, one per
+# line. deploy-rag.sh deploys and waits for those on its own, so a deploy that
+# waits on these is never failed by them. Read without interpolation, as
+# piri_services does.
+apps_core_services() {
+  local services
+  services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
+    config --no-interpolate --services)" ||
+    die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
+  grep -vxE 'rag-embed|rag-engine' <<<"$services" || true
+}
+
 piri_containers() {
   local names
   names="$(docker ps -a --format '{{.Names}}')" || die "could not list containers"
