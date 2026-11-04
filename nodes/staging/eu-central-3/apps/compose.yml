@@ -215,8 +215,8 @@ services:
     image: ${RAG_EMBED_IMAGE}
     container_name: filone-rag-embed
     command:
-      - --model-id=BAAI/bge-small-en-v1.5
-      - --revision=5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+      - --model-id=${RAG_EMBEDDING_MODEL}
+      - --revision=${RAG_EMBEDDING_MODEL_REVISION}
       - --max-client-batch-size=64
       # TEI defaults to one tokenizer per host core, not per core the
       # container is allowed.
@@ -253,9 +253,9 @@ services:
       # TEI serves the OpenAI-compatible API under /v1; the engine appends
       # /embeddings.
       EMBEDDING_BASE_URL: http://rag-embed:80/v1
-      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
-      ANSWER_PROVIDER: anthropic
-      ANSWER_MODEL: claude-opus-5-5
+      EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL}
+      ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER}
+      ANSWER_MODEL: ${RAG_ANSWER_MODEL}
     # ENGINE_TOKEN and ANTHROPIC_API_KEY, rendered from OpenBao by
     # deploy-rag.sh. Not required here so CI can validate this file without
     # it; the engine refuses to start without ENGINE_TOKEN.

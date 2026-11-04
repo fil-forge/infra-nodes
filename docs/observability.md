@@ -350,6 +350,11 @@ A deploy that left the engine undeployed or unhealthy:
 {node="staging/eu-central-3", unit="filone-reconcile.service"} |= "WARNING: Bucket Intelligence"
 ```
 
+No alert in infra-central covers these two. They run only on staging and sit outside the storage
+path, so an outage pages nobody: a user who hits one sees the error in the console, and the two
+queries above are where to look. Add an alert before the engine runs on a node that serves
+customers.
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with
