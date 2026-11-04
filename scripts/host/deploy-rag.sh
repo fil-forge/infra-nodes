@@ -86,6 +86,24 @@ compose_apps pull --quiet rag-embed rag-engine
 # is recorded once it is healthy, so a broken engine does not recreate a healthy
 # rag-embed on every retry.
 echo "[3/3] rag-embed, then rag-engine"
+
+# Start a service whose image and definition match what was recorded. One that
+# went unhealthy after it was recorded is recreated: --no-recreate would leave it
+# as it is, the restart policy acts only when a container exits, and every retry
+# would wait on the same broken container.
+start_unchanged() {
+  local service="$1" health
+  health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+    "filone-$service" 2>/dev/null || true)"
+  if [ "$health" = unhealthy ]; then
+    echo "  $service: nothing changed, but it is unhealthy; recreating it"
+    compose_apps up -d --force-recreate --no-deps "$service"
+  else
+    echo "  $service: nothing changed"
+    compose_apps up -d --no-recreate --no-deps "$service"
+  fi
+}
+
 rag_embed_changed=0
 mark rag_embed_changed image_differs compose_apps rag-embed
 rag_embed_config_hash="$(compose_config_hash compose_apps rag-embed)"
@@ -93,8 +111,7 @@ mark rag_embed_changed config_changed apps-rag-embed "$rag_embed_config_hash"
 if [ "$rag_embed_changed" -eq 1 ]; then
   compose_apps up -d --force-recreate --no-deps rag-embed
 else
-  echo "  rag-embed: nothing changed"
-  compose_apps up -d --no-recreate --no-deps rag-embed
+  start_unchanged rag-embed
 fi
 # An engine started before the embedding model is loaded fails its first sync,
 # so the engine is neither started nor recreated until rag-embed is healthy.
@@ -108,8 +125,7 @@ mark rag_engine_changed config_changed apps-rag-engine "$rag_engine_config_hash"
 if [ "$rag_engine_changed" -eq 1 ]; then
   compose_apps up -d --force-recreate --no-deps rag-engine
 else
-  echo "  rag-engine: nothing changed"
-  compose_apps up -d --no-recreate --no-deps rag-engine
+  start_unchanged rag-engine
 fi
 wait_healthy compose_apps 180 rag-engine
 config_hash_record apps-rag-engine "$rag_engine_config_hash"
