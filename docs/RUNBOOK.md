@@ -1208,7 +1208,7 @@ which could start Ingot again mid-copy, so wait for it to finish rather than kil
 
 ```sh
 sudo systemctl stop filone-reconcile.timer
-while systemctl is-active -q filone-reconcile.service; do sleep 10; done
+while [ "$(systemctl show -P ActiveState filone-reconcile.service)" = activating ]; do sleep 10; done
 sudo docker stop filone-ingot
 sudo install -d -m 0755 /var/lib/fil-one/ingot
 sudo rsync -aHAX --numeric-ids /mnt/data/fil-one/data/ingot/ /var/lib/fil-one/ingot/
