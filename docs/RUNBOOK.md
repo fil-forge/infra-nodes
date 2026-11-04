@@ -89,19 +89,17 @@ they get it. It is a public address, so any channel will do.
 (bodies being written or waiting for upload to Piri) and its cache (copies of bodies Piri already
 holds). Every 30 seconds a sweeper evicts cached bodies, oldest first, down to 90% of it. Ingot reads
 0 as no budget, and its cache then keeps every body until the disk fills, so `deploy-apps.sh`
-refuses anything but a positive byte count. Where Ingot has its filesystem to itself, size it from
-that filesystem:
+refuses anything but a positive byte count. On the EC2 nodes Ingot has the data volume to itself,
+so size the budget from that volume's filesystem:
 
-1. Start from 60% of that filesystem's size, the most it can hold before the "Appliance free disk
-   space below 40%" alert in infra-central fires. The cache stays near the budget, so a budget
-   above that line keeps the alert firing.
+1. Start from 90% of the filesystem's size, the most it can hold before infra-central's "Ingot
+   volume free space below 10%" alert fires. The cache stays near the budget, so a budget above
+   that line keeps the alert firing. The 40% free-space alert leaves this volume out.
 2. Subtract the filesystem's root reserve (5% on the ext4 volumes bootstrap creates), which the
    alert counts as used.
-3. Subtract everything else on that filesystem at its peak: Postgres, OpenBao and the Piris, where
-   they share it.
-4. Subtract the ingest rate × 30 seconds, by which usage can exceed the budget between sweeps. With
-   no measured rate, use the filesystem's write throughput: every body lands there first.
-5. Subtract room for the catalog log, `/data/segments`, which the budget does not cover. With
+3. Subtract the ingest rate × 30 seconds, by which usage can exceed the budget between sweeps. With
+   no measured rate, use the volume's write throughput: every body lands there first.
+4. Subtract room for the catalog log, `/data/segments`, which the budget does not cover. With
    Ingot's defaults it holds up to 6 shipped segments of 64 MiB per bucket, plus the open and
    unshipped ones.
 
@@ -109,10 +107,11 @@ What is left is the budget. It should also exceed the ingest rate × 10 minutes
 (`cache_min_residency`); below that, the sweeper evicts bodies written within that window. Ingot's
 README, "Local disk", has the full sizing list.
 
-Dev: Ingot is alone on the 500 GiB data volume (`data_volume_size` in
-`terraform/envs/dev/terraform.tfvars`). 60% of it is 300 GiB; less the 25 GiB root reserve, 275 GiB;
-less gp3's default 125 MiB/s for 30 seconds, about 4 GiB; less about 31 GiB for the catalog log:
-240 GiB, or 257698037760 bytes. That exceeds the 73 GiB that 125 MiB/s writes in ten minutes.
+Dev: the 500 GiB data volume (`data_volume_size` in `terraform/envs/dev/terraform.tfvars`) formats
+to a 491 GiB filesystem. 90% of it is 442 GiB; less the 25 GiB root reserve, 417 GiB; less gp3's
+default 125 MiB/s for 30 seconds, about 4 GiB; less about 31 GiB for the catalog log: 382 GiB,
+rounded down to 380 GiB, or 408021893120 bytes. That exceeds the 73 GiB that 125 MiB/s writes in ten
+minutes.
 
 A node whose Piris share Ingot's filesystem is sized from ingest instead. The Piris' data is what
 that disk is for, and every cached body is a second copy of bytes a Piri already holds on it, so a
