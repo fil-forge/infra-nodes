@@ -124,9 +124,9 @@ the space ZFS keeps for itself.
 
 Staging: `/mnt/data` is the ZFS pool `sp-pool`, about 349 TiB usable, holding Postgres, OpenBao, the
 Piris and Ingot. forge-perf's highest median from its valid runs of 19 and 20 October 2026 is 3.96
-GB/s, on one m9gd.16xlarge running every service; ten minutes of that is 2.38 TB. Twice that, rounded
-up, is 5 TiB, or 5497558138880 bytes. That is over 18 times the 298 GB spool-plus-cache peak of the
-30 days to 2026-10-26, and about 1.4% of the pool. The staging host is not the forge-perf box, so its
+GB/s, on one m9gd.16xlarge running every service; ten minutes of that is 2.38 TB, or 2.16 TiB. Twice
+that is 4.33 TiB, rounded up to 5 TiB, or 5497558138880 bytes. That is over 18 times the 298 GB
+(278 GiB) spool-plus-cache peak of the 30 days to 2026-10-26, and about 1.4% of the pool. The staging host is not the forge-perf box, so its
 own rate may be lower; the budget errs on the large side.
 
 ### 3. The node's host
