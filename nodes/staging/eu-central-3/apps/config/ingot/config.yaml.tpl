@@ -1,6 +1,7 @@
 addr: "0.0.0.0:9000"
 region: ${REGION_LABEL}
 data_dir: /data
+local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
 log_level: info
 cors_allowed_origins:
   - "https://staging.fil.one"

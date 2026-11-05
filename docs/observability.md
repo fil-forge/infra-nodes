@@ -28,6 +28,8 @@ Each staging container has a CPU and memory limit in its Compose file, which cAd
 as a share of those.
 Piri's and Ingot's own application metrics, which each pushes over OTLP to Alloy: Piri every
 thirty seconds, Ingot every minute.
+Ingot's metrics arrive under `job="forge/ingot"`, among them `ingot_local_blobs_usage_bytes` and
+`ingot_local_blobs_budget_bytes`, which infra-central's "Ingot local disk over budget" alert reads.
 
 **Traces.** Whatever spans Piri and Ingot record, pushed over OTLP to Alloy and on to the stack's
 Tempo unchanged apart from the node's identity.
