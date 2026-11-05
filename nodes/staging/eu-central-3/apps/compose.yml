@@ -192,7 +192,15 @@ services:
         bind:
           create_host_path: false
       - /run/fil-one/bao:/run/openbao
-      - /mnt/data/fil-one/data/ingot:/data
+      # On the host's root filesystem, which is SSD, rather than the ZFS pool
+      # the Piris use: every body Ingot takes in lands here first. A missing
+      # directory fails the start rather than leaving an empty one in place of
+      # the spool, which holds bodies not yet uploaded to Piri.
+      - type: bind
+        source: /var/lib/fil-one/ingot
+        target: /data
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
       start_interval: 1s

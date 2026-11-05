@@ -186,7 +186,7 @@ docker ps --format 'table {{.Names}}\t{{.Status}}'
 Finish from the operator checkout:
 
 ```sh
-scripts/ci/smoke-test.sh staging
+scripts/ci/smoke-test.sh staging/eu-central-3
 ```
 
 The smoke test must pass the Piri readiness, Ingot health, node-status, and
@@ -195,7 +195,7 @@ not in the local checkout, fetch the current branch before rerunning it:
 
 ```sh
 git fetch origin main
-scripts/ci/smoke-test.sh staging
+scripts/ci/smoke-test.sh staging/eu-central-3
 ```
 
 After recovery, remove the moved token files once they are no longer needed:

@@ -31,7 +31,7 @@ install -d -m 0755 \
   /mnt/data/fil-one/data/piri-0 \
   /mnt/data/fil-one/data/piri-1 \
   /mnt/data/fil-one/data/piri-2 \
-  /mnt/data/fil-one/data/ingot
+  /var/lib/fil-one/ingot
 install -d -m 0700 /run/fil-one /run/fil-one/secrets /run/fil-one/bao
 install -d -m 0755 /etc/fil-one
 cat >/etc/tmpfiles.d/filone.conf <<'TMPFILES'
