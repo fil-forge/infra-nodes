@@ -82,6 +82,20 @@ fi
 
 # --- 3. Work out what changed ----------------------------------------------
 
+# Mark the volumes that are mounted, create what the compose files bind from
+# them, and order Docker after their mounts. Each pass, so a node whose volumes
+# predate the markers gets them without a manual step.
+mark_mounted_volumes
+create_bind_sources
+sync_docker_mount_order
+
+# The revisions compared below, and every deploy, live on the control volume.
+# Without it there is nothing to compare against and nothing safe to deploy. The
+# token renewals further down go through the local OpenBao, which is on the
+# same volume, so stopping here loses none of them. The pass is not stamped, so
+# the reconcile deadman alert fires.
+require_control_volume
+
 # Per project, against the revision that project was last deployed from rather
 # than against the checkout's previous HEAD. A deploy that failed leaves its
 # revision unrecorded, so the next pass sees the same work still to do; diffing

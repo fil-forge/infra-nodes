@@ -1579,7 +1579,42 @@ already happened, so there is nothing to race.
 2. Record the proof set's ID and the reason on the incident. What to do with the data set is
    decided outside this runbook.
 
+### A volume is not mounted
+
+Every appliance volume has a marker file at its root, `.filone-volume-<name>`. Dev has five:
+`control`, `data` and `piri-0` to `piri-2` under `/mnt/fil-one`. Staging has two, `control` and
+`data` under `/mnt/data/fil-one`. Each service with data on a volume also mounts that volume's
+marker. While the volume is missing, Docker refuses to start the service, at boot too, so the service
+can't come up on an empty directory on the root disk. `docker inspect <container>` shows `failed to
+fulfil mount request: open <path>/.filone-volume-<name>: no such file or directory`. The services
+on other volumes keep running.
+
+- **A Piri volume, or Ingot's on dev.** That container stays stopped. On staging, "Appliance
+  container is not running" fires. Once a commit touches the apps project, every reconcile pass
+  deploys the other apps, logs `WARNING: <service>'s volume is not mounted` and fails, so the
+  reconcile deadman fires until the volume is back.
+- **The control volume.** Postgres, OpenBao and Caddy stay down, so the node serves nothing.
+  Reconcile stops with `the control volume is not mounted` and stamps nothing, which fires the
+  reconcile deadman. On dev, Alloy keeps running so the node's logs still ship.
+
+To recover:
+
+1. Find out why the volume is missing. On dev, check that the EBS volume is attached, then
+   `lsblk` and `findmnt /mnt/fil-one/<name>`. On staging, follow
+   [Before changing the node](runbook/recover-expired-unseal-token.md#before-changing-the-node)
+   to check the pool.
+2. Mount it. On dev, `mount /mnt/fil-one/<name>` finds the volume by the UUID in `/etc/fstab`.
+3. Check that `<path>/.filone-volume-<name>` is there. If it isn't, the filesystem you mounted is not
+   the one the node was using: stop and find the right one. Reconcile writes the marker on any
+   filesystem mounted at a volume's path, so mount only the volume that belongs there.
+4. Start what stayed down. Docker doesn't retry a start it refused at boot. For a Piri or Ingot,
+   run `scripts/host/deploy-apps.sh`. For the control volume, run `scripts/host/deploy-platform.sh`
+   and then `scripts/host/deploy-apps.sh`.
+
 ### The node rebooted
+
+If a container fails with a `.filone-volume-` mount error instead, its volume didn't mount: see
+[A volume is not mounted](#a-volume-is-not-mounted).
 
 The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
 keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts the containers

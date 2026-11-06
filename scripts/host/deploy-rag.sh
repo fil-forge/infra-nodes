@@ -45,7 +45,15 @@ warn_unless_deployed() {
 }
 trap 'warn_unless_deployed $?' EXIT
 
+require_control_volume
+
 bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
+
+# The model cache is on the data volume. Missing, the run fails like any other,
+# and the next pass retries it.
+missing="$(missing_volume_markers apps rag-embed)"
+[ -z "$missing" ] ||
+  die "rag-embed's volume is not mounted (missing ${missing//$'\n'/, }); leaving Bucket Intelligence stopped"
 
 # compose_apps reads apps.env, which deploy-apps.sh renders into the tmpfs. A
 # reboot empties it, and only an apps deploy renders it again.

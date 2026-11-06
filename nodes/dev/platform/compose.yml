@@ -16,6 +16,21 @@
 # reaches its API is Ingot, over a unix socket on a shared bind mount.
 name: filone-platform
 
+# Each volume's marker, written at the volume's root when the volume is
+# prepared. A service with data on a volume binds its marker too: when the
+# volume is not mounted the marker is missing, and Docker refuses to start the
+# container, at boot as well, where no host script runs. Its data binds set
+# create_host_path: false for the same reason, so Docker never makes the path on
+# the root disk instead. `make check-volumes` holds every service to this.
+x-volume-markers:
+  control: &control-volume
+    type: bind
+    source: /mnt/fil-one/control/.filone-volume-control
+    target: /run/filone-volume/control
+    read_only: true
+    bind:
+      create_host_path: false
+
 services:
   # The node's root of trust. Holds every secret the node has, and unseals by
   # asking the central OpenBao to decrypt its seal key — which is why revoking
@@ -41,7 +56,12 @@ services:
       - VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}
     volumes:
       - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
-      - /mnt/fil-one/control/openbao:/openbao/file
+      - type: bind
+        source: /mnt/fil-one/control/openbao
+        target: /openbao/file
+        bind:
+          create_host_path: false
+      - *control-volume
       # Where the unix listener in bao.hcl puts its socket. Ingot mounts the
       # same host directory and dials the socket for every object key it wraps
       # or unwraps.
@@ -79,7 +99,12 @@ services:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=${POSTGRES_ADMIN_PASSWORD}
     volumes:
-      - /mnt/fil-one/control/postgres:/var/lib/postgresql/data
+      - type: bind
+        source: /mnt/fil-one/control/postgres
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+      - *control-volume
     healthcheck:
       # -h 127.0.0.1 forces a TCP check. On a fresh data directory the image
       # runs a temporary bootstrap server on the unix socket only while initdb
@@ -154,12 +179,26 @@ services:
       # Issued certificates and ACME account keys. On the control volume so a
       # replaced instance serves the same certificates instead of re-issuing and
       # spending Let's Encrypt rate limit.
-      - /mnt/fil-one/control/caddy/data:/data
-      - /mnt/fil-one/control/caddy/config:/config
+      - type: bind
+        source: /mnt/fil-one/control/caddy/data
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/fil-one/control/caddy/config
+        target: /config
+        bind:
+          create_host_path: false
       # The node's status document, served at
       # /.well-known/filone-node-status.json. Read-only, and the Caddyfile's
       # exact path matcher exposes the one file rather than the directory.
-      - /mnt/fil-one/control/state:/srv/filone/.well-known:ro
+      - type: bind
+        source: /mnt/fil-one/control/state
+        target: /srv/filone/.well-known
+        read_only: true
+        bind:
+          create_host_path: false
+      - *control-volume
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:2019/config/"]
       start_interval: 2s
@@ -175,6 +214,12 @@ services:
   # credentials: this is a one-way pipe out of the node.
   alloy:
     image: ${ALLOY_IMAGE}
+    # Starts without the control volume, on purpose. Its write-ahead log and
+    # the deploy stamp it reads are there, but it is also what ships the logs
+    # and host metrics on-call would read to find the volume missing. Losing
+    # the WAL costs a few minutes of buffered telemetry; a stale deploy stamp
+    # is what fires the reconcile alert.
+    x-filone-volume-guard: "exempt: ships the telemetry that reports a missing volume"
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345

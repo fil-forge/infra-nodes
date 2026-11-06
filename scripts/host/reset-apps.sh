@@ -77,6 +77,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 filone_init
+require_control_volume
 
 case "$STAGE" in
   dev | staging) ;;
@@ -120,6 +121,11 @@ while read -r container; do
     -f "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Source}}{{end}}{{end}}" \
     "$container")" || die "could not inspect $container"
   [ -n "$source_dir" ] || die "$container has nothing mounted at $destination"
+  # Without its volume, the directory is an empty one on the root disk, and the
+  # databases would be dropped for a reset that empties nothing.
+  missing="$(container_missing_volume_markers "$container")"
+  [ -z "$missing" ] ||
+    die "$container's volume is not mounted (missing ${missing//$'\n'/, }); mount it before resetting"
   data_dirs[$container]="$(checked_data_dir "$container" "$source_dir")"
 done <<<"$app_containers"
 
@@ -189,11 +195,12 @@ printf '  %s\n' $databases
 
 echo "[4/4] Emptying the data directories"
 # The directory itself stays. On dev each Piri's is an EBS mountpoint, and
-# lost+found belongs to its filesystem. -xdev keeps the find from following a
-# mount someone put further down.
+# lost+found belongs to its filesystem, as does the volume's marker: without it
+# the Piri could not start again. -xdev keeps the find from following a mount
+# someone put further down.
 while read -r container; do
   data_dir="${data_dirs[$container]}"
-  find "$data_dir" -xdev -mindepth 1 -maxdepth 1 ! -name lost+found \
+  find "$data_dir" -xdev -mindepth 1 -maxdepth 1 ! -name lost+found ! -name '.filone-volume-*' \
     -exec rm -rf --one-file-system -- {} + ||
     die "could not empty $data_dir"
   echo "  emptied $data_dir"
