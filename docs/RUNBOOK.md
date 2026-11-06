@@ -1589,7 +1589,7 @@ recorded, and the added pieces are not proven. The contract records no faults wh
 1. On the host, read the Piri's logs for the addition:
 
    ```sh
-   docker logs "filone-piri-${n:?}" 2>&1 | grep -e 'extract pieces from receipt' -e 'No such container'
+   docker logs "filone-piri-${n:?}" 2>&1 | grep -e 'pieces from receipt' -e 'No such container'
    ```
 
 2. If the error names an event that wasn't found in the receipt, PDPVerifier now emits an event
