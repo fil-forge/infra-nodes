@@ -365,6 +365,34 @@ mounted_services() {
   done
 }
 
+# Stop the running containers of every service in a project whose volume is not
+# mounted. A container created before the markers existed binds none, so Docker
+# restarts it at boot on an empty directory; this catches it on the next pass.
+# Found by the labels compose puts on its containers, so this works when the
+# env files compose would need are gone after a reboot. Not behind the proving
+# gate: a Piri without its volume cannot prove the data on it.
+#
+# Usage: stop_unmounted_services <platform|apps>
+stop_unmounted_services() {
+  local project="$1" services service missing ids
+  [ -f "$FILONE_NODE_DIR/$project/compose.yml" ] || return 0
+  services="$(docker compose --project-directory "$FILONE_NODE_DIR/$project" -p "filone-$project" \
+    config --no-interpolate --services)" ||
+    die "could not read the services in nodes/$FILONE_NODE/$project/compose.yml"
+  for service in $services; do
+    missing="$(missing_volume_markers "$project" "$service")"
+    [ -n "$missing" ] || continue
+    ids="$(docker ps -q \
+      --filter "label=com.docker.compose.project=filone-$project" \
+      --filter "label=com.docker.compose.service=$service")" ||
+      die "could not list $service's containers"
+    [ -n "$ids" ] || continue
+    echo "WARNING: stopping $service: its volume is not mounted (missing ${missing//$'\n'/, })" >&2
+    # shellcheck disable=SC2086 # one container id per word
+    docker stop $ids >/dev/null || die "could not stop $service"
+  done
+}
+
 # The missing markers of an existing Piri or Ingot container (filone-<service>),
 # one per line. Read from the mounts it was created with, which are what Docker
 # checks when it starts it, and from the apps compose file too: a container

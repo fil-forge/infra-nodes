@@ -30,6 +30,8 @@ echo "=== deploy platform ($FILONE_NODE) ==="
 
 # Before anything starts: OpenBao and Postgres on a missing control volume would
 # come up on an empty directory, and Postgres would initialise a new cluster.
+# Ones Docker already restarted that way, from before the markers, are stopped.
+stop_unmounted_services platform
 require_control_volume
 
 if node_ships_telemetry; then

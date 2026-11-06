@@ -89,6 +89,12 @@ mark_mounted_volumes
 create_bind_sources
 sync_docker_mount_order
 
+# And stop anything running on a volume that is not mounted, such as a container
+# from before the markers that Docker restarted at boot. Before the check below,
+# which ends the pass when the control volume is the one missing.
+stop_unmounted_services platform
+stop_unmounted_services apps
+
 # The revisions compared below, and every deploy, live on the control volume.
 # Without it there is nothing to compare against and nothing safe to deploy. The
 # token renewals further down go through the local OpenBao, which is on the
