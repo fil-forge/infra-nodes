@@ -1,5 +1,20 @@
 name: filone-apps
 
+# Each volume's marker, written at the volume's root when the volume is
+# prepared. A service with data on a volume binds its marker too: when the
+# volume is not mounted the marker is missing, and Docker refuses to start the
+# container, at boot as well, where no host script runs. Its data binds set
+# create_host_path: false for the same reason, so Docker never makes the path on
+# the root disk instead. `make check-volumes` holds every service to this.
+x-volume-markers:
+  data: &data-volume
+    type: bind
+    source: /mnt/data/fil-one/data/.filone-volume-data
+    target: /run/filone-volume/data
+    read_only: true
+    bind:
+      create_host_path: false
+
 # What every Piri shares. Compose ignores a top-level key only when it starts
 # with `x-`, which marks it as an extension field; the rest of the name is free.
 # Each service below merges this in with `<<: *piri-base` and adds what is its
@@ -90,7 +105,12 @@ services:
         bind:
           create_host_path: false
       - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
-      - /mnt/data/fil-one/data/piri-0:/data/piri
+      - type: bind
+        source: /mnt/data/fil-one/data/piri-0
+        target: /data/piri
+        bind:
+          create_host_path: false
+      - *data-volume
 
   piri-1:
     <<: *piri-base
@@ -116,7 +136,12 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - /mnt/data/fil-one/data/piri-1:/data/piri
+      - type: bind
+        source: /mnt/data/fil-one/data/piri-1
+        target: /data/piri
+        bind:
+          create_host_path: false
+      - *data-volume
     # The Piris start one at a time. `piri init` estimates gas for the
     # createDataSet transaction against the chain's pending state, and two
     # Piris estimating at once underestimate it: the loser's transaction
@@ -150,7 +175,12 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - /mnt/data/fil-one/data/piri-2:/data/piri
+      - type: bind
+        source: /mnt/data/fil-one/data/piri-2
+        target: /data/piri
+        bind:
+          create_host_path: false
+      - *data-volume
     depends_on:
       piri-1:
         condition: service_healthy
@@ -233,7 +263,12 @@ services:
     # The model downloads from Hugging Face on the first start and is cached
     # here, so a restart does not fetch it again.
     volumes:
-      - /mnt/data/fil-one/data/rag-embed:/data
+      - type: bind
+        source: /mnt/data/fil-one/data/rag-embed
+        target: /data
+        bind:
+          create_host_path: false
+      - *data-volume
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
       start_interval: 2s

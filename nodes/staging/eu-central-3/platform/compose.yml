@@ -1,5 +1,20 @@
 name: filone-platform
 
+# Each volume's marker, written at the volume's root when the volume is
+# prepared. A service with data on a volume binds its marker too: when the
+# volume is not mounted the marker is missing, and Docker refuses to start the
+# container, at boot as well, where no host script runs. Its data binds set
+# create_host_path: false for the same reason, so Docker never makes the path on
+# the root disk instead. `make check-volumes` holds every service to this.
+x-volume-markers:
+  control: &control-volume
+    type: bind
+    source: /mnt/data/fil-one/control/.filone-volume-control
+    target: /run/filone-volume/control
+    read_only: true
+    bind:
+      create_host_path: false
+
 services:
   openbao:
     image: ${OPENBAO_IMAGE}
@@ -9,7 +24,12 @@ services:
     environment: ["VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}"]
     volumes:
       - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
-      - /mnt/data/fil-one/control/openbao:/openbao/file
+      - type: bind
+        source: /mnt/data/fil-one/control/openbao
+        target: /openbao/file
+        bind:
+          create_host_path: false
+      - *control-volume
       - /run/fil-one/bao:/openbao/logs
     healthcheck:
       test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null"]
@@ -29,7 +49,13 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
-    volumes: ["/mnt/data/fil-one/control/postgres:/var/lib/postgresql/data"]
+    volumes:
+      - type: bind
+        source: /mnt/data/fil-one/control/postgres
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+      - *control-volume
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U admin -d admin"]
       start_interval: 1s

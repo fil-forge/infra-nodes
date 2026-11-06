@@ -375,6 +375,19 @@ When each project last deployed, per node:
 deploy_last_success_timestamp{project=~"apps|platform"}
 ```
 
+### Unmounted volumes
+
+A service whose volume is not mounted stays stopped. On staging, "Appliance container is not
+running" fires for it. A deploy that skipped it, or a reconcile pass stopped by a missing control
+volume, fails without a stamp, which fires the reconcile deadman. The host scripts log which volume
+is missing:
+
+```logql
+{unit="filone-reconcile.service"} |= "is not mounted"
+```
+
+[A volume is not mounted](RUNBOOK.md#a-volume-is-not-mounted) has the recovery.
+
 ## Traces
 
 Piri and Ingot push their spans to the same Alloy receiver as their metrics. Alloy does not

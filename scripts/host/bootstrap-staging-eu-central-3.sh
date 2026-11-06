@@ -24,6 +24,14 @@ FILONE_SUBNET=172.18.0.0/16
 command -v docker >/dev/null || { echo "ERROR: docker is not installed" >&2; exit 1; }
 command -v ufw >/dev/null || { echo "ERROR: ufw is not installed" >&2; exit 1; }
 
+# The appliance's directories below live on the ZFS pool at /mnt/data. Without
+# the pool, /mnt/data is a directory on the root disk, and creating them there
+# is how Postgres and Piri would come up on empty directories.
+[ -d /mnt/data ] && [ "$(findmnt -n -o TARGET --target /mnt/data)" != / ] || {
+  echo "ERROR: /mnt/data is not mounted; import the ZFS pool first" >&2
+  exit 1
+}
+
 install -d -m 0755 \
   /mnt/data/fil-one/control/openbao \
   /mnt/data/fil-one/control/postgres \

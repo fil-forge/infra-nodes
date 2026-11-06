@@ -65,7 +65,11 @@ filone_init() {
   FILONE_METRICS_DIR="$FILONE_STATE_DIR/metrics"
   FILONE_REVISIONS_DIR="$FILONE_STATE_DIR/revisions"
 
-  mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
+  # Not on a missing control volume, where it would make the state directory
+  # on the root disk. The scripts that need it call require_control_volume.
+  if control_volume_mounted; then
+    mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
+  fi
   install -d -m 0700 -o root -g root "$FILONE_SECRETS_DIR"
   # cloud-init creates this too, so on a fresh node it is already there. Here as
   # well, so a node provisioned before the socket existed gets the directory on
@@ -212,6 +216,202 @@ take_deploy_lock() {
 }
 
 # --- OpenBao ---------------------------------------------------------------
+
+# --- Volumes ---------------------------------------------------------------
+
+# Every volume carries a marker at its root, .filone-volume-<name>, written when
+# the volume is prepared, and every service with data on a volume binds that
+# volume's marker. A missing marker means the volume is not mounted: the path is
+# then an empty directory on the root disk, and Docker refuses to start the
+# services that bind it. The helpers below let the scripts skip those services,
+# or stop, instead of failing halfway through.
+
+control_volume_mounted() {
+  [ -f "$FILONE_CONTROL_DIR/.filone-volume-control" ]
+}
+
+# Write the marker on each volume in FILONE_VOLUMES that is mounted and has none
+# yet. Mounted means the path's filesystem is not the root one: an unmounted
+# volume leaves its path as a directory on the root disk, which is exactly what
+# a marker must never be written to. Called on every reconcile pass and by
+# provisioning, so a new volume, or a node from before the markers, gets one
+# without a manual step. A volume that is not mounted is reported and skipped;
+# what that means for the services on it is decided where they are deployed.
+mark_mounted_volumes() {
+  local entry name path marker filesystem
+  for entry in ${FILONE_VOLUMES:?FILONE_VOLUMES is not set in $FILONE_NODE_DIR/node.env}; do
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    marker="$path/.filone-volume-$name"
+    [ -f "$marker" ] && continue
+
+    filesystem=/
+    [ -d "$path" ] && filesystem="$(findmnt -n -o TARGET --target "$path")"
+    if [ "$filesystem" = / ]; then
+      echo "WARNING: volume $name is not mounted at $path; not marking it" >&2
+      continue
+    fi
+    printf '%s\n' "$name" >"$marker"
+    chmod 0444 "$marker"
+    echo "  marked volume $name ($path, on $filesystem)"
+  done
+}
+
+# Create the directories the compose files bind from a mounted volume. The binds
+# set create_host_path: false, so Docker no longer makes them, and a new service
+# or a new node would otherwise fail to start. Only on a volume whose marker is
+# there, so nothing is created on the root disk.
+create_bind_sources() {
+  local project definition source entry path
+  for project in platform apps; do
+    [ -f "$FILONE_NODE_DIR/$project/compose.yml" ] || continue
+    definition="$(docker compose --project-directory "$FILONE_NODE_DIR/$project" -p "filone-$project" \
+      config --no-interpolate --format json)" ||
+      die "could not read nodes/$FILONE_NODE/$project/compose.yml"
+    while read -r source; do
+      for entry in $FILONE_VOLUMES; do
+        path="${entry#*:}"
+        [[ "$source" == "$path"/* ]] || continue
+        if [ -f "$path/.filone-volume-${entry%%:*}" ]; then
+          mkdir -p "$source"
+        fi
+      done
+    done < <(jq -r '.services[].volumes // [] | .[] | select(.type == "bind") | .source
+                    | select(test("/\\.filone-volume-[^/]+$") | not)' <<<"$definition")
+  done
+}
+
+# Have Docker wait for the volumes' mounts at boot. They are mounted with
+# nofail, so a missing volume does not drop the box into emergency mode where
+# SSM cannot reach it, but nofail also leaves them unordered against Docker. A
+# volume that is still mounting when Docker restarts its containers would then
+# count as missing, and Docker does not retry. After= orders without requiring:
+# a mount that fails still lets Docker start, and the markers keep the services
+# on that volume down.
+#
+# Only mounts listed in /etc/fstab, which are the ones systemd mounts at boot. A
+# ZFS dataset is mounted by zfs-mount.service before local-fs.target, which
+# Docker already starts after.
+FILONE_DOCKER_DROPIN=/etc/systemd/system/docker.service.d/filone-volume-mounts.conf
+sync_docker_mount_order() {
+  local entry path filesystem units="" content
+  for entry in $FILONE_VOLUMES; do
+    path="${entry#*:}"
+    [ -d "$path" ] || continue
+    filesystem="$(findmnt -n -o TARGET --target "$path")"
+    [ "$filesystem" != / ] || continue
+    findmnt --fstab -n "$filesystem" >/dev/null || continue
+    units+=" $(systemd-escape --path --suffix=mount "$filesystem")"
+  done
+
+  if [ -z "$units" ]; then
+    [ -e "$FILONE_DOCKER_DROPIN" ] || return 0
+    rm -f "$FILONE_DOCKER_DROPIN"
+  else
+    content="# Written by infra-nodes' sync_docker_mount_order. Docker waits for the
+# appliance volumes to mount, or to fail, before it restarts any container.
+[Unit]
+After=${units# }"
+    [ "$(cat "$FILONE_DOCKER_DROPIN" 2>/dev/null)" != "$content" ] || return 0
+    install -d -m 0755 "$(dirname "$FILONE_DOCKER_DROPIN")"
+    printf '%s\n' "$content" >"$FILONE_DOCKER_DROPIN"
+  fi
+  echo "  updated $FILONE_DOCKER_DROPIN"
+  systemctl daemon-reload
+}
+
+# For a script that writes deployment state or starts the platform. Without the
+# control volume, Postgres would initialise an empty cluster and the deploy
+# state would land on the root disk.
+require_control_volume() {
+  control_volume_mounted ||
+    die "the control volume is not mounted: $FILONE_CONTROL_DIR/.filone-volume-control is missing.
+       Postgres, OpenBao and the deploy state live there, so nothing is deployed.
+       Mount the volume, then run this again. docs/RUNBOOK.md has the steps."
+}
+
+# The markers a service binds that are missing, one per line, read from the
+# compose file so a service with no container yet is covered too. Empty when
+# every volume the service uses is mounted.
+#
+# Usage: missing_volume_markers <platform|apps> <service>
+missing_volume_markers() {
+  local project="$1" service="$2" definition marker
+  definition="$(docker compose --project-directory "$FILONE_NODE_DIR/$project" -p "filone-$project" \
+    config --no-interpolate --format json)" ||
+    die "could not read nodes/$FILONE_NODE/$project/compose.yml"
+  jq -r --arg service "$service" \
+    '.services[$service].volumes // [] | .[] | select(.type == "bind") | .source
+     | select(test("/\\.filone-volume-[^/]+$"))' <<<"$definition" |
+    while read -r marker; do
+      [ -f "$marker" ] || printf '%s\n' "$marker"
+    done
+}
+
+# The services given whose volumes are all mounted, one per line. Each one left
+# out is named on stderr with the marker it is missing.
+#
+# Usage: mounted_services <platform|apps> <service>...
+mounted_services() {
+  local project="$1" service missing
+  shift
+  for service in "$@"; do
+    missing="$(missing_volume_markers "$project" "$service")"
+    if [ -z "$missing" ]; then
+      printf '%s\n' "$service"
+    else
+      echo "WARNING: $service's volume is not mounted (missing ${missing//$'\n'/, }); leaving it stopped" >&2
+    fi
+  done
+}
+
+# Stop the running containers of every service in a project whose volume is not
+# mounted. A container created before the markers existed binds none, so Docker
+# restarts it at boot on an empty directory; this catches it on the next pass.
+# Found by the labels compose puts on its containers, so this works when the
+# env files compose would need are gone after a reboot. Not behind the proving
+# gate: a Piri without its volume cannot prove the data on it.
+#
+# Usage: stop_unmounted_services <platform|apps>
+stop_unmounted_services() {
+  local project="$1" services service missing ids
+  [ -f "$FILONE_NODE_DIR/$project/compose.yml" ] || return 0
+  services="$(docker compose --project-directory "$FILONE_NODE_DIR/$project" -p "filone-$project" \
+    config --no-interpolate --services)" ||
+    die "could not read the services in nodes/$FILONE_NODE/$project/compose.yml"
+  for service in $services; do
+    missing="$(missing_volume_markers "$project" "$service")"
+    [ -n "$missing" ] || continue
+    ids="$(docker ps -q \
+      --filter "label=com.docker.compose.project=filone-$project" \
+      --filter "label=com.docker.compose.service=$service")" ||
+      die "could not list $service's containers"
+    [ -n "$ids" ] || continue
+    echo "WARNING: stopping $service: its volume is not mounted (missing ${missing//$'\n'/, })" >&2
+    # shellcheck disable=SC2086 # one container id per word
+    docker stop $ids >/dev/null || die "could not stop $service"
+  done
+}
+
+# The missing markers of an existing Piri or Ingot container (filone-<service>),
+# one per line. Read from the mounts it was created with, which are what Docker
+# checks when it starts it, and from the apps compose file too: a container
+# created before the markers existed binds none, and Docker would start it on an
+# empty directory.
+container_missing_volume_markers() {
+  local container="$1" mounts marker
+  mounts="$(docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$container")" ||
+    die "could not inspect $container"
+  {
+    # A container that binds no volume has no marker, and grep's status 1 for
+    # no match would fail the caller under pipefail.
+    { grep -E '/\.filone-volume-[^/]+$' <<<"$mounts" || true; } |
+      while read -r marker; do
+        [ -f "$marker" ] || printf '%s\n' "$marker"
+      done
+    missing_volume_markers apps "${container#filone-}"
+  } | sort -u
+}
 
 # Run the bao CLI inside the OpenBao container. The container publishes no port
 # and its listener is on loopback, so `docker exec` is the only way in and the
@@ -819,16 +1019,21 @@ stop_apps() {
 }
 
 # Piri first, the same order in reverse: Ingot started against a Piri that is
-# still coming up produces a burst of failures for no reason.
+# still coming up produces a burst of failures for no reason. A container whose
+# volume is not mounted is left stopped, since Docker would refuse to start it.
 start_apps() {
-  local container piris
+  local container piris missing
   piris="$(piri_containers)"
   # shellcheck disable=SC2086 # one container name per word
   for container in $piris filone-ingot; do
-    if container_exists "$container"; then
-      echo "  starting $container"
-      docker start "$container" >/dev/null || die "could not start $container"
+    container_exists "$container" || continue
+    missing="$(container_missing_volume_markers "$container")"
+    if [ -n "$missing" ]; then
+      echo "WARNING: $container's volume is not mounted (missing ${missing//$'\n'/, }); leaving it stopped" >&2
+      continue
     fi
+    echo "  starting $container"
+    docker start "$container" >/dev/null || die "could not start $container"
   done
 }
 

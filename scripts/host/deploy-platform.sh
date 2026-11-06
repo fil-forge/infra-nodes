@@ -28,6 +28,12 @@ take_deploy_lock
 
 echo "=== deploy platform ($FILONE_NODE) ==="
 
+# Before anything starts: OpenBao and Postgres on a missing control volume would
+# come up on an empty directory, and Postgres would initialise a new cluster.
+# Ones Docker already restarted that way, from before the markers, are stopped.
+stop_unmounted_services platform
+require_control_volume
+
 if node_ships_telemetry; then
   require_configured GRAFANA_LOGS_USER 000000
   require_configured GRAFANA_METRICS_USER 000000
@@ -166,10 +172,19 @@ if [ "$apps_stopped" -eq 1 ]; then
   # Bucket Intelligence is left out: an unhealthy engine must not fail this
   # deploy, which would leave the platform unrecorded and take the gate again
   # on every pass.
-  # Its own assignment, so a failure to read the list ends the run.
+  # A Piri or Ingot whose volume is not mounted was left stopped by
+  # start_apps, and is deploy-apps.sh's to report, not a reason to fail the
+  # platform. Each assignment on its own, so a failure to read a list ends the
+  # run.
   core_services="$(apps_core_services)"
   # shellcheck disable=SC2086 # one service name per word
-  wait_healthy compose_apps 420 $core_services
+  core_services="$(mounted_services apps $core_services 2>/dev/null)"
+  # Given no service, wait_healthy waits for the whole project, the stopped
+  # ones included.
+  if [ -n "$core_services" ]; then
+    # shellcheck disable=SC2086 # one service name per word
+    wait_healthy compose_apps 420 $core_services
+  fi
 else
   echo "  left running"
 fi
