@@ -122,6 +122,33 @@ node_ships_telemetry() {
   return 0
 }
 
+# Whether this node pushes backups to central, from whether its node.env names
+# the backup target. The bucket, prefix and AWS region are not secrets, so they
+# live in node.env where a change to them is reviewed; the node's OpenBao holds
+# only the access key pair that writes there.
+#
+# All three or none, for the same reason as node_ships_telemetry: a node.env
+# missing one of them would otherwise run as if it took no backups.
+node_takes_backups() {
+  local name set_names="" unset_names=""
+  for name in BACKUP_S3_BUCKET BACKUP_S3_PREFIX BACKUP_S3_REGION; do
+    if [ -n "${!name:-}" ]; then
+      set_names+=" $name"
+    else
+      unset_names+=" $name"
+    fi
+  done
+
+  [ -n "$set_names" ] || return 1
+  [ -n "$unset_names" ] &&
+    die "$FILONE_NODE_DIR/node.env sets$set_names but not$unset_names.
+       Backups need all three, or none of them for a node that takes no backups."
+  [ "$BACKUP_S3_PREFIX" = "$REGION_LABEL/" ] ||
+    die "BACKUP_S3_PREFIX is $BACKUP_S3_PREFIX in $FILONE_NODE_DIR/node.env, but
+       central's writer for region $REGION_LABEL can write only under $REGION_LABEL/."
+  return 0
+}
+
 # --- systemd ---------------------------------------------------------------
 
 # The service unit this process is running inside, or nothing when it was
@@ -266,6 +293,61 @@ central_seal_addr() {
   ' "$config")"
   [ -n "$value" ] || die "no address in the seal stanza of $config"
   printf '%s' "$value"
+}
+
+# Exchange a wrapping token minted at central for what it wraps, and print the
+# response body. The second argument is the mint flag that replaces the
+# credential, which the failure messages tell the operator to ask for.
+#
+# On a 200 the body holds the credential, so callers keep it in a variable and
+# never print it. They also call this through a command substitution, where die
+# ends only the subshell, so each call is followed by `|| exit 1`.
+unwrap_at_central() {
+  local wrapping_token="$1" reissue_flag="$2" central curl_status=0 response status body
+  central="$(central_seal_addr)"
+
+  # curl puts --header values in its own argv, where anything on the host that
+  # can read /proc can take the token while the request is in flight, so the
+  # header goes in on stdin. printf is a shell builtin and never gets an argv of
+  # its own. The exit code is kept because it is what says whether the request
+  # ever left, which an `if !` would collapse to 1.
+  response="$(printf 'X-Vault-Token: %s\n' "$wrapping_token" |
+    curl -sS --max-time 30 -w '\n%{http_code}' --header @- \
+      --request POST "$central/v1/sys/wrapping/unwrap")" || curl_status=$?
+
+  case "$curl_status" in
+    0) ;;
+    6 | 7)
+      die "could not reach the central OpenBao at $central (curl $curl_status).
+       Nothing left this node, so the wrapping token is unspent: fix the route to
+       central and re-run with the same token." ;;
+    *)
+      die "the exchange with $central broke off mid-flight (curl $curl_status), so
+       whether central spent the wrapping token is unknown, and so is whether the
+       credential it unwrapped went anywhere. Do not paste this token again: if it
+       was spent, the next attempt is refused and that refusal says nothing about
+       who spent it. Re-mint at central with TOKEN_ARGS=$reissue_flag, which
+       replaces the credential, and claim the token that comes back." ;;
+  esac
+
+  status="$(printf '%s' "$response" | tail -1)"
+  body="$(printf '%s' "$response" | sed '$d')"
+
+  case "$status" in
+    200) ;;
+    400 | 403 | 404)
+      die "central refused the wrapping token (HTTP $status): $body
+       A wrapping token can be spent once and expires 24 hours after it is minted,
+       so this is a token that has already been exchanged or one that has run out.
+       An earlier run of this script that broke off mid-flight spends it the same
+       way; failing that, somebody who could read the channel it was delivered on
+       spent it. Either way this is not a retry: re-mint at central with
+       TOKEN_ARGS=$reissue_flag, which replaces the credential that was taken." ;;
+    *)
+      die "the exchange with $central failed with HTTP $status: $body" ;;
+  esac
+
+  printf '%s' "$body"
 }
 
 bao_is_unsealed() {
