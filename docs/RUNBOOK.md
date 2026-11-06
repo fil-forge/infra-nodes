@@ -1505,15 +1505,15 @@ started, usually because the chain endpoint was unreachable then.
 **Act now.** PDPVerifier has accepted no proof for this proof set for longer than a proving period
 plus its challenge window, so the contract has recorded a fault against data the node holds. Each
 further proving period records another. The alert also fires when Piri cannot read the proof set's
-last proven epoch from PDPVerifier, because then a stall can't be ruled out.
+last proven epoch from PDPVerifier. Without that epoch, nothing shows whether proofs are landing.
 
 1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
    firing for this Piri. If either is, follow that entry first: without a chain, Piri can neither
    send a proof nor read the last proven epoch.
 2. On the host, read the `PDPv0_Prove` logs, then `PDPv0_ProvPeriod`. Look for a contract revert,
    `no subpiece found`, a send that failed for gas, or no run at all. If Piri's logs say
-   `reading proof set's last proven epoch`, the alert fired because the read failed: the error
-   after it says why, and is usually the chain endpoint.
+   `reading proof set's last proven epoch`, the alert fired because that read failed. The error
+   on the same line says why. The usual cause is the chain endpoint.
 3. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names. If
    it fails, read the error as in [Before you start](#before-you-start), step 4.
 4. Act on what the logs showed:
@@ -1525,8 +1525,8 @@ last proven epoch from PDPVerifier, because then a stall can't be ruled out.
      the incident. The data set's payments are set up from central, which pays from
      `PAYER_ADDRESS`.
    - **A send that failed for gas, or no Prove run at all:** follow [Piri's Prove task has not run
-     in 1.5 proving periods](#piris-prove-task-has-not-run-in-15-proving-periods). It checks the
-     owner wallet, which pays the gas.
+     in 1.5 proving periods](#piris-prove-task-has-not-run-in-15-proving-periods). The owner
+     wallet pays the gas, and that entry checks it.
    - **`no subpiece found`:** Piri is proving pieces it has no record of. Post the log lines and the
      proof set's ID in `#filone-eng`, and record them on the incident.
 
