@@ -1579,7 +1579,7 @@ already happened, so there is nothing to race.
 2. Record the proof set's ID and the reason on the incident. What to do with the data set is
    decided outside this runbook.
 
-#### Piri has piece additions it has not recorded
+#### Piri has untracked add pieces
 
 **Act within a day.** A piece addition for the proof set succeeded on chain more than 10 minutes
 ago, and Curio has not recorded its pieces from the receipt. Curio retries on every chain head and
