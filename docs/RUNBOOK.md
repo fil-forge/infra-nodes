@@ -851,12 +851,15 @@ tofu -chdir=terraform/envs/dev output -raw public_ip
 Send that address to whoever runs infra-central, and they run
 
 ```sh
-make mint-appliance-token STAGE=<stage> REGION=<region> NODE_IP=<the address>
+make mint-appliance-credentials STAGE=<stage> REGION=<region> NODE_IP=<the address>
 ```
 
 What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
-inside the central OpenBao until the node claims it in step 5. The wrapping token can be spent once
-and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
+inside the central OpenBao until the node claims it in step 5. A node whose `node.env` sets
+`FILONE_TAKES_BACKUPS=true`, as staging's does, also gets a second wrapping token, for the access
+key it writes its Postgres and OpenBao backups with. Central wraps the bucket, key prefix and AWS
+region with the key, so `node.env` names none of them. Each wrapping token can be spent once and
+expires in 24 hours, so chat is an acceptable channel for them; a view-once 1Password link is
 better.
 
 ### 5. The platform
@@ -868,13 +871,17 @@ the bring-up runs in this shell.
 scripts/host/provision-platform.sh
 ```
 
-It asks for the wrapping token, exchanges it at central for the unseal token, initialises OpenBao,
-and prints **one recovery key and one root token**.
+It asks for the unseal-token wrapping token, exchanges it at central for the unseal token,
+initialises OpenBao, and prints **one recovery key and one root token**.
 Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
 neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
 
 It then asks for the root token back twice, to create the deploy token and the KV mount and then the
-region key Ingot encrypts objects under; installs the identity tooling (ucantool and cast, pinned in
+region key Ingot encrypts objects under. Between the two, on a node that takes backups, it runs
+`provision-backups.sh`, which asks for the backup-key wrapping token, exchanges it at central,
+stores the key and its target at `filone/backup-target`, and writes a small object with the key to
+prove it can write there. A failed write stops the run with S3's reason; fix it and re-run, which
+skips what is already stored. It then installs the identity tooling (ucantool and cast, pinned in
 the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
 that node needs; and starts its platform services. Step 3 says which, for each node.
 
@@ -1145,6 +1152,40 @@ stored wrap on the old version, which transit still decrypts, so a rotation is s
 `min_decryption_version` bump is not: it makes every object written before it unreadable. There is
 no rewrap campaign in this repository yet, and Ingot's token cannot run one.
 
+**Add the backup key to a node provisioned before it existed.** Ask central for a plain re-run of
+`make mint-appliance-credentials` for the region. The node's unseal token is live, so central skips
+it and mints only the backup key. Then, on the node:
+
+```sh
+scripts/host/provision-backups.sh
+```
+
+It asks for the backup-key wrapping token, stores the key and its target at `filone/backup-target`,
+and checks that the key can write there. A second run reports the key it holds, changes nothing,
+and checks it again.
+
+**Check the backup key.** To confirm at any time that the stored key can still write to its
+target:
+
+```sh
+scripts/host/check-backup-target.sh
+```
+
+It puts a small object at `<region>/provisioning-check/<UTC timestamp>` in the backup bucket. The
+key can neither read nor delete it; the bucket's lifecycle removes it after 36 days, as it does
+every backup. An `InvalidAccessKeyId` means central deleted the key, usually by reissuing it, and
+the fix is `provision-backups.sh --replace` with the new wrapping token.
+
+**Reissue the backup key.** When the key leaked, or `provision-backups.sh` could not exchange its
+wrapping token, ask central to run the mint with `MINT_ARGS=--reissue-backup-key`. That deletes the
+old key in IAM before minting the new one, so the node's uploads fail until it stores the new key:
+
+```sh
+scripts/host/provision-backups.sh --replace
+```
+
+The unseal token is left alone; the two credentials are reissued independently.
+
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
 commands against the current `SPRUE_DID` and the script's command list, and reissues when either
@@ -1240,7 +1281,9 @@ the end of this section.
 one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
 identities. The transit key at central is per-node, not per-identity, so it stays. The unseal token
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
-for a new wrapping token.
+for a new wrapping token. The backup key lived in the old OpenBao and is gone with it, so on a node
+that takes backups ask central to run the mint with `MINT_ARGS=--reissue-backup-key` too: a plain
+run would see the region's old key in IAM and skip it.
 
 **2. Remove the old identities at central.** Ask whoever runs infra-central to drop the old Piri
 DIDs from the delegator's allow list and to deregister or zero-weight the old providers at sprue.
@@ -1281,8 +1324,13 @@ which is the same tidying step 2 above describes.
 
 **`provision-platform.sh` cannot exchange the wrapping token.** A wrapping token can be spent once,
 so a token central refuses inside its 24-hour window is one somebody else has already spent. Treat
-it as a compromise: ask central to re-mint with `TOKEN_ARGS=--reissue`, which revokes the token that
-was taken, and work out who could read the channel it was delivered on.
+it as a compromise: ask central to re-mint with `MINT_ARGS=--reissue-unseal-token`, which revokes
+the token that was taken, and work out who could read the channel it was delivered on.
+
+**`provision-backups.sh` cannot exchange the wrapping token.** The same as for the unseal token:
+somebody else spent it. Ask central to re-mint with `MINT_ARGS=--reissue-backup-key`, which deletes
+the key that was taken, store the new one with `provision-backups.sh --replace`, and work out who
+could read the channel.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key
