@@ -855,11 +855,10 @@ make mint-appliance-credentials STAGE=<stage> REGION=<region> NODE_IP=<the addre
 ```
 
 What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
-inside the central OpenBao until the node claims it in step 5. A node whose `node.env` names a
-backup target, as staging's does with `BACKUP_S3_BUCKET`, `BACKUP_S3_PREFIX` and
-`BACKUP_S3_REGION`, also gets a second wrapping token, for the access key it writes its Postgres
-and OpenBao backups with. Central prints the three values with the key; they have to match
-`node.env`, or `provision-backups.sh` refuses the key. Each wrapping token can be spent once and
+inside the central OpenBao until the node claims it in step 5. A node whose `node.env` sets
+`FILONE_TAKES_BACKUPS=true`, as staging's does, also gets a second wrapping token, for the access
+key it writes its Postgres and OpenBao backups with. Central wraps the bucket, prefix and AWS
+region with the key, so `node.env` names none of them. Each wrapping token can be spent once and
 expires in 24 hours, so chat is an acceptable channel for them; a view-once 1Password link is
 better.
 
@@ -879,8 +878,10 @@ neither, the only way back into this OpenBao is to rebuild the node and re-onboa
 
 It then asks for the root token back twice, to create the deploy token and the KV mount and then the
 region key Ingot encrypts objects under. Between the two, on a node that takes backups, it runs
-`provision-backups.sh`, which asks for the backup-key wrapping token, exchanges it at central and
-stores the key at `filone/backup-target`. It then installs the identity tooling (ucantool and cast, pinned in
+`provision-backups.sh`, which asks for the backup-key wrapping token, exchanges it at central,
+stores the key and its target at `filone/backup-target`, and writes a small object with the key to
+prove it can write there. A failed write stops the run with S3's reason; fix it and re-run, which
+skips what is already stored. It then installs the identity tooling (ucantool and cast, pinned in
 the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
 that node needs; and starts its platform services. Step 3 says which, for each node.
 
@@ -1159,8 +1160,21 @@ it and mints only the backup key. Then, on the node:
 scripts/host/provision-backups.sh
 ```
 
-It asks for the backup-key wrapping token and stores the key at `filone/backup-target`. A second run
-reports the key it holds and changes nothing.
+It asks for the backup-key wrapping token, stores the key and its target at `filone/backup-target`,
+and checks that the key can write there. A second run reports the key it holds, changes nothing,
+and checks it again.
+
+**Check the backup key.** To confirm at any time that the stored key can still write to its
+target:
+
+```sh
+scripts/host/check-backup-target.sh
+```
+
+It puts a small object at `<region>/provisioning-check/<UTC timestamp>` in the backup bucket. The
+key can neither read nor delete it; the bucket's lifecycle removes it after 36 days, as it does
+every backup. An `InvalidAccessKeyId` means central deleted the key, usually by reissuing it, and
+the fix is `provision-backups.sh --replace` with the new wrapping token.
 
 **Reissue the backup key.** When the key leaked, or `provision-backups.sh` could not exchange its
 wrapping token, ask central to run the mint with `MINT_ARGS=--reissue-backup-key`. That deletes the

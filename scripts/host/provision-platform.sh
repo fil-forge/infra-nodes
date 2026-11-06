@@ -166,8 +166,9 @@ fi
 # --- 4. The backup key ------------------------------------------------------
 
 # The access key this node writes its Postgres and OpenBao backups with, stored
-# in OpenBao. It runs as the deploy token step 3 just created, and does nothing
-# on a node whose node.env names no backup target.
+# in OpenBao with the target it writes to, then checks that it can write there.
+# It runs as the deploy token step 3 just created, and does nothing on a node
+# whose node.env sets FILONE_TAKES_BACKUPS=false.
 echo "[4/9] Storing the backup key"
 "$SCRIPT_DIR/provision-backups.sh"
 

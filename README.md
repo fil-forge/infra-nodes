@@ -157,7 +157,7 @@ Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:
 3. Have central mint the unseal token, which is bound to the Elastic IP the apply just allocated,
    and on a node that takes backups the backup key, and send back the wrapping tokens that claim
    them.
-4. Run `provision-platform.sh` on the node: initialise OpenBao, store the backup key, install the
+4. Run `provision-platform.sh` on the node: initialise OpenBao, store and check the backup key, install the
    identity tooling, generate keys, start the platform.
 5. Run `onboarding-request.sh`, send what it prints to Forge Central, and install the delegation
    they return with `store-hilt-proof.sh`. Then run `provision-apps.sh`.

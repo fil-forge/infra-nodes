@@ -122,31 +122,27 @@ node_ships_telemetry() {
   return 0
 }
 
-# Whether this node pushes backups to central, from whether its node.env names
-# the backup target. The bucket, prefix and AWS region are not secrets, so they
-# live in node.env where a change to them is reviewed; the node's OpenBao holds
-# only the access key pair that writes there.
+# Whether this node pushes backups to central, from FILONE_TAKES_BACKUPS in its
+# node.env. Where the backups go is not in node.env: central wraps the bucket,
+# prefix and AWS region with the access key, and provision-backups.sh stores
+# all five at filone/backup-target, so the target and the key that writes there
+# cannot disagree.
 #
-# All three or none, for the same reason as node_ships_telemetry: a node.env
-# missing one of them would otherwise run as if it took no backups.
+# Every node.env must say true or false. With a default, a node.env that left
+# the line out would run as if it took no backups, and nothing would notice
+# until a backup was needed.
 node_takes_backups() {
-  local name set_names="" unset_names=""
-  for name in BACKUP_S3_BUCKET BACKUP_S3_PREFIX BACKUP_S3_REGION; do
-    if [ -n "${!name:-}" ]; then
-      set_names+=" $name"
-    else
-      unset_names+=" $name"
-    fi
-  done
-
-  [ -n "$set_names" ] || return 1
-  [ -n "$unset_names" ] &&
-    die "$FILONE_NODE_DIR/node.env sets$set_names but not$unset_names.
-       Backups need all three, or none of them for a node that takes no backups."
-  [ "$BACKUP_S3_PREFIX" = "$REGION_LABEL/" ] ||
-    die "BACKUP_S3_PREFIX is $BACKUP_S3_PREFIX in $FILONE_NODE_DIR/node.env, but
-       central's writer for region $REGION_LABEL can write only under $REGION_LABEL/."
-  return 0
+  case "${FILONE_TAKES_BACKUPS:-}" in
+    true) return 0 ;;
+    false) return 1 ;;
+    "")
+      die "FILONE_TAKES_BACKUPS is not set in $FILONE_NODE_DIR/node.env. Set it to
+       true on a node that pushes its backups to central, or false on one that
+       takes none." ;;
+    *)
+      die "FILONE_TAKES_BACKUPS is '$FILONE_TAKES_BACKUPS' in $FILONE_NODE_DIR/node.env;
+       it must be true or false." ;;
+  esac
 }
 
 # --- systemd ---------------------------------------------------------------
