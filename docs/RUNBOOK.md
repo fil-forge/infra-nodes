@@ -857,7 +857,7 @@ make mint-appliance-credentials STAGE=<stage> REGION=<region> NODE_IP=<the addre
 What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
 inside the central OpenBao until the node claims it in step 5. A node whose `node.env` sets
 `FILONE_TAKES_BACKUPS=true`, as staging's does, also gets a second wrapping token, for the access
-key it writes its Postgres and OpenBao backups with. Central wraps the bucket, prefix and AWS
+key it writes its Postgres and OpenBao backups with. Central wraps the bucket, key prefix and AWS
 region with the key, so `node.env` names none of them. Each wrapping token can be spent once and
 expires in 24 hours, so chat is an acceptable channel for them; a view-once 1Password link is
 better.

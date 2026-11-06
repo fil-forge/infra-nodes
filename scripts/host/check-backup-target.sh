@@ -2,10 +2,11 @@
 # Check that this node's backup key can write to its backup target.
 #
 # Reads the key pair and the target from filone/backup-target and puts a small
-# object at <prefix>provisioning-check/<UTC timestamp> with that key, over the
-# HTTPS endpoint the backup jobs use. A 200 means the key is live, the bucket
-# and AWS region are right, the writer's policy allows the prefix, and the put
-# meets the bucket's TLS-only policy and Object Lock's demand for a checksum.
+# object at <key_prefix>provisioning-check/<UTC timestamp> with that key, over
+# the HTTPS endpoint the backup jobs use. A 200 means the key is live, the
+# bucket and AWS region are right, the writer's policy allows the key prefix,
+# and the put meets the bucket's TLS-only policy and Object Lock's demand for a
+# checksum.
 #
 # The writer can neither read nor delete, so the object stays. Object Lock keeps
 # it for 35 days and the bucket's lifecycle removes it a day later, as it does
@@ -48,13 +49,13 @@ bao_has "$BACKUP_PATH" bucket ||
        run scripts/host/provision-backups.sh --replace."
 
 bucket="$(bao_get "$BACKUP_PATH" bucket)"
-prefix="$(bao_get "$BACKUP_PATH" prefix)"
+key_prefix="$(bao_get "$BACKUP_PATH" key_prefix)"
 aws_region="$(bao_get "$BACKUP_PATH" aws_region)"
 access_key_id="$(bao_get "$BACKUP_PATH" access_key_id)"
 secret_access_key="$(bao_get "$BACKUP_PATH" secret_access_key)"
 
-[ "$prefix" = "$REGION_LABEL/" ] ||
-  die "the stored backup key writes under $prefix, but this node is $REGION_LABEL
+[ "$key_prefix" = "$REGION_LABEL/" ] ||
+  die "the stored backup key writes under $key_prefix, but this node is $REGION_LABEL
        and central's writer for it can write only under $REGION_LABEL/"
 # The key pair goes into a curl config line between double quotes, where a quote
 # or a backslash would change what curl reads. AWS keys contain neither.
@@ -64,7 +65,7 @@ secret_access_key="$(bao_get "$BACKUP_PATH" secret_access_key)"
   die "the stored secret access key is not in the form AWS issues"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-object_key="${prefix}provisioning-check/$timestamp"
+object_key="${key_prefix}provisioning-check/$timestamp"
 url="https://$bucket.s3.$aws_region.amazonaws.com/$object_key"
 body="provisioning check from $FILONE_NODE at $timestamp"
 
