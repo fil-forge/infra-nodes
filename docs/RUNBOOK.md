@@ -1346,17 +1346,9 @@ infra-central's `docs/observability.md`.
 
 Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say which one:
 
-- The chain-head and Prove-task alerts carry the Piri's `instance` label, for example
-  `staging/eu-central-3/piri-1`. Its last digit is the Piri's number.
-- The proving-failing and proving-period alerts carry the `proof_set` instead. To find its Piri,
-  list each one's proof sets on the host:
-
-  ```sh
-  for i in 0 1 2; do
-    echo "piri-$i"
-    docker exec -w /data/piri filone-piri-$i piri client pdp proofset list
-  done
-  ```
+- The chain-head, proving-failing, proving-period and Prove-task alerts carry the Piri's
+  `instance` label, for example `staging/eu-central-3/piri-1`. Its last digit is the Piri's
+  number. The proving-failing and proving-period alerts also name the `proof_set`.
 
 - The unrecoverable alert names only the node. Work through each Piri in turn.
 
@@ -1510,25 +1502,37 @@ started, usually because the chain endpoint was unreachable then.
 
 #### Piri proving is failing
 
-**Act now.** The contract rejected a proving transaction. Curio gives up on a proof set for good on
-its fifth rejection without a successful proof between. The retries wait 100, 200, 400 and 800
-epochs, so the fifth can come 12.5 hours after the first, and nothing on the node brings the proof
-set back after that.
+**Act now.** The alert fires in one of two cases:
 
-1. On the host, find the rejection in the `PDPv0_Prove` logs, then in `PDPv0_ProvPeriod` if Prove
-   has none. The revert reason says what the contract refused.
-2. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names. If
+- **No proof landed.** PDPVerifier has accepted no proof for this proof set for longer than a
+  proving period plus its challenge window. The contract has recorded a fault, and each further
+  period records another.
+- **Piri cannot read the last proof.** Piri cannot read the proof set's last proven epoch from
+  PDPVerifier, so a fault is possible but not confirmed. Piri logs `reading proof set's last proven
+  epoch` with the error on the same line. The usual cause is the chain endpoint.
+
+1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
+   firing for this Piri. If either is, follow that entry first: without a chain, Piri can neither
+   send a proof nor read the epoch.
+2. On the host, read the `PDPv0_Prove` logs, then `PDPv0_ProvPeriod`. Look for a contract revert,
+   `no subpiece found`, a send that failed for gas, or no run at all.
+3. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names. If
    it fails, read the error as in [Before you start](#before-you-start), step 4.
-3. Act on the revert reason:
-   - **The data set's payment has ended or been terminated:** Curio gives up at once, and the next
-     alert is [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
-   - **Anything else:** the node can't fix a revert. Post the revert reason, the proof set's ID
-     and its state in `#filone-eng` on Slack, now, and record them on the incident. The data
-     set's payments are set up from central, which pays from `PAYER_ADDRESS`. The clock is the
-     12.5 hours above.
+4. Act on what the logs showed:
+   - **The data set's payment has ended or been terminated, or the data set is no longer live:**
+     Curio stops proving it for good, and the next alert is [Piri proof set is
+     unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
+   - **Any other contract revert:** Curio retries, but the node can't fix a revert. Post the revert
+     reason, the proof set's ID and its state in `#filone-eng` on Slack, now, and record them on
+     the incident. The data set's payments are set up from central, which pays from
+     `PAYER_ADDRESS`.
+   - **A send that failed for gas, or no Prove run at all:** follow [Piri's Prove task has not run
+     in 1.5 proving periods](#piris-prove-task-has-not-run-in-15-proving-periods). The owner
+     wallet pays the gas, and that entry checks it.
+   - **`no subpiece found`:** Piri is proving pieces it has no record of. Post the log lines and the
+     proof set's ID in `#filone-eng`, and record them on the incident.
 
-   The node's own owner wallet is not the cause here. If it can't pay for gas, the send fails
-   before it reaches the contract, which Curio doesn't count as a rejection.
+The alert clears on its own once a proof lands.
 
 #### Piri's proving period has not advanced
 
