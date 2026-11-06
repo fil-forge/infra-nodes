@@ -365,18 +365,24 @@ mounted_services() {
   done
 }
 
-# The markers an existing container binds that are missing, read off the mounts
-# it was created with, which are what Docker checks when it starts it.
+# The missing markers of an existing Piri or Ingot container (filone-<service>),
+# one per line. Read from the mounts it was created with, which are what Docker
+# checks when it starts it, and from the apps compose file too: a container
+# created before the markers existed binds none, and Docker would start it on an
+# empty directory.
 container_missing_volume_markers() {
   local container="$1" mounts marker
   mounts="$(docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$container")" ||
     die "could not inspect $container"
-  # A container that binds no volume has no marker, and grep's status 1 for no
-  # match would fail the caller under pipefail.
-  { grep -E '/\.filone-volume-[^/]+$' <<<"$mounts" || true; } |
-    while read -r marker; do
-      [ -f "$marker" ] || printf '%s\n' "$marker"
-    done
+  {
+    # A container that binds no volume has no marker, and grep's status 1 for
+    # no match would fail the caller under pipefail.
+    { grep -E '/\.filone-volume-[^/]+$' <<<"$mounts" || true; } |
+      while read -r marker; do
+        [ -f "$marker" ] || printf '%s\n' "$marker"
+      done
+    missing_volume_markers apps "${container#filone-}"
+  } | sort -u
 }
 
 # Run the bao CLI inside the OpenBao container. The container publishes no port

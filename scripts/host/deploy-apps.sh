@@ -70,6 +70,20 @@ is_mounted() {
   grep -qxF "$1" <<<"$mounted_core_services"
 }
 
+# Stop a service whose volume is not mounted, if it is running anyway: a
+# container created before the markers existed, or one started before its volume
+# went missing. Not behind the proving gate: without its volume a Piri cannot
+# prove the data on it, and each minute it runs puts more on the root disk.
+stop_unmounted() {
+  local service="$1" container="filone-$1"
+  if container_running "$container"; then
+    echo "  $service: volume not mounted; stopping it"
+    docker stop "$container" >/dev/null || die "could not stop $container"
+  else
+    echo "  $service: volume not mounted; left stopped"
+  fi
+}
+
 # --- 1. Render --------------------------------------------------------------
 
 echo "[1/5] Rendering configuration and keys"
@@ -183,7 +197,7 @@ done
 
 for service in "${piris[@]}"; do
   if ! is_mounted "$service"; then
-    echo "  $service: volume not mounted; left stopped"
+    stop_unmounted "$service"
   elif [ "${piri_changed[$service]}" -eq 1 ]; then
     echo "  $service: something changed; waiting for a safe restart window"
     "$SCRIPT_DIR/pdp-gate.sh" "$service"
@@ -220,7 +234,7 @@ done
 # still coming up produces a burst of failures for no reason.
 echo "[4/5] Ingot"
 if ! is_mounted ingot; then
-  echo "  volume not mounted; left stopped"
+  stop_unmounted ingot
 elif [ "$ingot_changed" -eq 1 ]; then
   compose_apps up -d --force-recreate ingot
 else
