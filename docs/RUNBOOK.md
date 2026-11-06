@@ -1579,6 +1579,25 @@ already happened, so there is nothing to race.
 2. Record the proof set's ID and the reason on the incident. What to do with the data set is
    decided outside this runbook.
 
+#### Piri has untracked add pieces
+
+**Act within a day.** A piece addition for the proof set succeeded on chain more than 10 minutes
+ago, and Curio has not recorded its pieces from the receipt. Curio retries on every chain head and
+reports no failure. A new proof set is not scheduled for proving until its first addition is
+recorded, and the added pieces are not proven. The contract records no faults while this holds.
+
+1. On the host, read the Piri's logs for the addition:
+
+   ```sh
+   docker logs "filone-piri-${n:?}" 2>&1 | grep -e 'pieces from receipt' -e 'No such container'
+   ```
+
+2. If the error names an event that wasn't found in the receipt, PDPVerifier now emits an event
+   Piri's Curio can't parse, usually after a contract upgrade. The node can't fix this. Post the
+   error, the proof set's ID and the transaction hash in `#filone-eng` on Slack, and record them on
+   the incident. A Piri release with a newer Curio records the additions once it is deployed.
+3. Otherwise, record the error on the incident and post it in `#filone-eng`.
+
 ### The node rebooted
 
 The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
