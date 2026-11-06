@@ -851,7 +851,7 @@ tofu -chdir=terraform/envs/dev output -raw public_ip
 Send that address to whoever runs infra-central, and they run
 
 ```sh
-make mint-appliance-token STAGE=<stage> REGION=<region> NODE_IP=<the address>
+make mint-appliance-credentials STAGE=<stage> REGION=<region> NODE_IP=<the address>
 ```
 
 What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
@@ -1152,8 +1152,8 @@ stored wrap on the old version, which transit still decrypts, so a rotation is s
 no rewrap campaign in this repository yet, and Ingot's token cannot run one.
 
 **Add the backup key to a node provisioned before it existed.** Ask central for a plain re-run of
-`make mint-appliance-token` for the region. The node's unseal token is live, so central skips it and
-mints only the backup key. Then, on the node:
+`make mint-appliance-credentials` for the region. The node's unseal token is live, so central skips
+it and mints only the backup key. Then, on the node:
 
 ```sh
 scripts/host/provision-backups.sh
@@ -1163,7 +1163,7 @@ It asks for the backup-key wrapping token and stores the key at `filone/backup-t
 reports the key it holds and changes nothing.
 
 **Reissue the backup key.** When the key leaked, or `provision-backups.sh` could not exchange its
-wrapping token, ask central to run the mint with `TOKEN_ARGS=--reissue-backup-key`. That deletes the
+wrapping token, ask central to run the mint with `MINT_ARGS=--reissue-backup-key`. That deletes the
 old key in IAM before minting the new one, so the node's uploads fail until it stores the new key:
 
 ```sh
@@ -1268,7 +1268,7 @@ one), then run `provision-platform.sh`. It initialises an empty OpenBao and gene
 identities. The transit key at central is per-node, not per-identity, so it stays. The unseal token
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
 for a new wrapping token. The backup key lived in the old OpenBao and is gone with it, so on a node
-that takes backups ask central to run the mint with `TOKEN_ARGS=--reissue-backup-key` too: a plain
+that takes backups ask central to run the mint with `MINT_ARGS=--reissue-backup-key` too: a plain
 run would see the region's old key in IAM and skip it.
 
 **2. Remove the old identities at central.** Ask whoever runs infra-central to drop the old Piri
@@ -1310,11 +1310,11 @@ which is the same tidying step 2 above describes.
 
 **`provision-platform.sh` cannot exchange the wrapping token.** A wrapping token can be spent once,
 so a token central refuses inside its 24-hour window is one somebody else has already spent. Treat
-it as a compromise: ask central to re-mint with `TOKEN_ARGS=--reissue`, which revokes the token that
-was taken, and work out who could read the channel it was delivered on.
+it as a compromise: ask central to re-mint with `MINT_ARGS=--reissue-unseal-token`, which revokes
+the token that was taken, and work out who could read the channel it was delivered on.
 
 **`provision-backups.sh` cannot exchange the wrapping token.** The same as for the unseal token:
-somebody else spent it. Ask central to re-mint with `TOKEN_ARGS=--reissue-backup-key`, which deletes
+somebody else spent it. Ask central to re-mint with `MINT_ARGS=--reissue-backup-key`, which deletes
 the key that was taken, store the new one with `provision-backups.sh --replace`, and work out who
 could read the channel.
 

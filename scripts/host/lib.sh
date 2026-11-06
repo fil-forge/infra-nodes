@@ -326,7 +326,7 @@ unwrap_at_central() {
        whether central spent the wrapping token is unknown, and so is whether the
        credential it unwrapped went anywhere. Do not paste this token again: if it
        was spent, the next attempt is refused and that refusal says nothing about
-       who spent it. Re-mint at central with TOKEN_ARGS=$reissue_flag, which
+       who spent it. Re-mint at central with MINT_ARGS=$reissue_flag, which
        replaces the credential, and claim the token that comes back." ;;
   esac
 
@@ -342,7 +342,7 @@ unwrap_at_central() {
        An earlier run of this script that broke off mid-flight spends it the same
        way; failing that, somebody who could read the channel it was delivered on
        spent it. Either way this is not a retry: re-mint at central with
-       TOKEN_ARGS=$reissue_flag, which replaces the credential that was taken." ;;
+       MINT_ARGS=$reissue_flag, which replaces the credential that was taken." ;;
     *)
       die "the exchange with $central failed with HTTP $status: $body" ;;
   esac

@@ -55,7 +55,7 @@ if bao_has "$BACKUP_PATH" access_key_id && [ "$REPLACE" != true ]; then
   exit 0
 fi
 
-echo "  Central runs 'make mint-appliance-token' in infra-central and hands back a"
+echo "  Central runs 'make mint-appliance-credentials' in infra-central and hands back a"
 echo "  wrapping token for the backup key. Paste it here; it is not echoed."
 echo "  Exchanging it spends it, and what comes back is stored in this node's OpenBao."
 read -rsp "backup-key wrapping token: " wrapping_token
@@ -94,7 +94,7 @@ unset body item
 [ "${#fields[@]}" -eq 4 ] ||
   die "nothing was stored. The wrapping token is spent and the key it carried is
        live in IAM, so fix whichever of node.env and central is wrong, then ask
-       central to re-mint with TOKEN_ARGS=--reissue-backup-key, which deletes it."
+       central to re-mint with MINT_ARGS=--reissue-backup-key, which deletes it."
 
 if [ "$REPLACE" = true ]; then
   bao_replace_fields "$BACKUP_PATH" "${fields[@]}"

@@ -38,7 +38,7 @@ if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
   central="$(central_seal_addr)"
   echo "[1/9] Claiming the seal token from $central"
   echo
-  echo "  Central runs 'make mint-appliance-token' in infra-central and hands back a"
+  echo "  Central runs 'make mint-appliance-credentials' in infra-central and hands back a"
   echo "  wrapping token for the seal token, and on a node that takes backups a second"
   echo "  one for the backup key, which step 4 asks for. Paste the seal token's here;"
   echo "  it is not echoed. Exchanging it spends it, and what comes back is stored"
@@ -48,7 +48,7 @@ if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
   [ -n "$wrapping_token" ] || die "no wrapping token given"
 
   # On success this holds the seal token, so it is never printed.
-  body="$(unwrap_at_central "$wrapping_token" --reissue)" || exit 1
+  body="$(unwrap_at_central "$wrapping_token" --reissue-unseal-token)" || exit 1
   unset wrapping_token
 
   # Assert the one path the credential comes back on rather than searching for
