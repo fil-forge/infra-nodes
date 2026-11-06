@@ -1502,11 +1502,14 @@ started, usually because the chain endpoint was unreachable then.
 
 #### Piri proving is failing
 
-**Act now.** PDPVerifier has accepted no proof for this proof set for longer than a proving period
-plus its challenge window. By then the contract has recorded a fault, and each further period
-records another. The alert also fires when Piri cannot read the proof set's last proven epoch from
-PDPVerifier. Piri then logs `reading proof set's last proven epoch` with the error on the same
-line. The usual cause is the chain endpoint.
+**Act now.** The alert fires in one of two cases:
+
+- **No proof landed.** PDPVerifier has accepted no proof for this proof set for longer than a
+  proving period plus its challenge window. The contract has recorded a fault, and each further
+  period records another.
+- **Piri cannot read the last proof.** Piri cannot read the proof set's last proven epoch from
+  PDPVerifier, so a fault is possible but not confirmed. Piri logs `reading proof set's last proven
+  epoch` with the error on the same line. The usual cause is the chain endpoint.
 
 1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
    firing for this Piri. If either is, follow that entry first: without a chain, Piri can neither
