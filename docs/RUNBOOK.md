@@ -1653,6 +1653,10 @@ started, usually because the chain endpoint was unreachable then.
    - **The data set's payment has ended or been terminated, or the data set is no longer live:**
      Curio stops proving it for good, and the next alert is [Piri proof set is
      unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
+   - **`Proving period scheduling blocked by pending piece deletions; draining first` in the
+     `PDPv0_ProvPeriod` logs, or "Piri's deletion drain is stuck" firing for this proof set:**
+     follow [Piri's deletion drain is stuck](#piris-deletion-drain-is-stuck). PDPVerifier won't
+     schedule the next proving period while piece removals are queued.
    - **Any other contract revert:** Curio retries, but the node can't fix a revert. Post the revert
      reason, the proof set's ID and its state in `#filone-eng` on Slack, now, and record them on
      the incident. The data set's payments are set up from central, which pays from
@@ -1662,10 +1666,6 @@ started, usually because the chain endpoint was unreachable then.
      wallet pays the gas, and that entry checks it.
    - **`no subpiece found`:** Piri is proving pieces it has no record of. Post the log lines and the
      proof set's ID in `#filone-eng`, and record them on the incident.
-   - **`Proving period scheduling blocked by pending piece deletions; draining first` in the
-     `PDPv0_ProvPeriod` logs, or "Piri's deletion drain is stuck" firing for this proof set:**
-     follow [Piri's deletion drain is stuck](#piris-deletion-drain-is-stuck). PDPVerifier won't
-     schedule the next proving period while piece removals are queued.
 
 The alert clears on its own once a proof lands.
 
@@ -1713,17 +1713,19 @@ usually is too; if it is, act now.
    closes, which it learns from the chain head.
 2. Check the owner wallet as in step 3 of [Piri's proving period has not
    advanced](#piris-proving-period-has-not-advanced). It pays for every drain transaction.
-3. On the host, read the Piri's logs for the drain. A run that couldn't send logs `Removal queue
-   draining failed` with the data set's ID and the error. A drain transaction that was sent but
-   failed on chain logs `PDP removal drain transaction failed` with its `txHash`. A successful one
-   logs `submitted PDP processPieceDeletions`, then `PDP removal drain confirmed`.
+3. On the host, read the Piri's logs for the drain. A `PDPv0_ProcDel` run that failed logs
+   `Removal queue draining failed` with the data set's ID and the error. A drain transaction that
+   was sent but failed on chain logs `PDP removal drain transaction failed` with its `txHash`. A
+   successful one logs `submitted PDP processPieceDeletions`, then `PDP removal drain confirmed`.
 4. Act on what the logs showed:
    - **`processPieceDeletions gas estimate failed at batch size 1`, `PDP removal drain transaction
      failed`, or any other contract revert:** the node can't fix it. Post the error, the
      transaction hash if there is one, and the proof set's ID in `#filone-eng` on Slack, and
      record them on the incident.
-   - **Any other send failure, such as the wallet running out of funds:** fund the wallet as step 2
-     says. Curio retries the drain on its own.
+   - **`submitted PDP processPieceDeletions` with no `confirmed` or `failed` line for its `txHash`
+     an hour later:** the transaction is stuck. Escalate it as above, with the `txHash`.
+   - **Any other error, such as the wallet running out of funds:** check the wallet as step 2 says,
+     and fund it if it's low. Curio retries the drain on its own.
    - **No `PDPv0_ProcDel` run at all:** run `piri status` as in step 2 of [Piri's proving period
      has not advanced](#piris-proving-period-has-not-advanced). The task engine may be stalled.
 
