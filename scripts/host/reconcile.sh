@@ -171,10 +171,6 @@ fi
 # stops reconciling, whether or not anyone was shipping.
 stamp_deploy_success reconcile
 
-# Before the snapshot request below, so a 0 written here never lands on top of
-# the stamp of a snapshot this pass started.
-ensure_openbao_snapshot_stamp
-
 # Every pass, so a write whose snapshot failed, or one made by a script that
 # does not ask for a snapshot itself, goes up within five minutes rather than
 # at the next daily run.

@@ -1234,32 +1234,13 @@ stamp_deploy_success() {
 # backups, in the same shape as the deploy stamp: a snapshot job that fails, or
 # a timer that stops firing, leaves the value to age.
 stamp_openbao_snapshot_success() {
-  write_openbao_snapshot_stamp "$(date +%s)"
-}
-
-# Keep the snapshot stamp present on every node that takes backups, so its
-# absence cannot hide a node that has none. A node that has never uploaded a
-# snapshot, or whose stamp file went missing, reports 0, which the stale-snapshot
-# alert reads as the oldest snapshot there is. A node that stopped taking
-# backups drops the stamp, so the alert does not fire for a snapshot it no
-# longer owes. Called by reconcile.sh on every pass.
-ensure_openbao_snapshot_stamp() {
-  local stamp="$FILONE_METRICS_DIR/openbao-snapshot.prom"
-  if node_takes_backups; then
-    [ -e "$stamp" ] || write_openbao_snapshot_stamp 0
-  else
-    rm -f "$stamp"
-  fi
-}
-
-write_openbao_snapshot_stamp() {
-  local value="$1" tmp
+  local tmp
   mkdir -p "$FILONE_METRICS_DIR"
   tmp="$(mktemp "$FILONE_METRICS_DIR/.openbao-snapshot.XXXXXX")"
   {
-    echo "# HELP openbao_snapshot_last_success_timestamp Unix time of the last OpenBao raft snapshot uploaded to the backup target, or 0 on a node that takes backups and has not uploaded one."
+    echo "# HELP openbao_snapshot_last_success_timestamp Unix time of the last OpenBao raft snapshot uploaded to the backup target."
     echo "# TYPE openbao_snapshot_last_success_timestamp gauge"
-    echo "openbao_snapshot_last_success_timestamp $value"
+    echo "openbao_snapshot_last_success_timestamp $(date +%s)"
   } >"$tmp"
   chmod 0644 "$tmp"
   mv "$tmp" "$FILONE_METRICS_DIR/openbao-snapshot.prom"
