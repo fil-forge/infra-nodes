@@ -12,7 +12,9 @@
 #
 # It then runs check-backup-target.sh, which writes a small object with the
 # stored key, so a key that cannot write fails here rather than at the first
-# backup.
+# backup. Once that write succeeds it uploads the first OpenBao snapshot with
+# snapshot-openbao.sh and enables filone-openbao-snapshot.timer, which takes
+# one daily from then on.
 #
 # provision-platform.sh runs this on a new node. Run it by hand, as root in an
 # SSM session or on the host, to add the key to a node provisioned before it
