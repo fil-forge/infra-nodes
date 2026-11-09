@@ -74,11 +74,11 @@ systemctl stop filone-reconcile.service
 Run this from the `infra-central` checkout using the staging AWS credentials:
 
 ```sh
-make mint-appliance-token \
+make mint-appliance-credentials \
   STAGE=staging \
   REGION=eu-central-3 \
   NODE_IP=23.83.66.244 \
-  TOKEN_ARGS=--reissue
+  MINT_ARGS=--reissue-unseal-token
 ```
 
 The command returns a one-time wrapping token. Pass it only to the
