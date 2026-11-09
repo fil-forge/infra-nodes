@@ -381,7 +381,9 @@ deploy_last_success_timestamp{project=~"apps|platform"}
 `openbao_snapshot_last_success_timestamp` is the Unix time of the last OpenBao raft snapshot that
 reached the backup bucket. `scripts/host/snapshot-openbao.sh` writes it to the textfile collector
 after each upload, so it ships the way the deploy stamp does, with no Alloy change on either node.
-It exists only on a node that takes backups, from its first successful snapshot on; dev has none.
+Every reconcile pass keeps it present on a node that takes backups: a node that has never uploaded
+a snapshot, or has lost its stamp file, reports `0`, so a missing snapshot reads as the stalest one
+rather than as no data. A node with `FILONE_TAKES_BACKUPS=false`, dev included, reports nothing.
 
 The timer fires daily with up to 30 minutes of random delay, and a write to OpenBao starts an extra
 run. A stamp older than 26 hours means a daily run failed or never started:

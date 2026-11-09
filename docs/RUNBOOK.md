@@ -1382,6 +1382,8 @@ the key that was taken, store the new one with `provision-backups.sh --replace`,
 could read the channel.
 
 **The OpenBao snapshot is stale.** The last upload to the backup bucket is more than a day old.
+A stamp of `0` means the node takes backups and has never uploaded a snapshot: run
+`provision-host-token.sh` if the node predates snapshots, then `provision-backups.sh`. Otherwise
 `journalctl -u filone-openbao-snapshot.service` has the failed run's reason. A refused snapshot
 means the host token still holds `filone-deploy`: run `provision-host-token.sh`. An
 `InvalidAccessKeyId` means central deleted the backup key: store the new one with
