@@ -1165,7 +1165,9 @@ PY
   S3_PUT_STATUS="$(printf '%s' "$response" | tail -1)"
   # SC2034: read by the callers in check-backup-target.sh and snapshot-openbao.sh.
   # shellcheck disable=SC2034
-  S3_PUT_ERROR="$(printf '%s' "$response" | sed '$d' |
+  # Joined onto one line first: S3 puts Code and Message on one line, but an
+  # S3-compatible target or a proxy may indent its XML across several.
+  S3_PUT_ERROR="$(printf '%s' "$response" | sed '$d' | tr -d '\n' |
     sed -n 's|.*<Code>\(.*\)</Code>.*<Message>\(.*\)</Message>.*|\1: \2|p')"
   [ "$S3_PUT_STATUS" = 200 ]
 }
@@ -1173,8 +1175,8 @@ PY
 # Raft snapshots follow writes. Anything that writes to the node's OpenBao
 # leaves this marker, and request_openbao_snapshot turns it into a snapshot at
 # the end of the script that wrote. The snapshot job removes it only after an
-# upload succeeds, so a write whose snapshot failed is retried on the next
-# reconcile pass rather than waiting for the daily run.
+# upload succeeds and sets it after any run that fails, so a failed snapshot is
+# retried on the next reconcile pass rather than waiting for the daily run.
 mark_openbao_written() {
   touch "$FILONE_STATE_DIR/openbao-snapshot-pending"
 }

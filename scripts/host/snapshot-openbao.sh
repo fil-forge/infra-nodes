@@ -40,13 +40,30 @@ if ! node_takes_backups; then
   exit 0
 fi
 
+# The pending marker is claimed before the snapshot is read: renamed, so a
+# write that lands while this run uploads leaves a new marker this run never
+# touches. A claim left by a run that was killed is taken over, since this
+# snapshot covers that write too. Any run that fails, the daily ones included,
+# puts the marker back, so the next reconcile pass retries within five minutes.
+pending="$FILONE_STATE_DIR/openbao-snapshot-pending"
+claimed="$FILONE_STATE_DIR/openbao-snapshot-claimed"
+host_file=""
+trap 'finish $?' EXIT
+finish() {
+  [ -z "$host_file" ] || rm -f "$host_file"
+  if [ "$1" -eq 0 ]; then
+    rm -f "$claimed"
+  else
+    mark_openbao_written
+  fi
+}
+
 bao_is_unsealed || die "OpenBao is sealed, so there is nothing to snapshot.
        'docker logs $FILONE_BAO_CONTAINER' says why."
 
-# Before anything is read, so a write that lands while this run is uploading
-# leaves its marker in place for the next run.
-started_at="$(date +%s)"
-pending="$FILONE_STATE_DIR/openbao-snapshot-pending"
+if [ -e "$pending" ]; then
+  mv -f "$pending" "$claimed"
+fi
 
 load_backup_target
 
@@ -55,7 +72,6 @@ snapshot_name="raft-$timestamp.snap"
 # The socket directory is the one host path the container writes to that is a
 # tmpfs, so the snapshot never touches a disk on this host.
 host_file="$FILONE_BAO_SOCKET_DIR/$snapshot_name"
-trap 'rm -f "$host_file"' EXIT
 
 echo "=== OpenBao snapshot ($FILONE_NODE) ==="
 bao operator raft snapshot save "/openbao/logs/$snapshot_name" >/dev/null ||
@@ -82,11 +98,6 @@ if [ "$put_ok" != true ]; then
        s3://$backup_bucket/$object_key. scripts/host/check-backup-target.sh tests
        the key and the target on their own." ;;
   esac
-fi
-
-# Only a marker older than this run is covered by the snapshot just uploaded.
-if [ -e "$pending" ] && [ "$(stat -c %Y "$pending")" -lt "$started_at" ]; then
-  rm -f "$pending"
 fi
 
 stamp_openbao_snapshot_success
