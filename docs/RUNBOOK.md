@@ -1186,6 +1186,11 @@ scripts/host/provision-backups.sh --replace
 
 The unseal token is left alone; the two credentials are reissued independently.
 
+A leaked key could have put forged objects in front of the node's backups. Before restoring any of
+them, follow central's
+[restore guide](https://github.com/fil-forge/infra-central/blob/main/docs/restore-appliance-backups.md),
+which restores from copies of the versions written before the leak.
+
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
 commands against the current `SPRUE_DID` and the script's command list, and reissues when either
