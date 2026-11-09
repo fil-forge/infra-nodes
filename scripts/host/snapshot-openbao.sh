@@ -17,6 +17,8 @@
 # request_openbao_snapshot after anything writes to OpenBao. Run it by hand, as
 # root, to take one now. It takes no deploy lock: deploys that hold the lock
 # start it, and it reads OpenBao without changing the checkout or the node.
+# Runs take a lock of their own instead, so one started by hand or by
+# provision-backups.sh waits for the timer's rather than overlapping it.
 #
 # Usage:
 #   scripts/host/snapshot-openbao.sh
@@ -48,6 +50,9 @@ fi
 pending="$FILONE_STATE_DIR/openbao-snapshot-pending"
 claimed="$FILONE_STATE_DIR/openbao-snapshot-claimed"
 host_file=""
+# Under the unit's TimeoutStartSec, so a run that times out waiting dies here
+# and sets the marker for a retry, rather than being killed by systemd.
+snapshot_lock_wait=300
 trap 'finish $?' EXIT
 finish() {
   [ -z "$host_file" ] || rm -f "$host_file"
@@ -58,13 +63,20 @@ finish() {
   fi
 }
 
+# One run at a time, since every run claims the same marker. A run that
+# finished cleanly while another held a newer claim would delete that claim,
+# and the write behind it would never be retried.
+install -d -m 0700 /run/fil-one
+exec 8>/run/fil-one/openbao-snapshot.lock
+flock -w "$snapshot_lock_wait" 8 ||
+  die "another OpenBao snapshot has run for over ${snapshot_lock_wait}s.
+       'fuser -v /run/fil-one/openbao-snapshot.lock' names the process holding it."
+
 bao_is_unsealed || die "OpenBao is sealed, so there is nothing to snapshot.
        'docker logs $FILONE_BAO_CONTAINER' says why."
 
-# A run by hand that overlaps the timer's can lose the rename to it; the
-# snapshot it then takes still covers the write.
 if [ -e "$pending" ]; then
-  mv -f "$pending" "$claimed" 2>/dev/null || true
+  mv -f "$pending" "$claimed"
 fi
 
 load_backup_target

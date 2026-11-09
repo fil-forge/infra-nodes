@@ -1218,7 +1218,8 @@ region key) leaves a marker at `state/openbao-snapshot-pending` under the node's
 straight away. The marker is cleared only after an upload succeeds, and any run that fails sets it,
 so a failed snapshot, the daily one included, is retried every five minutes. A run renames the
 marker to `state/openbao-snapshot-claimed` while it works; one left behind by a killed run is
-harmless, and the next run takes it over.
+harmless, and the next run takes it over. Runs take turns through
+`/run/fil-one/openbao-snapshot.lock`, so one started by hand waits for the timer's.
 
 A snapshot leaves the node as OpenBao wrote it. OpenBao encrypts every value before it reaches
 raft, and central's `appliance-unseal-<region>` transit key wraps the root key, so a snapshot
