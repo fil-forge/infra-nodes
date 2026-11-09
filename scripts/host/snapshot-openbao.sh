@@ -61,8 +61,10 @@ finish() {
 bao_is_unsealed || die "OpenBao is sealed, so there is nothing to snapshot.
        'docker logs $FILONE_BAO_CONTAINER' says why."
 
+# A run by hand that overlaps the timer's can lose the rename to it; the
+# snapshot it then takes still covers the write.
 if [ -e "$pending" ]; then
-  mv -f "$pending" "$claimed"
+  mv -f "$pending" "$claimed" 2>/dev/null || true
 fi
 
 load_backup_target
