@@ -14,8 +14,8 @@ design](decisions/2026-08-initial-design.md#telemetry).
 **Logs.** Every line each FilOne container writes to stdout or stderr: Piri, Ingot, OpenBao,
 Postgres, and on dev also Caddy and Alloy itself. On staging, Caddy is the host's, and the runtime
 log it writes for itself ships under the `-caddy` service name. The host journal too: on dev the whole journal,
-which is where cloud-init, Docker and a failed unit are legible; on staging only the reconcile
-service's unit, since the rest of that host's journal is not the appliance's.
+which is where cloud-init, Docker and a failed unit are legible; on staging only the reconcile and
+OpenBao snapshot units, since the rest of that host's journal is not the appliance's.
 
 **Metrics.** The host's CPU, disk I/O, filesystems, load and memory from a node exporter, scraped
 every minute, plus the deploy stamp the reconcile timer writes on every pass. Caddy's request
@@ -386,15 +386,21 @@ infra-central's stale-snapshot alert expects it from every appliance in a stage 
 so one that reconciles without reporting it fires the alert as well.
 
 The timer fires daily with up to 30 minutes of random delay, and a write to OpenBao starts an extra
-run. A stamp older than 26 hours means a daily run failed or never started:
+run. A failed run is retried on the next reconcile pass, so a stamp older than 26 hours means every
+run for a day has failed, or none has started:
 
 ```promql
 time() - openbao_snapshot_last_success_timestamp > 26 * 3600
 ```
 
 Every run, the timer's and the ones a write starts, logs to the journal of
-`filone-openbao-snapshot.service`. Staging's host Alloy ships only the reconcile unit's journal, so
-the reason a run failed is on the host: `journalctl -u filone-openbao-snapshot.service`.
+`filone-openbao-snapshot.service`. Dev ships it with the rest of its journal. Staging's host Alloy
+ships it through its own journal source, which the staging section of the [runbook](RUNBOOK.md)
+lists, under the `-host` service name with the unit on the `unit` label:
+
+```logql
+{service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}
+```
 
 ## Traces
 
@@ -427,7 +433,7 @@ What a new service or feature needs so that its logs and metrics reach Grafana, 
 go.
 
 - **Logs.** Container stdout and stderr ship without any extra work, under the labels above. Dev
-  ships the whole host journal, but staging ships only the reconcile service's unit. The staging
+  ships the whole host journal, but staging ships only the units the runbook lists. The staging
   host's Alloy config lives outside this repository, so for a new host service there, add what it
   must ship to the staging section of the [runbook](RUNBOOK.md) and say in the PR that the host's
   config needs the change.

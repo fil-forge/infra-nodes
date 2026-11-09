@@ -424,9 +424,27 @@ what keeps them out of the appliance rules.
 `terraform/envs/grafana/alerts.tf`, fires while this is not done and goes quiet
 once it is — so this does not depend on anyone remembering to check.
 
-Give the reconcile journal source
-the same `service_name`, `node`, `region` and `appliance` as static labels, plus the shared
-journal relabel rules so the unit lands on its own label.
+Give the reconcile journal source the same `service_name`, `node`, `region` and `appliance` as
+static labels, plus the shared journal relabel rules so the unit lands on its own label. The OpenBao
+snapshot unit ships through a second source of the same shape, so the reason a snapshot failed
+reaches Loki:
+
+```alloy
+loki.source.journal "filone_openbao_snapshot" {
+  matches       = "_SYSTEMD_UNIT=filone-openbao-snapshot.service"
+  forward_to    = [loki.write.grafanacloud.receiver]
+  relabel_rules = loki.relabel.journal.rules
+
+  labels = {
+    hostname     = "curio",
+    service      = "filone-openbao-snapshot",
+    service_name = "appliance-staging-eu-central-3-host",
+    node         = "staging/eu-central-3",
+    region       = "eu-central-3",
+    appliance    = "staging-eu-central-3",
+  }
+}
+```
 
 The host Caddy's runtime log is `/root/storacha/logs/caddy/caddy.log`. Caddy writes and rolls
 that file itself, through a `log` block in the global options of `/root/storacha/caddy/Caddyfile`,
@@ -883,8 +901,8 @@ and OpenBao snapshot runs as. Between the two, on a node that takes backups, it 
 stores the key and its target at `filone/backup-target`, and writes a small object with the key to
 prove it can write there. It then uploads the first OpenBao snapshot and enables the daily snapshot
 timer. A failed write stops the run with S3's reason; fix it and re-run, which skips what is already
-stored. It then installs the identity tooling (ucantool and cast, pinned in
-the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
+stored. It then installs the identity tooling (ucantool and cast, pinned in the node's `node.env`);
+generates the node's keys; asks for whichever operator-supplied tokens
 that node needs; and starts its platform services. Step 3 says which, for each node.
 
 A lapsed or revoked Ingot region-key token is replaced by a separate run of the same steps:
@@ -1196,9 +1214,9 @@ The unseal token is left alone; the two credentials are reissued independently.
 snapshot of the node's OpenBao once a day, to `<region>/openbao/<UTC timestamp>.snap` in the backup
 bucket. Anything that writes to OpenBao (provisioning, a deploy that stores a new secret, a new
 region key) leaves a marker at `state/openbao-snapshot-pending` under the node's
-`FILONE_CONTROL_DIR`, and the
-end of that run, or the next reconcile pass, starts a snapshot straight away. The marker is cleared
-only after an upload succeeds, so a failed one is retried every five minutes.
+`FILONE_CONTROL_DIR`, and the end of that run, or the next reconcile pass, starts a snapshot
+straight away. The marker is cleared only after an upload succeeds, and any run that fails sets it,
+so a failed snapshot, the daily one included, is retried every five minutes.
 
 A snapshot leaves the node as OpenBao wrote it. OpenBao encrypts every value before it reaches
 raft, and central's `appliance-unseal-<region>` transit key wraps the root key, so a snapshot
@@ -1384,8 +1402,9 @@ could read the channel.
 **The OpenBao snapshot is stale.** The last upload to the backup bucket is more than a day old.
 An age of centuries means the node reports no snapshot stamp at all: it has never uploaded one, so
 run `provision-host-token.sh` if it predates snapshots and then `provision-backups.sh`, or the code
-that writes the stamp is broken. Otherwise
-`journalctl -u filone-openbao-snapshot.service` has the failed run's reason. A refused snapshot
+that writes the stamp is broken. Otherwise the snapshot unit's journal has the failed run's reason:
+`{service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}` in
+Loki, or `journalctl -u filone-openbao-snapshot.service` on the host. A refused snapshot
 means the host token still holds `filone-deploy`: run `provision-host-token.sh`. An
 `InvalidAccessKeyId` means central deleted the backup key: store the new one with
 `provision-backups.sh --replace`. Any other S3 error, or none at all, is easier to read from
