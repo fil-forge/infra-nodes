@@ -38,12 +38,12 @@ if [ ! -r "$FILONE_SEAL_TOKEN_FILE" ]; then
   central="$(central_seal_addr)"
   echo "[1/9] Claiming the seal token from $central"
   echo
-  echo "  Central runs 'make mint-appliance-credentials' in infra-central and hands back a"
-  echo "  wrapping token for the seal token, and on a node that takes backups a second"
-  echo "  one for the backup key, which step 4 asks for. Paste the seal token's here;"
-  echo "  it is not echoed. Exchanging it spends it, and what comes back is stored"
+  echo "  Central runs 'make mint-appliance-credentials' in infra-central and hands back an"
+  echo "  unseal-token wrapping token and, on a node that takes backups, a backup-key"
+  echo "  wrapping token, which step 4 asks for. Paste the unseal-token wrapping token"
+  echo "  here; it is not echoed. Exchanging it spends it, and what comes back is stored"
   echo "  0400 root."
-  read -rsp "wrapping token: " wrapping_token
+  read -rsp "unseal-token wrapping token: " wrapping_token
   echo
   [ -n "$wrapping_token" ] || die "no wrapping token given"
 
