@@ -158,7 +158,8 @@ built on them works on one node only.
 ## Metrics
 
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
-Caddy's `caddy_http_*` family, and `deploy_last_success_timestamp`. Every series carries the four
+Caddy's `caddy_http_*` family, `deploy_last_success_timestamp` and
+`openbao_snapshot_last_success_timestamp`. Every series carries the four
 labels above plus `instance`, which is the node name (`<node>/piri-<n>` on Piri's own series), and
 `job`, which is `integrations/unix` for the host, `cadvisor` for containers, `caddy` for Caddy and
 `forge/piri` for Piri.
@@ -374,6 +375,24 @@ When each project last deployed, per node:
 ```promql
 deploy_last_success_timestamp{project=~"apps|platform"}
 ```
+
+### The OpenBao snapshot stamp
+
+`openbao_snapshot_last_success_timestamp` is the Unix time of the last OpenBao raft snapshot that
+reached the backup bucket. `scripts/host/snapshot-openbao.sh` writes it to the textfile collector
+after each upload, so it ships the way the deploy stamp does, with no Alloy change on either node.
+It exists only on a node that takes backups, from its first successful snapshot on; dev has none.
+
+The timer fires daily with up to 30 minutes of random delay, and a write to OpenBao starts an extra
+run. A stamp older than 26 hours means a daily run failed or never started:
+
+```promql
+time() - openbao_snapshot_last_success_timestamp > 26 * 3600
+```
+
+Every run, the timer's and the ones a write starts, logs to the journal of
+`filone-openbao-snapshot.service`. Staging's host Alloy ships only the reconcile unit's journal, so
+the reason a run failed is on the host: `journalctl -u filone-openbao-snapshot.service`.
 
 ## Traces
 

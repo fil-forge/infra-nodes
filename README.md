@@ -188,9 +188,10 @@ delegation to it survives. Dev takes no backups, by decision.
 What this repository should have before a node carries anything that matters. Each is tracked in
 Linear.
 
-**A backup strategy.** Dev runs with none. [FIL-1166][] covers snapshots of the control volume,
-OpenBao raft snapshots off the box, and a restore that has actually been run, because the failure
-this protects against is the one where the node's identity is gone. Postgres replication and
+**A backup strategy.** Dev runs with none. Staging uploads a daily OpenBao raft snapshot to
+central's backup bucket, and another after each write to OpenBao. [FIL-1166][] covers snapshots of
+the rest of the control volume and a restore that has actually been run, because the failure this
+protects against is the one where the node's identity is gone. Postgres replication and
 point-in-time recovery is [FIL-807][].
 
 **Piri and Ingot reading their secrets from OpenBao.** Ingot already reads the region key from
