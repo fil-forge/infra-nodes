@@ -426,8 +426,8 @@ once it is — so this does not depend on anyone remembering to check.
 
 Give the reconcile journal source the same `service_name`, `node`, `region` and `appliance` as
 static labels, plus the shared journal relabel rules so the unit lands on its own label. The OpenBao
-snapshot unit ships through a second source of the same shape, so the reason a snapshot failed
-reaches Loki:
+snapshot unit gets a second source of the same shape, so the query for a failed snapshot is the
+same as on dev:
 
 ```alloy
 loki.source.journal "filone_openbao_snapshot" {

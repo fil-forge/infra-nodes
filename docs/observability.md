@@ -395,8 +395,8 @@ time() - openbao_snapshot_last_success_timestamp > 26 * 3600
 
 Every run, the timer's and the ones a write starts, logs to the journal of
 `filone-openbao-snapshot.service`. Dev ships it with the rest of its journal. Staging's host Alloy
-ships it through its own journal source, which the staging section of the [runbook](RUNBOOK.md)
-lists, under the `-host` service name with the unit on the `unit` label:
+gives it its own journal source, which the staging section of the [runbook](RUNBOOK.md) lists, so
+it carries the `-host` service name with the unit on the `unit` label, as on dev:
 
 ```logql
 {service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}
@@ -433,10 +433,11 @@ What a new service or feature needs so that its logs and metrics reach Grafana, 
 go.
 
 - **Logs.** Container stdout and stderr ship without any extra work, under the labels above. Dev
-  ships the whole host journal, but staging ships only the units the runbook lists. The staging
-  host's Alloy config lives outside this repository, so for a new host service there, add what it
-  must ship to the staging section of the [runbook](RUNBOOK.md) and say in the PR that the host's
-  config needs the change.
+  ships the whole host journal under the appliance labels, and staging only the units the runbook
+  lists. The rest of the staging host's journal ships as `{hostname="curio"}`, with no appliance
+  labels. That host's Alloy config lives outside this repository, so for a new host service there,
+  add its journal source to the staging section of the [runbook](RUNBOOK.md) and say in the PR that
+  the host's config needs the change.
 - **Metrics pushed over OTLP**, as Piri does. The service sets `service.name` to its Compose
   service name and `service.namespace="forge"`, and sends to Alloy on port 4318: `alloy:4318` on
   dev and `host.docker.internal:4318` on staging, configured as Ingot's entry in each stage's
