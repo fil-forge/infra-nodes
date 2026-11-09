@@ -1476,9 +1476,9 @@ infra-central's `docs/observability.md`.
 
 Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say which one:
 
-- The chain-head, proving-failing, proving-period and Prove-task alerts carry the Piri's
-  `instance` label, for example `staging/eu-central-3/piri-1`. Its last digit is the Piri's
-  number. The proving-failing and proving-period alerts also name the `proof_set`.
+- The chain-head, proving-failing, proving-period, deletion-drain and Prove-task alerts carry the
+  Piri's `instance` label, for example `staging/eu-central-3/piri-1`. Its last digit is the Piri's
+  number. The proving-failing, proving-period and deletion-drain alerts also name the `proof_set`.
 
 - The unrecoverable alert carries the Piri's `instance` too, but not the proof set. Step 1 of
   [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable) finds it in the logs.
@@ -1653,6 +1653,10 @@ started, usually because the chain endpoint was unreachable then.
    - **The data set's payment has ended or been terminated, or the data set is no longer live:**
      Curio stops proving it for good, and the next alert is [Piri proof set is
      unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
+   - **`Proving period scheduling blocked by pending piece deletions; draining first` in the
+     `PDPv0_ProvPeriod` logs, or "Piri's deletion drain is stuck" firing for this proof set:**
+     follow [Piri's deletion drain is stuck](#piris-deletion-drain-is-stuck). PDPVerifier won't
+     schedule the next proving period while piece removals are queued.
    - **Any other contract revert:** Curio retries, but the node can't fix a revert. Post the revert
      reason, the proof set's ID and its state in `#filone-eng` on Slack, now, and record them on
      the incident. The data set's payments are set up from central, which pays from
@@ -1671,7 +1675,10 @@ The alert clears on its own once a proof lands.
 costs that day's proving period, and nothing more: once scheduling runs again, Curio carries on.
 
 1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
-   firing. If either is, follow that entry first; a head that isn't moving is the usual cause.
+   firing. If either is, follow that entry first; a head that isn't moving is the usual cause. If
+   "Piri's deletion drain is stuck" is firing for this proof set, follow [that
+   entry](#piris-deletion-drain-is-stuck) instead: PDPVerifier won't schedule the next proving
+   period while piece removals are queued.
 2. In the Piri's shell, run `piri status`. If it fails, read the error as in [Before you
    start](#before-you-start), step 4. If it answers, go on: the task engine can still be stalled
    behind a node that answers, which the logs show.
@@ -1685,9 +1692,44 @@ costs that day's proving period, and nothing more: once scheduling runs again, C
 
    Look the address up on a Calibration block explorer. If it holds little or no tFIL, fund it as
    [step 6](#6-onboarding-then-the-apps) describes.
-4. On the host, read the `PDPv0_ProvPeriod` logs for whether scheduling ran, and why not.
+4. On the host, read the `PDPv0_ProvPeriod` logs for whether scheduling ran, and why not. If they
+   say `Proving period scheduling blocked by pending piece deletions; draining first`, follow
+   [Piri's deletion drain is stuck](#piris-deletion-drain-is-stuck): its steps apply before its
+   own alert fires, which is a proving period later than this one.
 5. Once scheduling runs again, if the logs showed AddRoots failing too, [free stranded
    batches](#free-stranded-batches).
+
+#### Piri's deletion drain is stuck
+
+**Act within a day.** Piece removals have been queued on a proof set for longer than its proving
+period. PDPVerifier won't schedule the next proving period while removals are queued, so Curio
+drains them first, with a `processPieceDeletions` transaction from the Piri's owner wallet. Until
+the drain finishes, the proof set's proving periods stop advancing, and each day costs that day's
+period. Once it finishes, Curio carries on. By the time this alert fires, "Piri proving is failing"
+usually is too; if it is, act now.
+
+1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
+   firing. If either is, follow that entry first: Curio sends the drain when the challenge window
+   closes, which it learns from the chain head.
+2. Check the owner wallet as in step 3 of [Piri's proving period has not
+   advanced](#piris-proving-period-has-not-advanced). It pays for every drain transaction.
+3. On the host, read the Piri's logs for the drain. A `PDPv0_ProcDel` run that failed logs
+   `Removal queue draining failed` with the data set's ID and the error. A drain transaction that
+   was sent but failed on chain logs `PDP removal drain transaction failed` with its `txHash`. A
+   successful one logs `submitted PDP processPieceDeletions`, then `PDP removal drain confirmed`.
+4. Act on what the logs showed:
+   - **`processPieceDeletions gas estimate failed at batch size 1`, `PDP removal drain transaction
+     failed`, or any other contract revert:** the node can't fix it. Post the error, the
+     transaction hash if there is one, and the proof set's ID in `#filone-eng` on Slack, and
+     record them on the incident.
+   - **`submitted PDP processPieceDeletions` with no `confirmed` or `failed` line for its `txHash`
+     an hour later:** the transaction is stuck. Escalate it as above, with the `txHash`.
+   - **Any other error, such as the wallet running out of funds:** check the wallet as step 2 says,
+     and fund it if it's low. Curio retries the drain on its own.
+   - **No `PDPv0_ProcDel` run at all:** run `piri status` as in step 2 of [Piri's proving period
+     has not advanced](#piris-proving-period-has-not-advanced). The task engine may be stalled.
+
+The alert clears once the drain finishes and Piri stops reporting the removals as queued.
 
 #### Piri's Prove task has not run in 1.5 proving periods
 
