@@ -87,6 +87,7 @@ adopt_single_piri() {
     jq -c '.data.data' |
     bao kv put -mount="$FILONE_BAO_MOUNT" piri-0 - >/dev/null ||
     die "could not copy $FILONE_BAO_MOUNT/piri to $FILONE_BAO_MOUNT/piri-0"
+  mark_openbao_written
   echo "  copied piri to piri-0 ($(bao_get piri-0 did))"
 }
 
@@ -230,4 +231,5 @@ generate_password postgres admin_password
 generate_password postgres piri_password
 generate_password postgres ingot_password
 
+request_openbao_snapshot
 echo "=== keygen complete ==="

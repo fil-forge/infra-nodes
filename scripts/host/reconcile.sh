@@ -7,7 +7,7 @@
 # Deliberately narrow. It updates the checkout, works out which of the two
 # compose projects the new commits touch, and calls the ordinary deploy scripts.
 # It creates nothing and prompts for nothing. The one secret it touches is the
-# node's own deploy token, which it renews and never prints.
+# node's own host token, which it renews and never prints.
 #
 # The ref it tracks is FILONE_GIT_REF in /etc/fil-one/node.conf, which is the
 # only statement of it. Point a node at a feature branch by editing that file.
@@ -136,8 +136,8 @@ fi
 # period is shorter than that.
 renew_bao_token
 
-# After the deploy token, so a node that has no region token yet still keeps its
-# deploy token alive. Every five minutes against a 72h period, which leaves
+# After the host token, so a node that has no region token yet still keeps its
+# host token alive. Every five minutes against a 72h period, which leaves
 # plenty of room: a reconcile stalled for three days is already alarmed through
 # deploy_last_success_timestamp.
 renew_ingot_regionkey_token
@@ -170,4 +170,9 @@ fi
 # nothing. That is what makes it a deadman: the metric goes stale when the node
 # stops reconciling, whether or not anyone was shipping.
 stamp_deploy_success reconcile
+
+# Every pass, so a write whose snapshot failed, or one made by a script that
+# does not ask for a snapshot itself, goes up within five minutes rather than
+# at the next daily run.
+request_openbao_snapshot
 echo "=== reconcile complete ==="

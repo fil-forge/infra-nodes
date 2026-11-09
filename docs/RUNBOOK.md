@@ -424,9 +424,27 @@ what keeps them out of the appliance rules.
 `terraform/envs/grafana/alerts.tf`, fires while this is not done and goes quiet
 once it is — so this does not depend on anyone remembering to check.
 
-Give the reconcile journal source
-the same `service_name`, `node`, `region` and `appliance` as static labels, plus the shared
-journal relabel rules so the unit lands on its own label.
+Give the reconcile journal source the same `service_name`, `node`, `region` and `appliance` as
+static labels, plus the shared journal relabel rules so the unit lands on its own label. The OpenBao
+snapshot unit gets a second source of the same shape, so the query for a failed snapshot is the
+same as on dev:
+
+```alloy
+loki.source.journal "filone_openbao_snapshot" {
+  matches       = "_SYSTEMD_UNIT=filone-openbao-snapshot.service"
+  forward_to    = [loki.write.grafanacloud.receiver]
+  relabel_rules = loki.relabel.journal.rules
+
+  labels = {
+    hostname     = "curio",
+    service      = "filone-openbao-snapshot",
+    service_name = "appliance-staging-eu-central-3-host",
+    node         = "staging/eu-central-3",
+    region       = "eu-central-3",
+    appliance    = "staging-eu-central-3",
+  }
+}
+```
 
 The host Caddy's runtime log is `/root/storacha/logs/caddy/caddy.log`. Caddy writes and rolls
 that file itself, through a `log` block in the global options of `/root/storacha/caddy/Caddyfile`,
@@ -851,12 +869,15 @@ tofu -chdir=terraform/envs/dev output -raw public_ip
 Send that address to whoever runs infra-central, and they run
 
 ```sh
-make mint-appliance-token STAGE=<stage> REGION=<region> NODE_IP=<the address>
+make mint-appliance-credentials STAGE=<stage> REGION=<region> NODE_IP=<the address>
 ```
 
 What comes back to you is a **wrapping token**, not the unseal token itself. The credential stays
-inside the central OpenBao until the node claims it in step 5. The wrapping token can be spent once
-and expires in 24 hours, so chat is an acceptable channel for it; a view-once 1Password link is
+inside the central OpenBao until the node claims it in step 5. A node whose `node.env` sets
+`FILONE_TAKES_BACKUPS=true`, as staging's does, also gets a second wrapping token, for the access
+key it writes its Postgres and OpenBao backups with. Central wraps the bucket, key prefix and AWS
+region with the key, so `node.env` names none of them. Each wrapping token can be spent once and
+expires in 24 hours, so chat is an acceptable channel for them; a view-once 1Password link is
 better.
 
 ### 5. The platform
@@ -868,14 +889,20 @@ the bring-up runs in this shell.
 scripts/host/provision-platform.sh
 ```
 
-It asks for the wrapping token, exchanges it at central for the unseal token, initialises OpenBao,
-and prints **one recovery key and one root token**.
+It asks for the unseal-token wrapping token, exchanges it at central for the unseal token,
+initialises OpenBao, and prints **one recovery key and one root token**.
 Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
 neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
 
-It then asks for the root token back twice, to create the deploy token and the KV mount and then the
-region key Ingot encrypts objects under; installs the identity tooling (ucantool and cast, pinned in
-the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
+It then asks for the root token back twice, to create the host token and the KV mount and then the
+region key Ingot encrypts objects under. The host token is what every later deploy, reconcile pass
+and OpenBao snapshot runs as. Between the two, on a node that takes backups, it runs
+`provision-backups.sh`, which asks for the backup-key wrapping token, exchanges it at central,
+stores the key and its target at `filone/backup-target`, and writes a small object with the key to
+prove it can write there. It then uploads the first OpenBao snapshot and enables the daily snapshot
+timer. A failed write stops the run with S3's reason; fix it and re-run, which skips what is already
+stored. It then installs the identity tooling (ucantool and cast, pinned in the node's `node.env`);
+generates the node's keys; asks for whichever operator-supplied tokens
 that node needs; and starts its platform services. Step 3 says which, for each node.
 
 A lapsed or revoked Ingot region-key token is replaced by a separate run of the same steps:
@@ -981,6 +1008,10 @@ systemctl enable --now filone-reconcile.timer
 systemctl enable --now filone-seal-token-renew.timer
 systemctl list-timers | grep filone
 ```
+
+`filone-openbao-snapshot.timer` is not on that list on purpose. `provision-backups.sh` enables it
+on a node that takes backups, once the stored key has written to the bucket, and a node without a
+working key has nothing to upload with.
 
 From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
 `/etc/fil-one/node.conf` names, which bootstrap writes as `main`.
@@ -1145,6 +1176,86 @@ stored wrap on the old version, which transit still decrypts, so a rotation is s
 `min_decryption_version` bump is not: it makes every object written before it unreadable. There is
 no rewrap campaign in this repository yet, and Ingot's token cannot run one.
 
+**Add the backup key to a node provisioned before it existed.** Ask central for a plain re-run of
+`make mint-appliance-credentials` for the region. The node's unseal token is live, so central skips
+it and mints only the backup key. Then, on the node:
+
+```sh
+scripts/host/provision-backups.sh
+```
+
+It asks for the backup-key wrapping token, stores the key and its target at `filone/backup-target`,
+and checks that the key can write there. A second run reports the key it holds, changes nothing,
+and checks it again.
+
+**Check the backup key.** To confirm at any time that the stored key can still write to its
+target:
+
+```sh
+scripts/host/check-backup-target.sh
+```
+
+It puts a small object at `<region>/provisioning-check/<UTC timestamp>` in the backup bucket. The
+key can neither read nor delete it; the bucket's lifecycle removes it after 36 days, as it does
+every backup. An `InvalidAccessKeyId` means central deleted the key, usually by reissuing it, and
+the fix is `provision-backups.sh --replace` with the new wrapping token.
+
+**Reissue the backup key.** When the key leaked, or `provision-backups.sh` could not exchange its
+wrapping token, ask central to run the mint with `MINT_ARGS=--reissue-backup-key`. That deletes the
+old key in IAM before minting the new one, so the node's uploads fail until it stores the new key:
+
+```sh
+scripts/host/provision-backups.sh --replace
+```
+
+The unseal token is left alone; the two credentials are reissued independently.
+
+**OpenBao snapshots.** On a node that takes backups, `filone-openbao-snapshot.timer` uploads a raft
+snapshot of the node's OpenBao once a day, to `<region>/openbao/<UTC timestamp>.snap` in the backup
+bucket. Anything that writes to OpenBao (provisioning, a deploy that stores a new secret, a new
+region key) leaves a marker at `state/openbao-snapshot-pending` under the node's
+`FILONE_CONTROL_DIR`, and the end of that run, or the next reconcile pass, starts a snapshot
+straight away. The marker is cleared only after an upload succeeds, and any run that fails sets it,
+so a failed snapshot, the daily one included, is retried every five minutes. A run renames the
+marker to `state/openbao-snapshot-claimed` while it works; one left behind by a killed run is
+harmless, and the next run takes it over. Runs take turns through
+`/run/fil-one/openbao-snapshot.lock`, so one started by hand waits for the timer's.
+
+A snapshot leaves the node as OpenBao wrote it. OpenBao encrypts every value before it reaches
+raft, and central's `appliance-unseal-<region>` transit key wraps the root key, so a snapshot
+cannot be read without the unseal key at central; the root token and recovery key alone cannot
+unseal it. Mount paths, policy names and secret names stay in plaintext. The bucket locks each
+snapshot in compliance mode for central's `appliance_backups.retention_days` (35 days on staging)
+and deletes it a day after that. Never raise `min_decryption_version` on the unseal key inside
+that window, or the older snapshots stop restoring.
+
+To take one now, as root:
+
+```sh
+scripts/host/snapshot-openbao.sh
+```
+
+Each run stamps `openbao_snapshot_last_success_timestamp`, described in
+[observability.md](observability.md#the-openbao-snapshot-stamp).
+
+**Give a node a new host token.** The host token is the OpenBao token every deploy, reconcile pass
+and snapshot runs as, under the `filone-host` policy. A node provisioned before snapshots existed
+holds one under the older `filone-deploy` policy, which cannot take a snapshot, and its snapshot job
+says so. Rotate the token the same way, or replace it after a restore from a snapshot older than
+the token's 72-hour period:
+
+```sh
+scripts/host/provision-host-token.sh
+```
+
+It asks for the root token from 1Password, writes the policy, puts the new token in
+`/etc/fil-one/bao-token` before revoking the old one, and deletes `filone-deploy`.
+
+On a node that already holds its backup key and predates snapshots, run the two in this order:
+`provision-host-token.sh`, then `provision-backups.sh`. The second checks the key, uploads the
+first snapshot and enables the timer; run first, it stops at the snapshot that the old token
+cannot take.
+
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
 commands against the current `SPRUE_DID` and the script's command list, and reissues when either
@@ -1240,7 +1351,9 @@ the end of this section.
 one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
 identities. The transit key at central is per-node, not per-identity, so it stays. The unseal token
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
-for a new wrapping token.
+for a new wrapping token. The backup key lived in the old OpenBao and is gone with it, so on a node
+that takes backups ask central to run the mint with `MINT_ARGS=--reissue-backup-key` too: a plain
+run would see the region's old key in IAM and skip it.
 
 **2. Remove the old identities at central.** Ask whoever runs infra-central to drop the old Piri
 DIDs from the delegator's allow list and to deregister or zero-weight the old providers at sprue.
@@ -1281,8 +1394,25 @@ which is the same tidying step 2 above describes.
 
 **`provision-platform.sh` cannot exchange the wrapping token.** A wrapping token can be spent once,
 so a token central refuses inside its 24-hour window is one somebody else has already spent. Treat
-it as a compromise: ask central to re-mint with `TOKEN_ARGS=--reissue`, which revokes the token that
-was taken, and work out who could read the channel it was delivered on.
+it as a compromise: ask central to re-mint with `MINT_ARGS=--reissue-unseal-token`, which revokes
+the token that was taken, and work out who could read the channel it was delivered on.
+
+**`provision-backups.sh` cannot exchange the wrapping token.** The same as for the unseal token:
+somebody else spent it. Ask central to re-mint with `MINT_ARGS=--reissue-backup-key`, which deletes
+the key that was taken, store the new one with `provision-backups.sh --replace`, and work out who
+could read the channel.
+
+**The OpenBao snapshot is stale.** The last upload to the backup bucket is more than a day old.
+An age of centuries means the node reports no snapshot stamp at all: it has never uploaded one, so
+run `provision-host-token.sh` if it predates snapshots and then `provision-backups.sh`, or the code
+that writes the stamp is broken. Otherwise the snapshot unit's journal has the failed run's reason:
+`{service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}` in
+Loki, or `journalctl -u filone-openbao-snapshot.service` on the host. A refused snapshot
+means the host token still holds `filone-deploy`: run `provision-host-token.sh`. An
+`InvalidAccessKeyId` means central deleted the backup key: store the new one with
+`provision-backups.sh --replace`. Any other S3 error, or none at all, is easier to read from
+`check-backup-target.sh`, which tests the key and the bucket on their own. A timer that stopped
+firing shows in `systemctl list-timers filone-openbao-snapshot.timer`.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key

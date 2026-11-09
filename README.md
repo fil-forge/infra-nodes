@@ -136,8 +136,9 @@ nothing: that is the kill lever.
 
 Keys are generated on the node and never leave it. Provisioning creates the two Ed25519 identities,
 the EVM owner wallet and every password directly into the local OpenBao. The operator supplies three
-things by hand and nothing else: the wrapping token the unseal token is claimed with, the
-chain.love access token and the Grafana Cloud push token.
+things by hand and nothing else: the wrapping tokens the unseal token and, on a node that takes
+backups, the backup key are claimed with, the chain.love access token and the Grafana Cloud push
+token.
 
 Piri and Ingot read their configuration from files, secrets included, so the deploy scripts render
 what they need into `/run/fil-one/secrets` — a root-only tmpfs, mounted read-only into the
@@ -154,9 +155,10 @@ Six steps, in [docs/RUNBOOK.md](docs/RUNBOOK.md) with the commands:
    rules, and run `scripts/host/bootstrap-staging-eu-central-3.sh` on the server. The staging
    runbook has the exact UFW rules.
 3. Have central mint the unseal token, which is bound to the Elastic IP the apply just allocated,
-   and send back the wrapping token that claims it.
-4. Run `provision-platform.sh` on the node: initialise OpenBao, install the identity tooling,
-   generate keys, start the platform.
+   and on a node that takes backups the backup key, and send back the wrapping tokens that claim
+   them.
+4. Run `provision-platform.sh` on the node: initialise OpenBao, store and check the backup key, install the
+   identity tooling, generate keys, start the platform.
 5. Run `onboarding-request.sh`, send what it prints to Forge Central, and install the delegation
    they return with `store-hilt-proof.sh`. Then run `provision-apps.sh`.
 6. Enable `filone-reconcile.timer` and `filone-seal-token-renew.timer`.
@@ -186,9 +188,10 @@ delegation to it survives. Dev takes no backups, by decision.
 What this repository should have before a node carries anything that matters. Each is tracked in
 Linear.
 
-**A backup strategy.** Dev runs with none. [FIL-1166][] covers snapshots of the control volume,
-OpenBao raft snapshots off the box, and a restore that has actually been run, because the failure
-this protects against is the one where the node's identity is gone. Postgres replication and
+**A backup strategy.** Dev runs with none. Staging uploads a daily OpenBao raft snapshot to
+central's backup bucket, and another after each write to OpenBao. [FIL-1166][] covers snapshots of
+the rest of the control volume and a restore that has actually been run, because the failure this
+protects against is the one where the node's identity is gone. Postgres replication and
 point-in-time recovery is [FIL-807][].
 
 **Piri and Ingot reading their secrets from OpenBao.** Ingot already reads the region key from

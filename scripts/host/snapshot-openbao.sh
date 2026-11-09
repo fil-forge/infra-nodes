@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Take a raft snapshot of this node's OpenBao and push it to the backup target.
+#
+# The snapshot goes up as OpenBao writes it. OpenBao encrypts every value before
+# it reaches raft, and central's appliance-unseal-<region> key wraps the root
+# key, so a snapshot cannot be read without the unseal key held at central.
+# Storage paths (mount paths, policy names, secret names) stay in plaintext.
+#
+# Each snapshot goes to <key_prefix>openbao/<UTC timestamp>.snap under its own
+# key. The node's backup key can put but not read or delete. The bucket keeps
+# versions and locks each one in compliance mode, so a put to a key that already
+# exists adds a version and leaves the earlier one in place. Central sets how
+# long a snapshot is kept, as appliance_backups.retention_days in the stage's
+# platform config: 35 days on staging, after which the bucket expires it.
+#
+# Runs from filone-openbao-snapshot.timer once a day, and from
+# request_openbao_snapshot after anything writes to OpenBao. Run it by hand, as
+# root, to take one now. It takes no deploy lock: deploys that hold the lock
+# start it, and it reads OpenBao without changing the checkout or the node.
+# Runs take a lock of their own instead, so one started by hand or by
+# provision-backups.sh waits for the timer's rather than overlapping it.
+#
+# Usage:
+#   scripts/host/snapshot-openbao.sh
+set -euo pipefail
+
+# shellcheck source=lib.sh
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+case "${1:-}" in
+  "") ;;
+  -h|--help)
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+    exit 0 ;;
+  *) die "unknown option: $1" ;;
+esac
+
+filone_init
+
+if ! node_takes_backups; then
+  echo "  $FILONE_NODE_DIR/node.env sets FILONE_TAKES_BACKUPS=false; no snapshot taken"
+  exit 0
+fi
+
+# The pending marker is claimed before the snapshot is read: renamed, so a
+# write that lands while this run uploads leaves a new marker this run never
+# touches. A claim left by a run that was killed is taken over, since this
+# snapshot covers that write too. Any run that fails, the daily ones included,
+# puts the marker back, so the next reconcile pass retries within five minutes.
+pending="$FILONE_STATE_DIR/openbao-snapshot-pending"
+claimed="$FILONE_STATE_DIR/openbao-snapshot-claimed"
+host_file=""
+# Under the unit's TimeoutStartSec, so a run that times out waiting dies here
+# and sets the marker for a retry, rather than being killed by systemd.
+snapshot_lock_wait=300
+trap 'finish $?' EXIT
+finish() {
+  [ -z "$host_file" ] || rm -f "$host_file"
+  if [ "$1" -eq 0 ]; then
+    rm -f "$claimed"
+  else
+    mark_openbao_written
+  fi
+}
+
+# One run at a time, since every run claims the same marker. A run that
+# finished cleanly while another held a newer claim would delete that claim,
+# and the write behind it would never be retried.
+install -d -m 0700 /run/fil-one
+exec 8>/run/fil-one/openbao-snapshot.lock
+flock -w "$snapshot_lock_wait" 8 ||
+  die "another OpenBao snapshot has run for over ${snapshot_lock_wait}s.
+       'fuser -v /run/fil-one/openbao-snapshot.lock' names the process holding it."
+
+bao_is_unsealed || die "OpenBao is sealed, so there is nothing to snapshot.
+       'docker logs $FILONE_BAO_CONTAINER' says why."
+
+if [ -e "$pending" ]; then
+  mv -f "$pending" "$claimed"
+fi
+
+load_backup_target
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+snapshot_name="raft-$timestamp.snap"
+# The socket directory is the one host path the container writes to that is a
+# tmpfs, so the snapshot never touches a disk on this host.
+host_file="$FILONE_BAO_SOCKET_DIR/$snapshot_name"
+
+echo "=== OpenBao snapshot ($FILONE_NODE) ==="
+bao operator raft snapshot save "/openbao/logs/$snapshot_name" >/dev/null ||
+  die "OpenBao refused the snapshot. A host token minted before snapshots existed
+       holds the filone-deploy policy, which does not allow it: run
+       scripts/host/provision-host-token.sh with the root token from 1Password."
+[ -s "$host_file" ] || die "OpenBao reported a snapshot, but $host_file is empty or missing"
+
+object_key="${backup_key_prefix}openbao/$timestamp.snap"
+echo "  uploading $(stat -c %s "$host_file") bytes to s3://$backup_bucket/$object_key"
+
+put_ok=true
+s3_put_file "$host_file" "$object_key" application/octet-stream || put_ok=false
+unset backup_secret_access_key
+
+if [ "$put_ok" != true ]; then
+  case "$S3_PUT_ERROR" in
+    InvalidAccessKeyId*)
+      die "S3 does not know access key $backup_access_key_id: $S3_PUT_ERROR
+       Central deleted it, most likely by reissuing the backup key: claim the new
+       one with scripts/host/provision-backups.sh --replace." ;;
+    *)
+      die "S3 answered HTTP $S3_PUT_STATUS (${S3_PUT_ERROR:-no error code}) to the put to
+       s3://$backup_bucket/$object_key. scripts/host/check-backup-target.sh tests
+       the key and the target on their own." ;;
+  esac
+fi
+
+stamp_openbao_snapshot_success
+echo "=== snapshot uploaded ==="
