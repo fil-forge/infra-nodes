@@ -1480,7 +1480,8 @@ Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say whic
   `instance` label, for example `staging/eu-central-3/piri-1`. Its last digit is the Piri's
   number. The proving-failing and proving-period alerts also name the `proof_set`.
 
-- The unrecoverable alert names only the node. Work through each Piri in turn.
+- The unrecoverable alert carries the Piri's `instance` too, but not the proof set. Step 1 of
+  [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable) finds it in the logs.
 
 1. On the host, run `bash` first if the login shell is Fish (it is on staging), so the commands
    paste as written. Set the Piri's number, for example `n=1` for `staging/eu-central-3/piri-1`.
