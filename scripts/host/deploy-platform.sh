@@ -187,4 +187,5 @@ done
 rm -f "$FILONE_STATE_DIR/platform.sha256"
 
 stamp_deploy_success platform
+request_openbao_snapshot
 echo "=== platform deploy complete ==="
