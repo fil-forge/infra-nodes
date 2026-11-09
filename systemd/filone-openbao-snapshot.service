@@ -1,0 +1,14 @@
+[Unit]
+# Push a raft snapshot of the node's OpenBao to the backup target in central.
+Description=FilOne node OpenBao snapshot
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The checkout lives where /etc/fil-one/node.conf says: /opt/fil-one on the
+# cloud nodes, /root/fil-one on the bare-metal staging host. systemd will not
+# take a variable as the program itself, hence bash in front.
+EnvironmentFile=/etc/fil-one/node.conf
+ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/snapshot-openbao.sh
+TimeoutStartSec=600

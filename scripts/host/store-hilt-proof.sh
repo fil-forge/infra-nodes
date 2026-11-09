@@ -50,5 +50,7 @@ echo "  Ingot: $INGOT_DID (key: $(bao_get ingot did))"
 # over stdin: on the command line it would be in the container's argv.
 bao kv patch -mount="$FILONE_BAO_MOUNT" ingot hilt_proof=- <<<"$proof" >/dev/null ||
   die "could not write $FILONE_BAO_MOUNT/ingot#hilt_proof"
+mark_openbao_written
+request_openbao_snapshot
 
 echo "  stored. Next: scripts/host/provision-apps.sh"

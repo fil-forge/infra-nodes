@@ -1,0 +1,14 @@
+[Unit]
+Description=Push an OpenBao snapshot of the FilOne node daily
+
+[Timer]
+# Daily by the calendar, so a snapshot started after a write does not push the
+# next daily one back. Persistent catches up on a day the box was off. Enabled
+# only by provision-backups.sh, on a node that takes backups and holds a working
+# backup key.
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -230,6 +230,7 @@ done
 config_hash_record apps-ingot "$ingot_config_hash"
 
 stamp_deploy_success apps
+request_openbao_snapshot
 echo "=== apps deploy complete ==="
 
 # Last, and outside this deploy's success: deploy-rag.sh logs its own warning
