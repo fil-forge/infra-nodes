@@ -10,8 +10,8 @@
 #
 # Then asks for the root token from 1Password, which is valid in the restored
 # store, and compares each Piri's and Ingot's DID in the snapshot with the one
-# the node's OpenBao holds. Exits non-zero on a mismatch, and reports any
-# identity the snapshot lacks.
+# the node's OpenBao holds. Exits non-zero when an identity differs or is
+# missing from the snapshot, because a restore from it would lose that identity.
 #
 # Runs while the node keeps serving: it never stops a container, touches the
 # live store or the timers, or uploads anything. The throwaway container, its
@@ -106,6 +106,7 @@ case "$token_status" in
 esac
 
 mismatches=0
+missing=0
 for name in $(piri_services) ingot; do
   if ! bao_has "$name" did; then
     echo "  $name: the node's OpenBao holds no DID for it; skipped"
@@ -116,6 +117,7 @@ for name in $(piri_services) ingot; do
   if ! snapshot_did="$(BAO_TOKEN="$root_token" bao_in "$VERIFY_CONTAINER" \
     kv get -mount="$FILONE_BAO_MOUNT" -field=did "$name" 2>/dev/null)"; then
     echo "  $name: MISSING from the snapshot. A restore would lose this identity."
+    missing=$((missing + 1))
     continue
   fi
 
@@ -130,4 +132,6 @@ unset root_token
 
 [ "$mismatches" -eq 0 ] ||
   die "$mismatches identities in the snapshot differ from the node's"
+[ "$missing" -eq 0 ] ||
+  die "the snapshot restores and unseals, but lacks $missing of the node's identities"
 echo "=== the snapshot restores, unseals and holds the node's identities ==="

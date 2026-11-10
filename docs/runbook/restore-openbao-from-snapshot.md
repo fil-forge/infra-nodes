@@ -80,9 +80,12 @@ aws s3api list-objects-v2 --region "$central_region" \
   --query 'reverse(sort_by(Contents, &Key))[:5].[Key, Size, ETag]' --output table
 ```
 
-Each key is the UTC time the snapshot was taken. After a leak of the node's backup key, an attacker
-may have written later objects or versions under the same prefix, so pick the newest snapshot
-written before the leak, by version ID if its key was overwritten.
+Each key is the UTC time the snapshot was taken. The commands below read the current version of a
+key. After a leak of the node's backup key, whoever holds it can put a new version at any key, so
+the current version is not trustworthy. Stop there: a restore after a leak reads the last version
+written before the leak, by version ID, and that procedure is not written yet, as
+[infra-central's backup decision record](https://github.com/fil-forge/infra-central/blob/main/docs/decisions/2026-11-appliance-backup-target.md#locked-for-35-days-then-expired)
+says.
 
 ## Copy it to the node
 
@@ -176,13 +179,14 @@ or twice.
 Three outcomes need attention:
 
 - `[7/9] Generating keys and passwords` prints `identity: did:key:…` for an identity it created.
-  That identity was missing from the snapshot. Re-onboard that Piri as
+  That identity was missing from the snapshot. The script then closes with "Next:
+  onboarding-request.sh". Re-onboard that Piri as
   [Re-onboarding after identity loss](../RUNBOOK.md#re-onboarding-after-identity-loss) describes.
 - `[4/9] Storing the backup key` fails with `InvalidAccessKeyId` when central has deleted the key in
   the snapshot, for example after a leak. Ask central to re-mint with
   `MINT_ARGS=--reissue-backup-key`, then run `scripts/host/provision-backups.sh --replace`.
-- It closes with "Next: deploy-apps.sh", because the restored store holds hilt's delegation. Run
-  that next. The node needs no onboarding.
+- Otherwise it closes with "Next: deploy-apps.sh", because the restored store holds hilt's
+  delegation. Run that next. The node needs no onboarding.
 
 ```sh
 scripts/host/deploy-apps.sh
@@ -236,8 +240,9 @@ scripts/host/openbao-restore-cleanup.sh
 
 `verify-openbao-snapshot.sh` restores a snapshot into a throwaway OpenBao container next to the live
 one, unseals it through central with the node's seal token, and compares each Piri's and Ingot's DID
-with the live store. It stops nothing, leaves the timers alone and removes its container and scratch
-files when it exits. Stream the snapshot as for a restore, then:
+with the live store. It fails when the snapshot holds a different DID or none for one of them,
+because a restore from it would lose that identity. It stops nothing, leaves the timers alone and
+removes its container and scratch files when it exits. Stream the snapshot as for a restore, then:
 
 ```sh
 scripts/host/verify-openbao-snapshot.sh /run/fil-one/bao/verify.snap
@@ -290,8 +295,9 @@ staging or dev, asks for the node's name, and moves everything it takes away int
 
 Without downtime, run [Check a snapshot without downtime](#check-a-snapshot-without-downtime) on the
 newest snapshot and on the oldest one the bucket still holds. The oldest shows that every snapshot
-in the retention window unseals. The newest exercises the init, restore and unseal steps of the
-restore script before the node depends on them.
+in the retention window unseals. It reports as missing any Piri added after it was taken, and then
+fails; the unseal it printed before that is what this check is for. The newest exercises the init,
+restore and unseal steps of the restore script before the node depends on them, and must pass.
 
 ### Fast restore
 

@@ -136,6 +136,13 @@ echo "[6/9] Installing identity tooling"
 echo "[7/9] Generating keys and passwords"
 [ -x "$SCRIPT_DIR/keygen.sh" ] ||
   die "scripts/host/keygen.sh is missing or not executable in $FILONE_CHECKOUT"
+# keygen.sh creates any identity OpenBao lacks: a Piri added to the node, or one
+# added after the snapshot a restore came from. Central has to allow each new
+# DID through onboarding, even on a node that holds hilt's delegation already.
+creates_identity=false
+for name in $(piri_services) ingot; do
+  bao_has "$name" did || creates_identity=true
+done
 "$SCRIPT_DIR/keygen.sh"
 
 # --- 8. Operator-supplied secrets -------------------------------------------
@@ -178,8 +185,8 @@ echo "[9/9] Starting $starting"
 echo
 echo "=== platform provisioned ==="
 # A node restored from a snapshot, or re-provisioned after an expired seal
-# token, is onboarded already.
-if bao_has ingot hilt_proof; then
+# token, is onboarded already, unless step 7 created an identity.
+if bao_has ingot hilt_proof && [ "$creates_identity" = false ]; then
   echo "Next: deploy-apps.sh. This node holds hilt's delegation already, so it needs"
   echo "no onboarding."
 else
