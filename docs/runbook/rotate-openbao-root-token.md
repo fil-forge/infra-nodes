@@ -208,6 +208,16 @@ read -rsp "new root token, from 1Password: " check_token; echo
 unset check_token
 ```
 
+Central's OpenBao holds a second copy of the root token and the recovery key. Replace it as well,
+from infra-central, with the new token and the unchanged recovery key from 1Password:
+
+```sh
+make store-appliance-root-credentials STAGE=<stage> REGION=<region>
+```
+
+Central keeps the earlier versions, so the leaked token stays readable there for a restore from a
+snapshot taken before the rotation.
+
 ## 5. Revoke the leaked token
 
 ```sh

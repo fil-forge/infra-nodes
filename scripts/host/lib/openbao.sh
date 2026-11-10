@@ -276,6 +276,11 @@ provision_host_token() {
   # engine, so everything that changes OpenBao itself still needs the root token.
   # A host job that needs more extends this policy rather than getting a token
   # of its own.
+  #
+  # The one exception is root generation. OpenBao 2.6 serves generate-root only
+  # to an authenticated caller, and a node that has lost its root token has no
+  # other token to start it with. The attempt still needs the recovery key,
+  # which is never on the node, so this token alone yields nothing.
   bao policy write filone-host - <<POLICY >/dev/null
 path "$FILONE_BAO_MOUNT/data/*" {
   capabilities = ["create", "read", "update", "patch"]
@@ -285,6 +290,12 @@ path "$FILONE_BAO_MOUNT/metadata/*" {
 }
 path "sys/storage/raft/snapshot" {
   capabilities = ["read"]
+}
+path "sys/generate-root-token/attempt" {
+  capabilities = ["read", "update", "delete"]
+}
+path "sys/generate-root-token/update" {
+  capabilities = ["update"]
 }
 POLICY
 

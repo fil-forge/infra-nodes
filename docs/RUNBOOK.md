@@ -1274,26 +1274,45 @@ cannot take.
 
 **Rotate the root token after a leak.**
 [Rotate the root token of an appliance's OpenBao](runbook/rotate-openbao-root-token.md) mints a
-replacement, revokes the leaked token and covers the snapshots that still hold it.
+replacement, revokes the leaked token and covers the snapshots that still hold it. Its step 4 also
+replaces central's copy.
 
-**Regenerate the root token.** When the root token is lost or has been exposed, the recovery key
-authorises a new one. Every OpenBao command on the node runs inside the container:
+**Regenerate a lost root token.** When no valid root token exists, the recovery key authorises a
+new one. OpenBao serves root generation only to an authenticated caller, so the commands run as the
+host token, whose policy allows the attempt and still needs the recovery key to finish it. A node
+provisioned before that grant needs `provision-host-token.sh` first, which itself takes the root
+token: run it on every such node while the root token is still at hand.
+
+In a root Bash shell in the checkout, outside any recorded session:
 
 ```sh
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 filone-openbao bao operator generate-root -init
+. scripts/host/lib.sh
+gen() { BAO_TOKEN="$(cat /etc/fil-one/bao-token)" bao_in filone-openbao operator generate-root "$@"; }
 ```
 
 ```sh
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 filone-openbao bao operator generate-root -nonce=<nonce>
+gen -generate-otp
 ```
 
 ```sh
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 filone-openbao bao operator generate-root -decode=<encoded token> -otp=<otp>
+gen -init -otp=<otp>
 ```
 
-The first prints a nonce and an OTP, the second asks for the recovery key and prints the encoded
-token, and the third decodes it. Revoke the old root token with the new one if it was exposed. Then
-update both copies: the 1Password entry, and central's by running
+```sh
+read -rsp "recovery key (1Password): " recovery_key; echo
+printf '%s' "$recovery_key" | gen -nonce=<nonce> -
+unset recovery_key
+```
+
+```sh
+gen -decode=<encoded token> -otp=<otp>
+```
+
+The first prints a one-time password. The second starts the attempt with it and prints a nonce. The
+third hands the recovery key to OpenBao on stdin and prints the encoded token. The fourth decodes
+that into the new root token. `gen -cancel` abandons an attempt.
+
+Then update both copies: the 1Password entry, and central's by running
 `make store-appliance-root-credentials` in infra-central again with the new root token and the same
 recovery key. A copy left stale is found only at the restore that needs it.
 
