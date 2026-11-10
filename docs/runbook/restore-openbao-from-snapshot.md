@@ -56,11 +56,10 @@ aws s3api list-buckets --query "Buckets[?starts_with(Name, 'forge-nodes-backups-
   after its last renewal, and it is bound to the node's IP.
 - **The root token from 1Password**, the one printed when the node's OpenBao was first initialised.
   The restore brings it back to life.
-- **The `ReadOnlyAccess` SSO role in the stage's central account**, to read the backup bucket and
-  the Piri DIDs central recorded. `AdministratorAccess` works as well.
-- **The `AdministratorAccess` SSO role in the stage's central account**, for whoever runs
-  `make mint-appliance-credentials` in infra-central, for the key check and any seal-token reissue.
-  Every round of the mint invokes central's provision Lambda, which `ReadOnlyAccess` cannot do.
+- **The `AdministratorAccess` SSO role in the stage's central account**, for every AWS command
+  below. `ReadOnlyAccess` can read the backup bucket and the Piri DIDs central recorded, but not run
+  `make mint-appliance-credentials`, which the key check and a seal-token reissue need: every round
+  of the mint invokes central's provision Lambda.
 
 Reach the host over SSH as root. Staging's root shell is Fish, so run remote commands through Bash:
 
@@ -72,8 +71,7 @@ Commands on the node run from its infra-nodes checkout, `/root/fil-one/infra-nod
 
 ## Pick a snapshot
 
-From a laptop signed in with the `ReadOnlyAccess` role of the stage's central account, list the
-snapshots and take the newest:
+From a laptop signed in to the stage's central account, list the snapshots and take the newest:
 
 ```sh
 aws s3api list-objects-v2 --region "$central_region" \
@@ -111,8 +109,7 @@ A reboot empties `/run/fil-one/bao`, so copy the snapshot after the host is back
 ## Get a new seal token, if the old one is gone
 
 Skip this when `/etc/fil-one/seal-token` is on the node and the node was down for less than 72
-hours. Otherwise, run from the infra-central checkout, signed in with the `AdministratorAccess` role
-of the stage's central account:
+hours. Otherwise, run from the infra-central checkout:
 
 ```sh
 make mint-appliance-credentials \
