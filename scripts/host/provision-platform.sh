@@ -177,5 +177,12 @@ echo "[9/9] Starting $starting"
 
 echo
 echo "=== platform provisioned ==="
-echo "Next: onboarding-request.sh, send what it prints to Forge Central, and"
-echo "store-hilt-proof.sh with the delegation they return. Then provision-apps.sh."
+# A node restored from a snapshot, or re-provisioned after an expired seal
+# token, is onboarded already.
+if bao_has ingot hilt_proof; then
+  echo "Next: deploy-apps.sh. This node holds hilt's delegation already, so it needs"
+  echo "no onboarding."
+else
+  echo "Next: onboarding-request.sh, send what it prints to Forge Central, and"
+  echo "store-hilt-proof.sh with the delegation they return. Then provision-apps.sh."
+fi

@@ -541,3 +541,124 @@ stamp_openbao_snapshot_success() {
   chmod 0644 "$tmp"
   mv "$tmp" "$FILONE_METRICS_DIR/openbao-snapshot.prom"
 }
+
+# --- Restoring --------------------------------------------------------------
+
+# Run the bao CLI in a given container under the token in BAO_TOKEN, which goes
+# in by name so its value never appears in docker's argv. Callers set it for the
+# one call: `BAO_TOKEN="$token" bao_in <container> ...`.
+bao_in() {
+  local container="$1"
+  shift
+  docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$container" bao "$@"
+}
+
+# Disable the node's timers and wait for a deploy in flight to finish, so
+# nothing resets the checkout, writes to OpenBao or snapshots it while its store
+# is replaced. The timers it disabled are left in PAUSED_TIMERS. Nothing
+# re-enables them: the operator does, once the node checks out.
+pause_node_timers() {
+  local timer
+  PAUSED_TIMERS=""
+  for timer in filone-reconcile.timer "$FILONE_SNAPSHOT_TIMER" filone-seal-token-renew.timer; do
+    systemctl is-enabled --quiet "$timer" 2>/dev/null || continue
+    systemctl disable --now "$timer" >/dev/null 2>&1 || die "could not disable $timer"
+    PAUSED_TIMERS="${PAUSED_TIMERS:+$PAUSED_TIMERS }$timer"
+    echo "  disabled $timer"
+  done
+
+  # Disabling a timer leaves a run already in flight alone. A snapshot in flight
+  # is stopped, since it only reads. A reconcile pass may be part-way through a
+  # deploy, so this waits for it on the deploy lock instead.
+  systemctl stop "$FILONE_SNAPSHOT_SERVICE" 2>/dev/null || true
+  take_deploy_lock
+}
+
+# Initialise the empty store in a running OpenBao container, restore a raft
+# snapshot over it, and wait until the snapshot's store is the one answering.
+# The snapshot file has to be in the container's /openbao/logs.
+#
+# OpenBao restores only into an initialised, unsealed server and only under a
+# root token, so this initialises one that exists for the restore alone. Its
+# recovery key and root token are never printed or stored: the restore replaces
+# the store they belong to, and from then on the root token in 1Password is the
+# valid one.
+#
+# Usage: restore_bao_snapshot <container> <snapshot file name>
+restore_bao_snapshot() {
+  local container="$1" snapshot_name="$2" init_json throwaway_root
+
+  init_json="$(docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 "$container" \
+    bao operator init -recovery-shares=1 -recovery-threshold=1 -format=json)" ||
+    die "could not initialise the empty OpenBao in $container"
+  throwaway_root="$(printf '%s' "$init_json" | python3 -c '
+import json, sys
+
+token = json.load(sys.stdin).get("root_token")
+if not token:
+    sys.exit("the init response carries no root_token")
+print(token)
+')" || die "could not read the root token of the store just initialised in $container"
+  unset init_json
+
+  wait_for_bao_unsealed "$container" ||
+    die "the empty store in $container did not unseal. The seal token cannot reach
+       or use central's transit key; 'docker logs $container' says which."
+
+  BAO_TOKEN="$throwaway_root" bao_in "$container" \
+    operator raft snapshot restore -force "/openbao/logs/$snapshot_name" >/dev/null ||
+    die "OpenBao in $container refused the snapshot $snapshot_name"
+
+  # Unsealed alone does not show the restore took: the store initialised above
+  # was unsealed too. That store's root token is unknown to the snapshot's, so
+  # an unsealed server that rejects it is serving the snapshot.
+  if ! wait_for_snapshot_store "$container" "$throwaway_root"; then
+    echo "  $container has not unsealed the restored store yet; restarting it once"
+    docker restart "$container" >/dev/null || die "could not restart $container"
+    wait_for_snapshot_store "$container" "$throwaway_root" ||
+      die "$container took the snapshot but did not unseal it. The snapshot's root key
+       is wrapped by central's appliance-unseal-$REGION_LABEL key, so either that
+       key's min_decryption_version is now above the version that wrapped it, or
+       the seal token cannot use the key. 'docker logs $container' says which."
+  fi
+  unset throwaway_root
+}
+
+# Wait up to a minute for the OpenBao in a container to report unsealed.
+wait_for_bao_unsealed() {
+  local container="$1"
+  for _ in $(seq 1 30); do
+    docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 "$container" \
+      bao status >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# Wait up to a minute for the OpenBao in a container to be unsealed and to
+# reject the token of the store it served before the restore.
+wait_for_snapshot_store() {
+  local container="$1" replaced_token="$2"
+  for _ in $(seq 1 30); do
+    if docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 "$container" \
+      bao status >/dev/null 2>&1 &&
+      bao_rejects_token "$container" "$replaced_token"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# Whether the OpenBao in a container answers a token with permission denied:
+# returns 0 when it does, 1 when it accepts the token, and 2 on any other
+# answer, such as a sealed or unreachable server, which says nothing about the
+# token.
+bao_rejects_token() {
+  local container="$1" token="$2" output
+  if output="$(BAO_TOKEN="$token" bao_in "$container" token lookup 2>&1)"; then
+    return 1
+  fi
+  [[ "$output" == *"Code: 403"* ]] && return 0
+  return 2
+}
