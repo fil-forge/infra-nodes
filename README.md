@@ -239,7 +239,12 @@ after `tofu`, `shell` and `compose` have passed, and the nodes pull it on the ne
 any other merge.
 
 A major bump stays open for someone to read. So does a group whose highest change is a major, and so
-does any Dependabot branch that carries a commit Dependabot did not write.
+does any Dependabot branch whose first commit Dependabot did not write.
+
+The workflow runs on `pull_request`, so a Dependabot run reads its secrets from the Dependabot store.
+`FORGE_BOT_PRIVATE_KEY` is a fil-forge organization secret in both the Actions and the Dependabot
+store, and rotating the key means updating both. Dependabot waits a week before proposing a new
+action release, because the workflow runs the releases a bump proposes while holding that key.
 
 Dependabot rebases its pull requests in place, and the workflow runs again on each new head, so a
 branch that stops qualifying also loses the auto-merge it was given earlier. Each auto-merge is
