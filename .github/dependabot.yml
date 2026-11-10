@@ -26,6 +26,11 @@ updates:
   # Weekly, and grouped into one pull request: these are build-time tooling with
   # no runtime coupling to each other, so reviewing them together costs nothing
   # and reviewing them apart costs several rounds of CI.
+  #
+  # A week's cooldown, because auto-merge-dependabot.yml runs the action
+  # releases a bump proposes while holding the fil-forge-bot private key. A
+  # compromised release is usually found and pulled within days. GitHub Actions
+  # honours only `default-days`, and security updates ignore the cooldown.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -33,6 +38,8 @@ updates:
       day: wednesday
       time: "09:00"
       timezone: America/New_York
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]

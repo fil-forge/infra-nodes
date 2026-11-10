@@ -122,6 +122,29 @@ node_ships_telemetry() {
   return 0
 }
 
+# Whether this node pushes backups to central, from FILONE_TAKES_BACKUPS in its
+# node.env. Where the backups go is not in node.env: central wraps the bucket,
+# prefix and AWS region with the access key, and provision-backups.sh stores
+# all five at filone/backup-target, so the target and the key that writes there
+# cannot disagree.
+#
+# Every node.env must say true or false. With a default, a node.env that left
+# the line out would run as if it took no backups, and nothing would notice
+# until a backup was needed.
+node_takes_backups() {
+  case "${FILONE_TAKES_BACKUPS:-}" in
+    true) return 0 ;;
+    false) return 1 ;;
+    "")
+      die "FILONE_TAKES_BACKUPS is not set in $FILONE_NODE_DIR/node.env. Set it to
+       true on a node that pushes its backups to central, or false on one that
+       takes none." ;;
+    *)
+      die "FILONE_TAKES_BACKUPS is '$FILONE_TAKES_BACKUPS' in $FILONE_NODE_DIR/node.env;
+       it must be true or false." ;;
+  esac
+}
+
 # --- systemd ---------------------------------------------------------------
 
 # The service unit this process is running inside, or nothing when it was
@@ -268,13 +291,68 @@ central_seal_addr() {
   printf '%s' "$value"
 }
 
+# Exchange a wrapping token minted at central for what it wraps, and print the
+# response body. The second argument is the mint flag that replaces the
+# credential, which the failure messages tell the operator to ask for.
+#
+# On a 200 the body holds the credential, so callers keep it in a variable and
+# never print it. They also call this through a command substitution, where die
+# ends only the subshell, so each call is followed by `|| exit 1`.
+unwrap_at_central() {
+  local wrapping_token="$1" reissue_flag="$2" central curl_status=0 response status body
+  central="$(central_seal_addr)"
+
+  # curl puts --header values in its own argv, where anything on the host that
+  # can read /proc can take the token while the request is in flight, so the
+  # header goes in on stdin. printf is a shell builtin and never gets an argv of
+  # its own. The exit code is kept because it is what says whether the request
+  # ever left, which an `if !` would collapse to 1.
+  response="$(printf 'X-Vault-Token: %s\n' "$wrapping_token" |
+    curl -sS --max-time 30 -w '\n%{http_code}' --header @- \
+      --request POST "$central/v1/sys/wrapping/unwrap")" || curl_status=$?
+
+  case "$curl_status" in
+    0) ;;
+    6 | 7)
+      die "could not reach the central OpenBao at $central (curl $curl_status).
+       Nothing left this node, so the wrapping token is unspent: fix the route to
+       central and re-run with the same token." ;;
+    *)
+      die "the exchange with $central broke off mid-flight (curl $curl_status), so
+       whether central spent the wrapping token is unknown, and so is whether the
+       credential it unwrapped went anywhere. Do not paste this token again: if it
+       was spent, the next attempt is refused and that refusal says nothing about
+       who spent it. Re-mint at central with MINT_ARGS=$reissue_flag, which
+       replaces the credential, and claim the token that comes back." ;;
+  esac
+
+  status="$(printf '%s' "$response" | tail -1)"
+  body="$(printf '%s' "$response" | sed '$d')"
+
+  case "$status" in
+    200) ;;
+    400 | 403 | 404)
+      die "central refused the wrapping token (HTTP $status): $body
+       A wrapping token can be spent once and expires 24 hours after it is minted,
+       so this is a token that has already been exchanged or one that has run out.
+       An earlier run of this script that broke off mid-flight spends it the same
+       way; failing that, somebody who could read the channel it was delivered on
+       spent it. Either way this is not a retry: re-mint at central with
+       MINT_ARGS=$reissue_flag, which replaces the credential that was taken." ;;
+    *)
+      die "the exchange with $central failed with HTTP $status: $body" ;;
+  esac
+
+  printf '%s' "$body"
+}
+
 bao_is_unsealed() {
   # `bao status` exits 0 unsealed, 2 sealed, 1 unreachable, and needs no token.
   docker exec -i -e "BAO_ADDR=http://127.0.0.1:8200" "$FILONE_BAO_CONTAINER" \
     bao status >/dev/null 2>&1
 }
 
-# Renew the node's local deploy token. It is periodic, which means it renews
+# Renew the node's local host token. It is periodic, which means it renews
 # forever but only for as long as something calls renew, and nothing on the node
 # holds it long enough to: every use is a one-shot `docker exec ... bao` that
 # exits when the command does, leaving no client behind to keep a lease alive.
@@ -285,7 +363,7 @@ bao_is_unsealed() {
 # Let the period lapse and the next deploy stops at its first secret read.
 renew_bao_token() {
   bao token renew >/dev/null ||
-    die "could not renew the local OpenBao deploy token"
+    die "could not renew the local OpenBao host token"
 }
 
 # Renew the token Ingot holds for the region wrap key. Periodic like the deploy
@@ -294,12 +372,12 @@ renew_bao_token() {
 # keeps its lease alive.
 #
 # The read and the renewal use different tokens on purpose. bao() prefers
-# BAO_TOKEN over the deploy token file, so the assignment below makes `bao token
+# BAO_TOKEN over the host token file, so the assignment below makes `bao token
 # renew` act on the region token, while bao_get above it still runs under the
-# deploy token that is allowed to read the secret. Written as two statements
+# host token that is allowed to read the secret. Written as two statements
 # rather than one prefixed command: a die inside the substitution of a
 # `BAO_TOKEN="$(bao_get ...)" bao ...` prefix is swallowed, BAO_TOKEN lands
-# empty, and the renewal silently extends the deploy token instead.
+# empty, and the renewal silently extends the host token instead.
 renew_ingot_regionkey_token() {
   local token
   bao_has ingot regionkey_token ||
@@ -311,6 +389,80 @@ renew_ingot_regionkey_token() {
   BAO_TOKEN="$token" bao token renew >/dev/null ||
     die "could not renew Ingot's region-key token. If it has already lapsed,
        scripts/host/provision-regionkey.sh mints a replacement."
+}
+
+# Create the KV mount, the filone-host policy and the token the node's own
+# automation runs as: every deploy, every reconcile pass and the OpenBao
+# snapshot job. Called by provision-platform.sh on a new node and by
+# provision-host-token.sh on one that holds an older token; both run it under
+# the root token, which is what writing a policy and minting an orphan need.
+#
+# Minted on every run, like the region-key token, because this is also the
+# rotation path. The new token is in place before the old one is revoked, so a
+# reconcile pass that starts in between reads one or the other and both work.
+provision_host_token() {
+  bao secrets enable -path="$FILONE_BAO_MOUNT" -version=2 kv >/dev/null 2>&1 ||
+    echo "  kv mount $FILONE_BAO_MOUNT already enabled"
+
+  # What the node's automation does and nothing else. Deploys read and write
+  # the node's own secrets, keygen and the provisioning scripts add to them, and
+  # the snapshot job reads raft snapshots to push off the host. It cannot delete
+  # a secret, restore a snapshot, or touch a policy, a mount or the transit
+  # engine, so everything that changes OpenBao itself still needs the root token.
+  # A host job that needs more extends this policy rather than getting a token
+  # of its own.
+  bao policy write filone-host - <<POLICY >/dev/null
+path "$FILONE_BAO_MOUNT/data/*" {
+  capabilities = ["create", "read", "update", "patch"]
+}
+path "$FILONE_BAO_MOUNT/metadata/*" {
+  capabilities = ["read", "list"]
+}
+path "sys/storage/raft/snapshot" {
+  capabilities = ["read"]
+}
+POLICY
+
+  # Orphan, so revoking the root token later does not take the node's deploys
+  # with it. Periodic, so it renews forever; every reconcile pass renews it,
+  # which is every five minutes.
+  local token old_token="" tmp
+  token="$(bao token create -policy=filone-host -orphan -period=72h -field=token)" ||
+    die "could not create the filone-host token"
+  [ -n "$token" ] || die "OpenBao returned an empty filone-host token"
+
+  [ -r "$FILONE_BAO_TOKEN_FILE" ] && old_token="$(cat "$FILONE_BAO_TOKEN_FILE")"
+
+  install -d -m 0755 "$(dirname "$FILONE_BAO_TOKEN_FILE")"
+  tmp="$(mktemp "$FILONE_BAO_TOKEN_FILE.XXXXXX")"
+  chmod 0400 "$tmp"
+  printf '%s\n' "$token" >"$tmp"
+  mv "$tmp" "$FILONE_BAO_TOKEN_FILE"
+  unset token
+  echo "  filone-host token stored in $FILONE_BAO_TOKEN_FILE"
+
+  # The old token revokes itself, through revoke-self in OpenBao's default
+  # policy, so it never travels in an argv. A token that has already lapsed
+  # cannot, and needs nothing.
+  if [ -n "$old_token" ]; then
+    if BAO_TOKEN="$old_token" bao token revoke -self >/dev/null 2>&1; then
+      echo "  previous host token revoked"
+    else
+      echo "  previous host token could not revoke itself; it has most likely lapsed already"
+    fi
+  fi
+  unset old_token
+
+  # The policy the host token held before it was named for the whole host.
+  # Nothing references it once the token above is revoked. A new node never had
+  # it.
+  if bao policy read filone-deploy >/dev/null 2>&1; then
+    bao policy delete filone-deploy >/dev/null ||
+      die "could not delete the filone-deploy policy"
+    echo "  filone-deploy policy deleted"
+  fi
+
+  mark_openbao_written
 }
 
 # Create the transit engine, the region key, the policy that reaches it and the
@@ -346,7 +498,7 @@ path "transit/decrypt/$FILONE_REGIONKEY_NAME" {
 POLICY
 
   # No -no-default-policy: renew-self and lookup-self come from `default`, which
-  # is how the deploy token renews as well.
+  # is how the host token renews as well.
   #
   # Orphan, so revoking the root token later does not take Ingot's writes with
   # it. Periodic, so it renews forever; every reconcile pass renews it, which is
@@ -373,6 +525,7 @@ POLICY
   fi
   unset token
   echo "  ingot#regionkey_token written"
+  mark_openbao_written
 }
 
 # Read one field. Missing paths and missing fields both fail loudly rather than
@@ -457,6 +610,7 @@ bao_write_fields() {
       die "could not create $FILONE_BAO_MOUNT/$path"
   fi
   echo "  $path#$fields written"
+  mark_openbao_written
 }
 
 # Encode field/value pairs as a JSON object. The pairs arrive over stdin, NUL
@@ -730,6 +884,18 @@ piri_services() {
   printf '%s\n' "$services"
 }
 
+# The apps project's services other than Bucket Intelligence's two, one per
+# line. deploy-rag.sh deploys and waits for those on its own, so a deploy that
+# waits on these is never failed by them. Read without interpolation, as
+# piri_services does.
+apps_core_services() {
+  local services
+  services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
+    config --no-interpolate --services)" ||
+    die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
+  grep -vxE 'rag-embed|rag-engine' <<<"$services" || true
+}
+
 # The URL a Piri service answers at and registers with sprue. A node that runs
 # one Piri per storage volume names them piri-<n>.$PIRI_HOSTNAME_SUFFIX; a node
 # with a single `piri` still has one PIRI_PUBLIC_URL.
@@ -910,6 +1076,126 @@ wait_healthy() {
   done
 }
 
+# --- Backups ---------------------------------------------------------------
+
+FILONE_BACKUP_PATH=backup-target
+FILONE_SNAPSHOT_SERVICE=filone-openbao-snapshot.service
+FILONE_SNAPSHOT_TIMER=filone-openbao-snapshot.timer
+
+# Read the backup target and the key that writes to it from
+# filone/backup-target, where provision-backups.sh stored all five, into
+# backup_bucket, backup_key_prefix, backup_aws_region, backup_access_key_id and
+# backup_secret_access_key. Callers keep the secret in that variable and unset
+# it once the upload is done.
+load_backup_target() {
+  bao_has "$FILONE_BACKUP_PATH" access_key_id ||
+    die "OpenBao has no backup key at $FILONE_BAO_MOUNT/$FILONE_BACKUP_PATH; run
+       scripts/host/provision-backups.sh"
+  bao_has "$FILONE_BACKUP_PATH" bucket ||
+    die "$FILONE_BAO_MOUNT/$FILONE_BACKUP_PATH holds the key pair but not the target it
+       writes to, so it was stored before provision-backups.sh kept the target
+       with it. Ask central to re-mint with MINT_ARGS=--reissue-backup-key, then
+       run scripts/host/provision-backups.sh --replace."
+
+  backup_bucket="$(bao_get "$FILONE_BACKUP_PATH" bucket)"
+  backup_key_prefix="$(bao_get "$FILONE_BACKUP_PATH" key_prefix)"
+  backup_aws_region="$(bao_get "$FILONE_BACKUP_PATH" aws_region)"
+  backup_access_key_id="$(bao_get "$FILONE_BACKUP_PATH" access_key_id)"
+  backup_secret_access_key="$(bao_get "$FILONE_BACKUP_PATH" secret_access_key)"
+
+  [ "$backup_key_prefix" = "$REGION_LABEL/" ] ||
+    die "the stored backup key writes under $backup_key_prefix, but this node is $REGION_LABEL
+       and central's writer for it can write only under $REGION_LABEL/"
+  # The key pair goes into a curl config line between double quotes, where a
+  # quote or a backslash would change what curl reads. AWS keys contain neither.
+  [[ "$backup_access_key_id" =~ ^[A-Z0-9]+$ ]] ||
+    die "the stored access key ID is not in the form AWS issues"
+  [[ "$backup_secret_access_key" =~ ^[A-Za-z0-9/+=]+$ ]] ||
+    die "the stored secret access key is not in the form AWS issues"
+}
+
+# PUT one local file to s3://<backup_bucket>/<object_key> with the key
+# load_backup_target read. Returns 0 on a 200. On any other answer it returns 1
+# with the HTTP status in S3_PUT_STATUS and S3's error code and message in
+# S3_PUT_ERROR, so each caller can say what the failure means for it. A request
+# that never got an answer dies here: the backup jobs and the check share the
+# route, and the fix is the same for all of them.
+s3_put_file() {
+  local file="$1" object_key="$2" content_type="$3"
+  local url sha256 md5 curl_status=0 response
+  url="https://$backup_bucket.s3.$backup_aws_region.amazonaws.com/$object_key"
+
+  # S3 signs over the payload's SHA-256, and Object Lock refuses a put that
+  # carries no Content-MD5 or other checksum. Hashed from the path, so a large
+  # snapshot is read in chunks rather than held in memory.
+  {
+    read -r sha256
+    read -r md5
+  } < <(python3 - "$file" <<'PY'
+import base64, hashlib, sys
+
+sha, md = hashlib.sha256(), hashlib.md5()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        sha.update(chunk)
+        md.update(chunk)
+print(sha.hexdigest())
+print(base64.b64encode(md.digest()).decode())
+PY
+  )
+  [ -n "${sha256:-}" ] && [ -n "${md5:-}" ] || die "could not hash $file"
+
+  # The key pair goes in on stdin as a curl config line. As a --user argument it
+  # would sit in curl's argv, where anything on the host that can read /proc can
+  # take it. printf is a shell builtin and never gets an argv of its own.
+  response="$(printf 'user = "%s:%s"\n' "$backup_access_key_id" "$backup_secret_access_key" |
+    curl -sS --max-time 300 --config - \
+      --aws-sigv4 "aws:amz:$backup_aws_region:s3" \
+      --upload-file "$file" \
+      --header "Content-Type: $content_type" \
+      --header "Content-MD5: $md5" \
+      --header "x-amz-content-sha256: $sha256" \
+      --write-out '\n%{http_code}' \
+      "$url")" || curl_status=$?
+
+  [ "$curl_status" -eq 0 ] ||
+    die "could not reach $url (curl $curl_status). The backup jobs upload over the
+       same route, so fix this node's HTTPS egress to S3 in $backup_aws_region."
+
+  S3_PUT_STATUS="$(printf '%s' "$response" | tail -1)"
+  # SC2034: read by the callers in check-backup-target.sh and snapshot-openbao.sh.
+  # shellcheck disable=SC2034
+  # Joined onto one line first: S3 puts Code and Message on one line, but an
+  # S3-compatible target or a proxy may indent its XML across several.
+  S3_PUT_ERROR="$(printf '%s' "$response" | sed '$d' | tr -d '\n' |
+    sed -n 's|.*<Code>\(.*\)</Code>.*<Message>\(.*\)</Message>.*|\1: \2|p')"
+  [ "$S3_PUT_STATUS" = 200 ]
+}
+
+# Raft snapshots follow writes. Anything that writes to the node's OpenBao
+# leaves this marker, and request_openbao_snapshot turns it into a snapshot at
+# the end of the script that wrote. The snapshot job removes it only after an
+# upload succeeds and sets it after any run that fails, so a failed snapshot is
+# retried on the next reconcile pass rather than waiting for the daily run.
+mark_openbao_written() {
+  touch "$FILONE_STATE_DIR/openbao-snapshot-pending"
+}
+
+# Start a snapshot in the background when something wrote to OpenBao since the
+# last one. --no-block, because the caller is a deploy or a provisioning run that
+# has no reason to wait on S3. Only where the timer is enabled: that is what
+# provision-backups.sh does once the node holds a working backup key, and before
+# then there is nothing to upload with.
+request_openbao_snapshot() {
+  [ -e "$FILONE_STATE_DIR/openbao-snapshot-pending" ] || return 0
+  node_takes_backups || return 0
+  systemctl is-enabled --quiet "$FILONE_SNAPSHOT_TIMER" 2>/dev/null || return 0
+
+  echo "  OpenBao changed since its last snapshot; starting one"
+  systemctl start --no-block "$FILONE_SNAPSHOT_SERVICE" ||
+    echo "  WARNING: could not start $FILONE_SNAPSHOT_SERVICE; the next reconcile pass retries"
+}
+
 # --- Metrics ---------------------------------------------------------------
 
 # Stamp a successful deploy for Alloy's textfile collector to scrape. The metric
@@ -944,6 +1230,22 @@ stamp_deploy_success() {
   mv "$tmp" "$FILONE_METRICS_DIR/deploy.prom"
 
   publish_node_status
+}
+
+# Stamp an OpenBao snapshot that reached the backup target. The deadman for
+# backups, in the same shape as the deploy stamp: a snapshot job that fails, or
+# a timer that stops firing, leaves the value to age.
+stamp_openbao_snapshot_success() {
+  local tmp
+  mkdir -p "$FILONE_METRICS_DIR"
+  tmp="$(mktemp "$FILONE_METRICS_DIR/.openbao-snapshot.XXXXXX")"
+  {
+    echo "# HELP openbao_snapshot_last_success_timestamp Unix time of the last OpenBao raft snapshot uploaded to the backup target."
+    echo "# TYPE openbao_snapshot_last_success_timestamp gauge"
+    echo "openbao_snapshot_last_success_timestamp $(date +%s)"
+  } >"$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$FILONE_METRICS_DIR/openbao-snapshot.prom"
 }
 
 # --- The status document ---------------------------------------------------

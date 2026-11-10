@@ -1,6 +1,7 @@
 addr: "0.0.0.0:9000"
 region: ${REGION_LABEL}
 data_dir: /data
+local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
 log_level: info
 cors_allowed_origins:
   - "https://staging.fil.one"
@@ -19,6 +20,13 @@ upload_receipts_url: "${SPRUE_URL}/receipt"
 auth_service_url: "${HILT_URL}"
 auth_service_did: "${HILT_DID}"
 auth_service_proofs: "/proofs/hilt-ingot-proof.txt"
+
+# Swarf's revocation firehose. Hilt publishes a UCAN revocation for every key a
+# bucket policy change or key deletion affects; Ingot drops those keys from its
+# per-key authorization caches. Without it, a cached key keeps its old
+# permissions until the cache entry expires.
+revocation_service_url: "${SWARF_URL}"
+revocation_service_did: "${SWARF_DID}"
 regionkey:
   provider: openbao
   openbao:

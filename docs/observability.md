@@ -14,8 +14,8 @@ design](decisions/2026-08-initial-design.md#telemetry).
 **Logs.** Every line each FilOne container writes to stdout or stderr: Piri, Ingot, OpenBao,
 Postgres, and on dev also Caddy and Alloy itself. On staging, Caddy is the host's, and the runtime
 log it writes for itself ships under the `-caddy` service name. The host journal too: on dev the whole journal,
-which is where cloud-init, Docker and a failed unit are legible; on staging only the reconcile
-service's unit, since the rest of that host's journal is not the appliance's.
+which is where cloud-init, Docker and a failed unit are legible; on staging only the reconcile and
+OpenBao snapshot units, since the rest of that host's journal is not the appliance's.
 
 **Metrics.** The host's CPU, disk I/O, filesystems, load and memory from a node exporter, scraped
 every minute, plus the deploy stamp the reconcile timer writes on every pass. Caddy's request
@@ -23,13 +23,19 @@ metrics, also every minute: counts, durations and sizes per site, handler, metho
 which is where the public error rate is read from. Staging also ships per-container CPU, memory,
 network and I/O from cAdvisor every fifteen seconds. Dev does not: the Alloy container has no cgroup
 mount, and container health there is read from the journal and the deploy stamp instead.
-Piri's own application metrics, which Piri pushes over OTLP to Alloy every thirty seconds.
+Each staging container has a CPU and memory limit in its Compose file, which cAdvisor reports as
+`container_spec_memory_limit_bytes` and `container_spec_cpu_quota`; the capacity alerts read usage
+as a share of those.
+Piri's and Ingot's own application metrics, which each pushes over OTLP to Alloy: Piri every
+thirty seconds, Ingot every minute.
+Ingot's metrics arrive under `job="forge/ingot"`, among them `ingot_local_blobs_usage_bytes` and
+`ingot_local_blobs_budget_bytes`, which infra-central's "Ingot local disk over budget" alert reads.
 
-**Traces.** Whatever spans Piri records, pushed over OTLP to Alloy and on to the stack's Tempo
-unchanged apart from the node's identity.
+**Traces.** Whatever spans Piri and Ingot record, pushed over OTLP to Alloy and on to the stack's
+Tempo unchanged apart from the node's identity.
 
-**Not shipped.** Ingot's own application metrics; the network interface collector, which
-inside the Alloy container would report the container's namespace rather than the host's.
+**Not shipped.** The network interface collector, which inside the Alloy container would report
+the container's namespace rather than the host's.
 
 ## Where to look
 
@@ -152,7 +158,8 @@ built on them works on one node only.
 ## Metrics
 
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
-Caddy's `caddy_http_*` family, and `deploy_last_success_timestamp`. Every series carries the four
+Caddy's `caddy_http_*` family, `deploy_last_success_timestamp` and
+`openbao_snapshot_last_success_timestamp`. Every series carries the four
 labels above plus `instance`, which is the node name (`<node>/piri-<n>` on Piri's own series), and
 `job`, which is `integrations/unix` for the host, `cadvisor` for containers, `caddy` for Caddy and
 `forge/piri` for Piri.
@@ -281,6 +288,76 @@ crash-loop it, and they show up as this absence. The runbook's "Piri crash-loops
 endpoint" entry covers the response. Rate limits and dropped WebSockets that Piri survives have no
 signal yet.
 
+### Ingot
+
+Ingot pushes its metrics to the same Alloy receiver as Piri, at the `OTEL_EXPORTER_OTLP_ENDPOINT`
+each stage's `apps/compose.yml` sets for it. It pushes every minute, the OpenTelemetry SDK's
+default, since nothing sets `OTEL_METRIC_EXPORT_INTERVAL`. The series arrive under
+`job="forge/ingot"` and `service_name="appliance-<stage>-<region>-ingot"`, converted as Piri's are.
+The metrics table in the [local disk section of Ingot's
+README](https://github.com/fil-forge/ingot#local-disk) lists its local disk metrics, under their
+OpenTelemetry names; in Prometheus the dots become underscores. The query below lists everything
+Ingot ships.
+
+Every metric Ingot ships, per node:
+
+```promql
+count by (__name__, node) ({job="forge/ingot"})
+```
+
+As with Piri, an Ingot that stops pushing shows as an absence:
+
+```promql
+absent(target_info{job="forge/ingot", node="staging/eu-central-3"})
+```
+
+Ingot streams Swarf's revocation firehose to drop revoked keys from its authorization caches, and
+logs `revocation: record processed` for each revocation. It logs `revocation: stream error` only
+when it cannot connect at all, such as at startup with Swarf down. Once connected, the Swarf client
+reconnects a dropped stream without reporting it, so an outage that starts later leaves no error.
+While the stream is down, policy changes and key deletions do not reach the node, and a revoked key
+keeps working until its cache entry expires.
+
+The signal is Hilt publishing revocations while Ingot processes none. Hilt logs
+`published revocation` for each one, under the `aws_log_group` of its stage
+(`/forge-central/staging/hilt`). The firehose is shared, so every Ingot on the stage processes every
+record, including ones Hilt did not publish, and the two counts are not equal. The query returns
+Hilt's count only when the node processed nothing in the same window:
+
+```logql
+sum(count_over_time({aws_log_group="/forge-central/staging/hilt"} |= "published revocation" [15m]))
+  unless on()
+sum(count_over_time({service_name="appliance-staging-eu-central-3-ingot"} |= "revocation: record processed" [15m]))
+```
+
+### Bucket Intelligence
+
+On staging, `rag-engine` and `rag-embed` (the embedding model it calls) ship container logs and
+cAdvisor metrics like the other containers, under `service_name="appliance-staging-eu-central-3-rag-engine"`
+and `-rag-embed`. Neither is on the storage path: when they are down, Bucket Intelligence fails in
+Forge regions and Piri and Ingot keep serving. The apps deploy hands them to `deploy-rag.sh` after
+it has recorded the Piris and Ingot as deployed and moved the `apps` deploy stamp. When the two fail
+to deploy or to come up healthy, `deploy-rag.sh` logs a warning to the reconcile journal, and every
+reconcile pass retries them on their own, without touching Piri or Ingot, until they come up. The
+`apps` stamp does not cover them, so the warning below is the signal. The engine logs one JSON line
+per failed request or sync at level `error`. Its requests go through the host Caddy under `/_rag/`
+on Ingot's hostname, so Caddy's request metrics count them with Ingot's.
+
+```logql
+{service_name="appliance-staging-eu-central-3-rag-engine"} | json | level="error"
+```
+
+A deploy that left the engine undeployed or unhealthy:
+
+```logql
+{node="staging/eu-central-3", unit="filone-reconcile.service"} |= "WARNING: Bucket Intelligence"
+```
+
+infra-central's "Appliance container is not running" alert fires when `rag-engine` or `rag-embed`
+stops, as it does for every appliance container. Nothing alerts on an engine that runs but fails
+requests, or that a deploy never started or left unhealthy; the two queries above cover those. Add alerts for them
+before the engine runs on a node that serves customers.
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with
@@ -299,9 +376,35 @@ When each project last deployed, per node:
 deploy_last_success_timestamp{project=~"apps|platform"}
 ```
 
+### The OpenBao snapshot stamp
+
+`openbao_snapshot_last_success_timestamp` is the Unix time of the last OpenBao raft snapshot that
+reached the backup bucket. `scripts/host/snapshot-openbao.sh` writes it to the textfile collector
+after each upload, so it ships the way the deploy stamp does, with no Alloy change on either node.
+It exists only on a node that takes backups, from its first successful snapshot on; dev has none.
+infra-central's stale-snapshot alert expects it from every appliance in a stage that takes backups,
+so one that reconciles without reporting it fires the alert as well.
+
+The timer fires daily with up to 30 minutes of random delay, and a write to OpenBao starts an extra
+run. A failed run is retried on the next reconcile pass, so a stamp older than 26 hours means every
+run for a day has failed, or none has started:
+
+```promql
+time() - openbao_snapshot_last_success_timestamp > 26 * 3600
+```
+
+Every run, the timer's and the ones a write starts, logs to the journal of
+`filone-openbao-snapshot.service`. Dev ships it with the rest of its journal. Staging's host Alloy
+gives it its own journal source, which the staging section of the [runbook](RUNBOOK.md) lists, so
+it carries the `-host` service name with the unit on the `unit` label, as on dev:
+
+```logql
+{service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}
+```
+
 ## Traces
 
-Piri and Ingot push their spans to the same Alloy receiver as Piri's metrics. Alloy does not
+Piri and Ingot push their spans to the same Alloy receiver as their metrics. Alloy does not
 relabel them into Prometheus series; it adds `node`, `region` and `appliance` as resource
 attributes, under the same names and values as the labels above, and sends them on over OTLP.
 `service.name` stays `piri` or `ingot` and `service.namespace` stays `forge`, as each service sets
@@ -330,10 +433,11 @@ What a new service or feature needs so that its logs and metrics reach Grafana, 
 go.
 
 - **Logs.** Container stdout and stderr ship without any extra work, under the labels above. Dev
-  ships the whole host journal, but staging ships only the reconcile service's unit. The staging
-  host's Alloy config lives outside this repository, so for a new host service there, add what it
-  must ship to the staging section of the [runbook](RUNBOOK.md) and say in the PR that the host's
-  config needs the change.
+  ships the whole host journal under the appliance labels, and staging only the units the runbook
+  lists. The rest of the staging host's journal ships as `{hostname="curio"}`, with no appliance
+  labels. That host's Alloy config lives outside this repository, so for a new host service there,
+  add its journal source to the staging section of the [runbook](RUNBOOK.md) and say in the PR that
+  the host's config needs the change.
 - **Metrics pushed over OTLP**, as Piri does. The service sets `service.name` to its Compose
   service name and `service.namespace="forge"`, and sends to Alloy on port 4318: `alloy:4318` on
   dev and `host.docker.internal:4318` on staging, configured as Ingot's entry in each stage's

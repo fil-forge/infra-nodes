@@ -19,6 +19,11 @@ addr: "0.0.0.0:9000"
 region: ${REGION_LABEL}
 
 data_dir: /data
+
+# Byte budget for the spool and the cache under data_dir, from node.env. The
+# sweeper evicts cached bodies down to 90% of it every 30 seconds.
+local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
+
 log_level: info
 
 # Browser origins the S3 listener answers CORS for. Matching is over the raw
@@ -60,6 +65,13 @@ auth_service_did: "${HILT_DID}"
 # the /s3/bucket/* commands. Returned by onboarding and stored in OpenBao,
 # because it names a DID that only exists once the node is provisioned.
 auth_service_proofs: "/proofs/hilt-ingot-proof.txt"
+
+# Swarf's revocation firehose. Hilt publishes a UCAN revocation for every key a
+# bucket policy change or key deletion affects; Ingot drops those keys from its
+# per-key authorization caches. Without it, a cached key keeps its old
+# permissions until the cache entry expires.
+revocation_service_url: "${SWARF_URL}"
+revocation_service_did: "${SWARF_DID}"
 
 # Every object's content-encryption key is wrapped under this node's region KEK,
 # which lives in the transit engine of the node's own OpenBao and never enters

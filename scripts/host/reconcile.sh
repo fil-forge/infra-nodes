@@ -7,7 +7,7 @@
 # Deliberately narrow. It updates the checkout, works out which of the two
 # compose projects the new commits touch, and calls the ordinary deploy scripts.
 # It creates nothing and prompts for nothing. The one secret it touches is the
-# node's own deploy token, which it renews and never prints.
+# node's own host token, which it renews and never prints.
 #
 # The ref it tracks is FILONE_GIT_REF in /etc/fil-one/node.conf, which is the
 # only statement of it. Point a node at a feature branch by editing that file.
@@ -119,6 +119,15 @@ deploy_platform=0
 deploy_apps=0
 if project_is_stale platform "$shared_paths|^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
 if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
+# Left by a Bucket Intelligence deploy that did not finish healthy, so the
+# engine is retried without waiting for a commit. With no apps commit to deploy,
+# the retry is deploy-rag.sh alone, which never starts, stops or recreates a
+# Piri or Ingot. A full apps deploy runs deploy-rag.sh itself.
+retry_rag=0
+if [ "$deploy_apps" -eq 0 ] && [ -e "$FILONE_STATE_DIR/rag-retry" ]; then
+  echo "  Bucket Intelligence has a deploy to retry"
+  retry_rag=1
+fi
 
 # --- 4. Renew the local OpenBao token ---------------------------------------
 
@@ -127,8 +136,8 @@ if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_
 # period is shorter than that.
 renew_bao_token
 
-# After the deploy token, so a node that has no region token yet still keeps its
-# deploy token alive. Every five minutes against a 72h period, which leaves
+# After the host token, so a node that has no region token yet still keeps its
+# host token alive. Every five minutes against a 72h period, which leaves
 # plenty of room: a reconcile stalled for three days is already alarmed through
 # deploy_last_success_timestamp.
 renew_ingot_regionkey_token
@@ -146,9 +155,14 @@ fi
 if [ "$deploy_apps" -eq 1 ]; then
   echo "==> apps changed"
   "$FILONE_CHECKOUT/scripts/host/deploy-apps.sh"
+elif [ "$retry_rag" -eq 1 ]; then
+  echo "==> retrying Bucket Intelligence"
+  # A failure is logged as a warning and leaves the marker for the next pass.
+  # It does not fail this one: Piri and Ingot are not involved.
+  "$FILONE_CHECKOUT/scripts/host/deploy-rag.sh" || true
 fi
 
-if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ]; then
+if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ] && [ "$retry_rag" -eq 0 ]; then
   echo "  nothing to deploy"
 fi
 
@@ -156,4 +170,9 @@ fi
 # nothing. That is what makes it a deadman: the metric goes stale when the node
 # stops reconciling, whether or not anyone was shipping.
 stamp_deploy_success reconcile
+
+# Every pass, so a write whose snapshot failed, or one made by a script that
+# does not ask for a snapshot itself, goes up within five minutes rather than
+# at the next daily run.
+request_openbao_snapshot
 echo "=== reconcile complete ==="

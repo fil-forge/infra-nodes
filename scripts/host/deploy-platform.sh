@@ -163,7 +163,13 @@ if [ "$apps_stopped" -eq 1 ]; then
   apps_stopped=0
   # What they should be running is deploy-apps.sh's business. This only has to
   # know that the two it took down came back on the platform it rebuilt.
-  wait_healthy compose_apps 420
+  # Bucket Intelligence is left out: an unhealthy engine must not fail this
+  # deploy, which would leave the platform unrecorded and take the gate again
+  # on every pass.
+  # Its own assignment, so a failure to read the list ends the run.
+  core_services="$(apps_core_services)"
+  # shellcheck disable=SC2086 # one service name per word
+  wait_healthy compose_apps 420 $core_services
 else
   echo "  left running"
 fi
@@ -181,4 +187,5 @@ done
 rm -f "$FILONE_STATE_DIR/platform.sha256"
 
 stamp_deploy_success platform
+request_openbao_snapshot
 echo "=== platform deploy complete ==="
