@@ -11,13 +11,16 @@
 # The snapshot file has to be in /run/fil-one/bao, the tmpfs mounted into the
 # OpenBao container as /openbao/logs, so it never lands on a disk on this host.
 # It is deleted once the restore succeeds. The raft directory has to be empty or
-# missing. A directory that still holds a store is moved aside by the operator,
-# never by this script.
+# missing, unless --move-aside-damaged-store is given: the store in it then moves
+# to openbao.damaged-<UTC timestamp> next to it, once OpenBao has stopped.
+# openbao-restore-cleanup.sh deletes it once the node checks out. Nothing here
+# deletes a store.
 #
 # What it does, in order:
 #   1. Disables the reconcile, snapshot and seal-token-renew timers. It never
 #      re-enables them, so a half-restored node takes no snapshot and no deploy.
-#   2. Stops the apps and the OpenBao container.
+#   2. Stops the apps and the OpenBao container, and moves the damaged store
+#      aside when asked to.
 #   3. Claims a seal token from central when none is on disk. This one prompt
 #      is the only one, and it comes only after an outage of 72 hours or more,
 #      or on a rebuilt host.
@@ -31,18 +34,25 @@
 # provision-platform.sh takes, once the host token works again.
 #
 # Usage:
-#   scripts/host/restore-openbao.sh /run/fil-one/bao/<snapshot file>
+#   scripts/host/restore-openbao.sh [--move-aside-damaged-store] /run/fil-one/bao/<snapshot file>
 set -euo pipefail
 
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-case "${1:-}" in
-  "") die "usage: restore-openbao.sh /run/fil-one/bao/<snapshot file>" ;;
-  -h|--help)
-    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
-    exit 0 ;;
-esac
+MOVE_ASIDE=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --move-aside-damaged-store) MOVE_ASIDE=true; shift ;;
+    -h|--help)
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+      exit 0 ;;
+    -*) die "unknown option: $1" ;;
+    *) break ;;
+  esac
+done
+[ $# -eq 1 ] ||
+  die "usage: restore-openbao.sh [--move-aside-damaged-store] /run/fil-one/bao/<snapshot file>"
 
 filone_init
 # bao() prefers BAO_TOKEN over the host token file, and step 5 asks whether the
@@ -58,13 +68,14 @@ snapshot="$(realpath -e "$1" 2>/dev/null)" || die "$1 does not exist"
 snapshot_name="$(basename "$snapshot")"
 
 raft_dir="$FILONE_CONTROL_DIR/openbao"
+damaged_store=false
 if [ -d "$raft_dir" ] && find "$raft_dir" -mindepth 1 -print -quit | grep -q .; then
-  ls -la "$raft_dir" >&2
-  die "$raft_dir holds a store already. If it is the damaged one this restore
-       replaces, stop OpenBao and move the directory aside first:
-         docker stop $FILONE_BAO_CONTAINER
-         mv $raft_dir $raft_dir.damaged-$(date -u +%Y%m%dT%H%M%SZ)
-         install -d -m 0700 $raft_dir"
+  damaged_store=true
+  if [ "$MOVE_ASIDE" != true ]; then
+    ls -la "$raft_dir" >&2
+    die "$raft_dir holds a store already. If it is the damaged one this restore
+       replaces, run again with --move-aside-damaged-store."
+  fi
 fi
 
 echo "=== restore OpenBao ($FILONE_NODE) ==="
@@ -78,6 +89,11 @@ stop_apps || echo "  no app container was running"
 if container_running "$FILONE_BAO_CONTAINER"; then
   echo "  stopping $FILONE_BAO_CONTAINER"
   docker stop "$FILONE_BAO_CONTAINER" >/dev/null || die "could not stop $FILONE_BAO_CONTAINER"
+fi
+if [ "$damaged_store" = true ]; then
+  damaged_dir="$raft_dir.damaged-$(date -u +%Y%m%dT%H%M%SZ)"
+  move_bao_store_aside "$damaged_dir"
+  echo "  moved the damaged store to $damaged_dir"
 fi
 [ -d "$raft_dir" ] || install -d -m 0700 "$raft_dir"
 

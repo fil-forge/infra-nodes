@@ -16,7 +16,7 @@
 # together with rollback.sh, which puts the original store back. A copy of the
 # host token goes there in either mode, because the restore can replace it and a
 # rollback to the original store needs the one that store issued.
-# openbao-drill-cleanup.sh deletes these directories once the drill is over.
+# openbao-restore-cleanup.sh deletes these directories once the drill is over.
 #
 # Disables the reconcile, snapshot and seal-token-renew timers and stops the
 # apps and OpenBao. Asks the operator to type the node's name before it changes
@@ -110,11 +110,8 @@ if container_running "$FILONE_BAO_CONTAINER"; then
 fi
 
 echo "[3/3] Moving the store aside to $drill_dir"
-read -r raft_uid raft_gid raft_mode < <(stat -c '%u %g %a' "$raft_dir")
 install -d -m 0700 "$drill_dir"
-# The same filesystem, so this is a rename and cannot leave half a store behind.
-mv "$raft_dir" "$drill_dir/openbao"
-install -d -o "$raft_uid" -g "$raft_gid" -m "$raft_mode" "$raft_dir"
+move_bao_store_aside "$drill_dir/openbao"
 echo "  $raft_dir is now empty"
 
 if [ "$LOSE_TOKENS" = true ]; then

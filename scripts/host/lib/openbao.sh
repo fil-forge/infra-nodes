@@ -574,6 +574,20 @@ pause_node_timers() {
   take_deploy_lock
 }
 
+# Move the store in $FILONE_CONTROL_DIR/openbao to <destination>, and put an
+# empty raft directory with the same owner and mode in its place. The caller
+# stops OpenBao first. The destination sits on the same filesystem, so the move
+# is a rename and cannot leave half a store behind.
+#
+# Usage: move_bao_store_aside <destination>
+move_bao_store_aside() {
+  local destination="$1" raft_dir="$FILONE_CONTROL_DIR/openbao" uid gid mode
+  [ ! -e "$destination" ] || die "$destination exists already"
+  read -r uid gid mode < <(stat -c '%u %g %a' "$raft_dir")
+  mv -T "$raft_dir" "$destination"
+  install -d -o "$uid" -g "$gid" -m "$mode" "$raft_dir"
+}
+
 # Initialise the empty store in a running OpenBao container, restore a raft
 # snapshot over it, and wait until the snapshot's store is the one answering.
 # The snapshot file has to be in the container's /openbao/logs.

@@ -13,7 +13,8 @@ re-onboarded on its own.
 
 Every value below is staging's. Dev takes no backups, so it has nothing to restore. A node on EC2
 takes the same steps through `scripts/operator/ssm-session.sh <stage>` and `sudo -i` instead of
-SSH, with its control directory at `/mnt/fil-one/control`.
+SSH. The scripts find the node's control directory in its `node.env` (`FILONE_CONTROL_DIR`), so no
+command below names it.
 
 ## What a restore needs
 
@@ -113,20 +114,18 @@ belong. Remove them as
 [Repair volatile secret paths](recover-expired-unseal-token.md#repair-volatile-secret-paths)
 describes.
 
-When the raft directory still holds the damaged store, stop OpenBao and move the directory aside.
-The restore script refuses a directory that is not empty, and deletes nothing itself:
-
-```sh
-docker stop filone-openbao
-mv /mnt/data/fil-one/control/openbao \
-  /mnt/data/fil-one/control/openbao.damaged-$(date -u +%Y%m%dT%H%M%SZ)
-install -d -m 0700 /mnt/data/fil-one/control/openbao
-```
-
 Then restore:
 
 ```sh
 scripts/host/restore-openbao.sh /run/fil-one/bao/restore.snap
+```
+
+The script refuses a raft directory that still holds a store. When that is the damaged store, run it
+with `--move-aside-damaged-store`, which moves the store to `openbao.damaged-<timestamp>` next to
+the raft directory once OpenBao has stopped:
+
+```sh
+scripts/host/restore-openbao.sh --move-aside-damaged-store /run/fil-one/bao/restore.snap
 ```
 
 The script disables the reconcile, snapshot and seal-token-renew timers and leaves them disabled. It
@@ -201,11 +200,12 @@ systemctl start filone-reconcile.service
 
 `openbao_snapshot_last_success_timestamp` advances with the snapshot `provision-platform.sh`
 uploaded, so the stale-snapshot alert stays quiet. Once the node checks out, delete the damaged
-store and the tokens moved aside during the restore:
+store and the tokens moved aside during the restore. The script lists what it deletes and asks for
+the node's name first. It refuses while OpenBao is not running unsealed, because the damaged store
+may then be the only copy left:
 
 ```sh
-rm -rf /mnt/data/fil-one/control/openbao.damaged-*
-rm -f /etc/fil-one/seal-token.expired-* /etc/fil-one/bao-token.rejected-*
+scripts/host/openbao-restore-cleanup.sh
 ```
 
 ## Check a snapshot without downtime
@@ -235,7 +235,7 @@ both disasters:
 
 `simulate-openbao-loss.sh` puts the node into either state. It refuses to run on a stage other than
 staging or dev, asks for the node's name, and moves everything it takes away into
-`/mnt/data/fil-one/control/openbao-drill-<timestamp>/` without deleting anything. It writes
+`openbao-drill-<timestamp>/` in the node's control directory without deleting anything. It writes
 `rollback.sh` into that directory and prints its path.
 
 ### Before the drill
@@ -302,24 +302,17 @@ Leave the timers disabled and go straight on to the long outage, in the same win
 ### Roll back
 
 At any point, the `rollback.sh` a run of `simulate-openbao-loss.sh` wrote puts back the store as it
-was when that run started:
-
-```sh
-/mnt/data/fil-one/control/openbao-drill-<timestamp>/rollback.sh
-```
-
-For the long outage, that is the store the fast restore produced. After a seal-token reissue the
+was when that run started. Run it by the path that run printed. For the long outage, that is the store the fast restore produced. After a seal-token reissue the
 script keeps the reissued token, because the reissue revoked the one moved aside and the reissued
 one unseals the store as well.
 
 ### Clean up
 
-Once the drill passes, delete the drill directories and any token moved aside during a restore. The
-script lists what it deletes and asks for the node's name first. It refuses while OpenBao is not
-running unsealed, because a drill directory may then hold the only working store:
+Once the drill passes, delete the drill directories and any token moved aside during a restore,
+with the script that cleans up after a real restore:
 
 ```sh
-scripts/host/openbao-drill-cleanup.sh
+scripts/host/openbao-restore-cleanup.sh
 ```
 
 Then delete the marker object from the laptop:
