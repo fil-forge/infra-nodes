@@ -63,6 +63,10 @@ else
   docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 "$FILONE_BAO_CONTAINER" \
     bao operator init -recovery-shares=1 -recovery-threshold=1
   echo
+  echo "  Store a second copy of both at central as well: run"
+  echo "  'make store-appliance-root-credentials' in infra-central, which asks for them"
+  echo "  without echoing either."
+  echo
 fi
 
 bao_is_unsealed || die "OpenBao is sealed. The transit key named in platform/config/openbao/bao.hcl
@@ -97,8 +101,8 @@ if [ ! -r "$FILONE_BAO_TOKEN_FILE" ]; then
   unset BAO_TOKEN
   if [ "$initialised_now" = true ]; then
     echo
-    echo "  Store the root token in 1Password and clear it from your shell history."
-    echo "  Nothing on this node holds it."
+    echo "  Store the root token in 1Password and at central, and clear it from your"
+    echo "  shell history. Nothing on this node holds it."
   fi
 else
   echo "[3/9] Host token already present"
