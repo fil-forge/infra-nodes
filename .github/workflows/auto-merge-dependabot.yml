@@ -20,10 +20,11 @@ name: Auto-merge Dependabot updates
 # release back for a week, so a compromised release is likely to be pulled
 # before it reaches this job.
 #
-# This job is privileged and the branch beside it is unreviewed, so nothing here
-# may check out or execute the pull request's contents. Every step below talks
-# to the API and nothing else. An `actions/checkout` of the head SHA added here
-# would hand the app key to unreviewed code.
+# The job holds the app key, and the only unreviewed code it may run is this
+# file and the action releases it pins. No step checks out the repository or
+# runs anything else from the branch: every step below talks to the API and
+# nothing else. An `actions/checkout` followed by a script or build from the
+# checked-out tree would hand the app key to whatever code the branch carries.
 on: pull_request
 
 # Queue rather than cancel: a cancelled run can leave a qualifying pull request
