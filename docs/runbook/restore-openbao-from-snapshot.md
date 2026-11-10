@@ -28,9 +28,11 @@ SSH, with its control directory at `/mnt/fil-one/control`.
   after its last renewal, and it is bound to the node's IP.
 - **The root token from 1Password**, the one printed when the node's OpenBao was first initialised.
   The restore brings it back to life.
-- **The `AdministratorAccess` SSO role in the staging account**, to read the backup bucket.
-- **Someone who can run `make mint-appliance-credentials` in infra-central**, if the seal token
-  has to be reissued.
+- **The `ReadOnlyAccess` SSO role in the staging account**, to read the backup bucket and the Piri
+  DIDs central recorded. `AdministratorAccess` works as well.
+- **The `AdministratorAccess` SSO role in the staging account**, for whoever runs
+  `make mint-appliance-credentials` in infra-central, for the key check and any seal-token reissue.
+  Every round of the mint invokes central's provision Lambda, which `ReadOnlyAccess` cannot do.
 
 Reach the host over SSH as root. Its default shell is Fish, so run remote commands through Bash:
 
@@ -42,7 +44,8 @@ The checkout is `/root/fil-one/infra-nodes`, and the commands below run from the
 
 ## Pick a snapshot
 
-From a laptop signed in with the staging role, list the snapshots and take the newest:
+From a laptop signed in with the staging `ReadOnlyAccess` role, list the snapshots and take the
+newest:
 
 ```sh
 aws s3api list-objects-v2 --region us-east-2 \
@@ -80,7 +83,8 @@ A reboot empties `/run/fil-one/bao`, so copy the snapshot after the host is back
 ## Get a new seal token, if the old one is gone
 
 Skip this when `/etc/fil-one/seal-token` is on the node and the node was down for less than 72
-hours. Otherwise, run from the infra-central checkout with the staging AWS credentials:
+hours. Otherwise, run from the infra-central checkout, signed in with the staging
+`AdministratorAccess` role:
 
 ```sh
 make mint-appliance-credentials \
@@ -197,7 +201,12 @@ systemctl start filone-reconcile.service
 
 `openbao_snapshot_last_success_timestamp` advances with the snapshot `provision-platform.sh`
 uploaded, so the stale-snapshot alert stays quiet. Once the node checks out, delete the damaged
-store and any `/etc/fil-one/bao-token.rejected-*` file.
+store and the tokens moved aside during the restore:
+
+```sh
+rm -rf /mnt/data/fil-one/control/openbao.damaged-*
+rm -f /etc/fil-one/seal-token.expired-* /etc/fil-one/bao-token.rejected-*
+```
 
 ## Check a snapshot without downtime
 
@@ -226,8 +235,8 @@ both disasters:
 
 `simulate-openbao-loss.sh` puts the node into either state. It refuses to run on a stage other than
 staging or dev, asks for the node's name, and moves everything it takes away into
-`/mnt/data/fil-one/control/openbao-drill-<timestamp>/` without deleting anything. It prints the
-commands that roll the node back.
+`/mnt/data/fil-one/control/openbao-drill-<timestamp>/` without deleting anything. It writes
+`rollback.sh` into that directory and prints its path.
 
 ### Before the drill
 
@@ -236,16 +245,21 @@ commands that roll the node back.
    [What a restore needs](#what-a-restore-needs) describes.
 3. Record the newest snapshot's key, as in [Pick a snapshot](#pick-a-snapshot), and each Piri's DID,
    as in [Check the node](#check-the-node).
-4. Write a marker object through Ingot with an access key from the Fil One staging console, and keep
-   its checksum. The key stays on the laptop:
+4. Write a marker object through Ingot with an access key from the Fil One staging console. The
+   timestamp in its name keeps it apart from the markers of earlier drills. The key stays on the
+   laptop:
 
    ```sh
-   head -c 65536 /dev/urandom > drill-marker.bin
-   shasum -a 256 drill-marker.bin
+   marker=drill-marker-$(date -u +%Y%m%dT%H%M%SZ).bin
+   head -c 65536 /dev/urandom > "$marker"
+   shasum -a 256 "$marker"
    AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
      aws s3 cp --endpoint-url https://s3.eu-central-3.staging.filonecontent.com \
-     drill-marker.bin s3://<your staging bucket>/drill-marker.bin
+     "$marker" "s3://<your staging bucket>/$marker"
    ```
+
+   Keep the checksum and the name `shasum` prints. The read-backs below need `marker` set to that
+   name, so set it again in a new shell.
 
 ### Check the oldest and the newest snapshot
 
@@ -258,7 +272,7 @@ restore script before the node depends on them.
 
 Time this from the first command to a passing smoke test.
 
-1. `scripts/host/simulate-openbao-loss.sh`, and keep the rollback commands it prints.
+1. `scripts/host/simulate-openbao-loss.sh`. Note the path of the `rollback.sh` it prints.
 2. [Copy the newest snapshot to the node](#copy-it-to-the-node).
 3. [Restore the store](#restore-the-store) and [bring the node back](#bring-the-node-back). The seal
    token and the host token are still on disk, so nothing asks for a wrapping token, and step 3 of
@@ -268,15 +282,15 @@ Time this from the first command to a passing smoke test.
    ```sh
    AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
      aws s3 cp --endpoint-url https://s3.eu-central-3.staging.filonecontent.com \
-     s3://<your staging bucket>/drill-marker.bin - | shasum -a 256
+     "s3://<your staging bucket>/$marker" - | shasum -a 256
    ```
 
 Leave the timers disabled and go straight on to the long outage, in the same window.
 
 ### Long outage
 
-1. `scripts/host/simulate-openbao-loss.sh --lose-root-disk-tokens`, and keep the rollback commands
-   it prints.
+1. `scripts/host/simulate-openbao-loss.sh --lose-root-disk-tokens`. Note the path of the
+   `rollback.sh` it prints.
 2. [Get a new seal token](#get-a-new-seal-token-if-the-old-one-is-gone).
 3. Copy the newest snapshot to the node. It is now the one `provision-platform.sh` uploaded at the
    end of the fast restore.
@@ -287,14 +301,32 @@ Leave the timers disabled and go straight on to the long outage, in the same win
 
 ### Roll back
 
-At any point, the commands a run of `simulate-openbao-loss.sh` printed put back the store as it was
-when that run started. For the long outage, that is the store the fast restore produced. After a
-seal-token reissue the commands keep the reissued token, because the reissue revoked the one moved
-aside and the reissued one unseals the store as well. Once the drill passes, delete the
-`openbao-drill-*` directories, the `seal-token.expired-*` and `bao-token.rejected-*` files, and the
-marker object.
+At any point, the `rollback.sh` a run of `simulate-openbao-loss.sh` wrote puts back the store as it
+was when that run started:
 
-### Record the drill
+```sh
+/mnt/data/fil-one/control/openbao-drill-<timestamp>/rollback.sh
+```
 
-Post the date, the snapshot keys, the time each restore took and anything that went wrong as a
-comment on FIL-1166. Fix what the drill turned up in an infra-nodes PR.
+For the long outage, that is the store the fast restore produced. After a seal-token reissue the
+script keeps the reissued token, because the reissue revoked the one moved aside and the reissued
+one unseals the store as well.
+
+### Clean up
+
+Once the drill passes, delete the drill directories and any token moved aside during a restore. The
+script lists what it deletes and asks for the node's name first. It refuses while OpenBao is not
+running unsealed, because a drill directory may then hold the only working store:
+
+```sh
+scripts/host/openbao-drill-cleanup.sh
+```
+
+Then delete the marker object from the laptop:
+
+```sh
+AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
+  aws s3 rm --endpoint-url https://s3.eu-central-3.staging.filonecontent.com \
+  "s3://<your staging bucket>/$marker"
+rm "$marker"
+```
