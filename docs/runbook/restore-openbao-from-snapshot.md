@@ -1,6 +1,6 @@
 # Restore the appliance's OpenBao from a snapshot
 
-Use this procedure when the staging appliance's OpenBao store is lost: the control storage failed,
+Use this procedure when an appliance's OpenBao store is lost: the control storage failed,
 the raft directory is corrupt, or the host was rebuilt. The node keeps its Piri and Ingot
 identities, its central registration and its hilt delegation, because all of them are in the
 snapshot. [Re-onboarding after identity loss](../RUNBOOK.md#re-onboarding-after-identity-loss)
@@ -11,14 +11,41 @@ nothing in between, so the newest snapshot loses nothing. Anything written after
 including a Piri added since: `provision-platform.sh` gives that Piri a new identity, and it is
 re-onboarded on its own.
 
-Every value below is staging's. Dev takes no backups, so it has nothing to restore. A node on EC2
-takes the same steps through `scripts/operator/ssm-session.sh <stage>` and `sudo -i` instead of
-SSH. The scripts find the node's control directory in its `node.env` (`FILONE_CONTROL_DIR`), so no
-command below names it.
+Dev takes no backups, so it has nothing to restore. A node on EC2 takes the same steps through
+`scripts/operator/ssm-session.sh <stage>` and `sudo -i` instead of SSH. The scripts on the node read
+its paths from its `node.env`, so no command below names them.
+
+## This node's values
+
+The commands run on a laptop take the node's values from shell variables. Set them once per shell:
+
+| Variable | Staging | Where to find it for another node |
+|---|---|---|
+| `stage` | `staging` | `STAGE` in `nodes/<stage>/<region>/node.env` |
+| `region` | `eu-central-3` | `REGION_LABEL` in the same file |
+| `node_ip` | `23.83.66.244` | `server_ip` in `terraform/envs/<stage>/<region>/main.tf` |
+| `ingot_url` | `https://s3.eu-central-3.staging.filonecontent.com` | `INGOT_PUBLIC_URL` in `node.env` |
+| `central_region` | `us-east-2` | the `region` variable of infra-central's `terraform/envs/<stage>/platform` |
+| `backup_bucket` | `forge-nodes-backups-staging-654654381893` | `forge-nodes-backups-<stage>-<account id>`, in the stage's central account |
+
+```sh
+stage=staging
+region=eu-central-3
+node_ip=23.83.66.244
+ingot_url=https://s3.eu-central-3.staging.filonecontent.com
+central_region=us-east-2
+backup_bucket=forge-nodes-backups-staging-654654381893
+```
+
+Signed in to the stage's central account, this lists the backup bucket:
+
+```sh
+aws s3api list-buckets --query "Buckets[?starts_with(Name, 'forge-nodes-backups-')].Name"
+```
 
 ## What a restore needs
 
-- **Central's transit key, still decrypting version 1.** `appliance-unseal-eu-central-3` wraps the
+- **Central's transit key, still decrypting version 1.** `appliance-unseal-<region>` wraps the
   snapshot's root key. Nothing in infra-central raises its `min_decryption_version`, and nobody may
   by hand within the 35 days the bucket keeps a snapshot, because a raised minimum makes every older
   snapshot unrestorable. To check it, run the mint below without `MINT_ARGS`, and if it asks, type
@@ -29,29 +56,29 @@ command below names it.
   after its last renewal, and it is bound to the node's IP.
 - **The root token from 1Password**, the one printed when the node's OpenBao was first initialised.
   The restore brings it back to life.
-- **The `ReadOnlyAccess` SSO role in the staging account**, to read the backup bucket and the Piri
-  DIDs central recorded. `AdministratorAccess` works as well.
-- **The `AdministratorAccess` SSO role in the staging account**, for whoever runs
+- **The `ReadOnlyAccess` SSO role in the stage's central account**, to read the backup bucket and
+  the Piri DIDs central recorded. `AdministratorAccess` works as well.
+- **The `AdministratorAccess` SSO role in the stage's central account**, for whoever runs
   `make mint-appliance-credentials` in infra-central, for the key check and any seal-token reissue.
   Every round of the mint invokes central's provision Lambda, which `ReadOnlyAccess` cannot do.
 
-Reach the host over SSH as root. Its default shell is Fish, so run remote commands through Bash:
+Reach the host over SSH as root. Staging's root shell is Fish, so run remote commands through Bash:
 
 ```sh
-ssh -tt root@23.83.66.244 'bash -lc '\''<commands>'\'''
+ssh -tt "root@$node_ip" 'bash -lc '\''<commands>'\'''
 ```
 
-The checkout is `/root/fil-one/infra-nodes`, and the commands below run from there.
+Commands on the node run from its infra-nodes checkout, `/root/fil-one/infra-nodes` on staging.
 
 ## Pick a snapshot
 
-From a laptop signed in with the staging `ReadOnlyAccess` role, list the snapshots and take the
-newest:
+From a laptop signed in with the `ReadOnlyAccess` role of the stage's central account, list the
+snapshots and take the newest:
 
 ```sh
-aws s3api list-objects-v2 --region us-east-2 \
-  --bucket forge-nodes-backups-staging-654654381893 \
-  --prefix eu-central-3/openbao/ \
+aws s3api list-objects-v2 --region "$central_region" \
+  --bucket "$backup_bucket" \
+  --prefix "$region/openbao/" \
   --query 'reverse(sort_by(Contents, &Key))[:5].[Key, Size, ETag]' --output table
 ```
 
@@ -65,18 +92,18 @@ Stream the snapshot straight into `/run/fil-one/bao` on the node. That directory
 into the OpenBao container, so the file never touches a disk on the laptop or the host:
 
 ```sh
-key=eu-central-3/openbao/<timestamp>.snap
-aws s3 cp --region us-east-2 "s3://forge-nodes-backups-staging-654654381893/$key" - |
-  ssh root@23.83.66.244 'install -d -m 0700 /run/fil-one/bao && cat > /run/fil-one/bao/restore.snap'
+key="$region/openbao/<timestamp>.snap"
+aws s3 cp --region "$central_region" "s3://$backup_bucket/$key" - |
+  ssh "root@$node_ip" 'install -d -m 0700 /run/fil-one/bao && cat > /run/fil-one/bao/restore.snap'
 ```
 
 Compare the copy with the object. The node uploads each snapshot in one PUT with a `Content-MD5`
 header, so the object's ETag is its MD5:
 
 ```sh
-aws s3api head-object --region us-east-2 \
-  --bucket forge-nodes-backups-staging-654654381893 --key "$key" --query ETag
-ssh root@23.83.66.244 md5sum /run/fil-one/bao/restore.snap
+aws s3api head-object --region "$central_region" \
+  --bucket "$backup_bucket" --key "$key" --query ETag
+ssh "root@$node_ip" md5sum /run/fil-one/bao/restore.snap
 ```
 
 A reboot empties `/run/fil-one/bao`, so copy the snapshot after the host is back up.
@@ -84,14 +111,14 @@ A reboot empties `/run/fil-one/bao`, so copy the snapshot after the host is back
 ## Get a new seal token, if the old one is gone
 
 Skip this when `/etc/fil-one/seal-token` is on the node and the node was down for less than 72
-hours. Otherwise, run from the infra-central checkout, signed in with the staging
-`AdministratorAccess` role:
+hours. Otherwise, run from the infra-central checkout, signed in with the `AdministratorAccess` role
+of the stage's central account:
 
 ```sh
 make mint-appliance-credentials \
-  STAGE=staging \
-  REGION=eu-central-3 \
-  NODE_IP=23.83.66.244 \
+  STAGE="$stage" \
+  REGION="$region" \
+  NODE_IP="$node_ip" \
   MINT_ARGS=--reissue-unseal-token
 ```
 
@@ -173,19 +200,19 @@ bash -c '. scripts/host/lib.sh; filone_init; for s in $(piri_services); do echo 
 ```
 
 ```sh
-aws ssm get-parameters-by-path --region us-east-2 \
-  --path /forge-central/staging/appliance/eu-central-3/piri --query 'Parameters[].Value'
+aws ssm get-parameters-by-path --region "$central_region" \
+  --path "/forge-central/$stage/appliance/$region/piri" --query 'Parameters[].Value'
 ```
 
 Then run the smoke test from the operator checkout:
 
 ```sh
-scripts/ci/smoke-test.sh staging/eu-central-3
+scripts/ci/smoke-test.sh "$stage/$region"
 ```
 
 It must print `OK: every check passed`. It does not cover Ingot's region-key token, because Ingot's
-`/health` passes with a lapsed one. Read back a known object through
-`https://s3.eu-central-3.staging.filonecontent.com`. A successful GET shows that Ingot can unwrap
+`/health` passes with a lapsed one. Read back a known object through `$ingot_url`. A successful
+GET shows that Ingot can unwrap
 with its new token.
 
 ## Re-enable the timers
@@ -224,8 +251,9 @@ It asks for the root token from 1Password, which the restored copy accepts.
 
 ## Rehearse the restore
 
-Run a drill on staging every quarter. It takes staging out of service for an hour or two and covers
-both disasters:
+Run a drill on staging every quarter, with the variables from
+[This node's values](#this-nodes-values) set to staging's. It takes staging out of service for an
+hour or two and covers both disasters:
 
 - **Fast restore.** The control storage fails and the node is back within hours, with its seal
   token and host token still live on the root disk. Central mints nothing. This one sets the
@@ -254,7 +282,7 @@ staging or dev, asks for the node's name, and moves everything it takes away int
    head -c 65536 /dev/urandom > "$marker"
    shasum -a 256 "$marker"
    AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-     aws s3 cp --endpoint-url https://s3.eu-central-3.staging.filonecontent.com \
+     aws s3 cp --endpoint-url "$ingot_url" \
      "$marker" "s3://<your staging bucket>/$marker"
    ```
 
@@ -281,7 +309,7 @@ Time this from the first command to a passing smoke test.
 
    ```sh
    AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-     aws s3 cp --endpoint-url https://s3.eu-central-3.staging.filonecontent.com \
+     aws s3 cp --endpoint-url "$ingot_url" \
      "s3://<your staging bucket>/$marker" - | shasum -a 256
    ```
 
@@ -302,9 +330,9 @@ Leave the timers disabled and go straight on to the long outage, in the same win
 ### Roll back
 
 At any point, the `rollback.sh` a run of `simulate-openbao-loss.sh` wrote puts back the store as it
-was when that run started. Run it by the path that run printed. For the long outage, that is the store the fast restore produced. After a seal-token reissue the
-script keeps the reissued token, because the reissue revoked the one moved aside and the reissued
-one unseals the store as well.
+was when that run started. Run it by the path that run printed. For the long outage, that is the
+store the fast restore produced. After a seal-token reissue the script keeps the reissued token,
+because the reissue revoked the one moved aside and the reissued one unseals the store as well.
 
 ### Clean up
 
@@ -319,7 +347,7 @@ Then delete the marker object from the laptop:
 
 ```sh
 AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-  aws s3 rm --endpoint-url https://s3.eu-central-3.staging.filonecontent.com \
+  aws s3 rm --endpoint-url "$ingot_url" \
   "s3://<your staging bucket>/$marker"
 rm "$marker"
 ```
