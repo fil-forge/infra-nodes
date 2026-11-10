@@ -128,14 +128,15 @@ bao_is_unsealed || die "OpenBao is sealed. The transit key named in platform/con
        has to exist on the central OpenBao, and this node's token has to be allowed to
        encrypt and decrypt with it. 'docker logs $FILONE_BAO_CONTAINER' says which of the two failed."
 
-# --- 3. The deploy token ----------------------------------------------------
+# --- 3. The host token ------------------------------------------------------
 
-# Everything after this point, and every later deploy, runs as this token rather
-# than as root. It reads and writes the node's own secrets and can do nothing
-# else, so a copy of it lifted off the box is worth exactly this node's
-# secrets — which are already on the box.
+# Everything after this point, and every later deploy, reconcile pass and
+# snapshot, runs as this token rather than as root. It reads and writes the
+# node's own secrets and reads raft snapshots, and can do nothing else, so a copy
+# of it lifted off the box is worth exactly this node's secrets, which are
+# already on the box. provision_host_token in lib.sh writes the policy.
 if [ ! -r "$FILONE_BAO_TOKEN_FILE" ]; then
-  echo "[3/9] Creating the deploy token"
+  echo "[3/9] Creating the host token"
   echo "  paste the root token printed above (not echoed):"
   read -rsp "root token: " root_token
   echo
@@ -143,40 +144,25 @@ if [ ! -r "$FILONE_BAO_TOKEN_FILE" ]; then
 
   BAO_TOKEN="$root_token"
   export BAO_TOKEN
+  unset root_token
 
-  bao secrets enable -path="$FILONE_BAO_MOUNT" -version=2 kv >/dev/null 2>&1 ||
-    echo "  kv mount $FILONE_BAO_MOUNT already enabled"
-
-  bao policy write filone-deploy - <<POLICY >/dev/null
-path "$FILONE_BAO_MOUNT/data/*" {
-  capabilities = ["create", "read", "update", "patch"]
-}
-path "$FILONE_BAO_MOUNT/metadata/*" {
-  capabilities = ["read", "list"]
-}
-POLICY
-
-  # Orphan, so revoking the root token later does not take the node's deploys
-  # with it. Periodic, so it renews forever; deploy-platform.sh renews it on
-  # every pass, which is every five minutes.
-  token="$(bao token create -policy=filone-deploy -orphan -period=72h -field=token)"
-  install -m 0400 /dev/null "$FILONE_BAO_TOKEN_FILE"
-  printf '%s\n' "$token" >"$FILONE_BAO_TOKEN_FILE"
-  unset token root_token BAO_TOKEN
-  echo "  stored in $FILONE_BAO_TOKEN_FILE"
+  provision_host_token
+  unset BAO_TOKEN
   echo
   echo "  Store the root token in 1Password and clear it from your shell history."
   echo "  Nothing on this node holds it."
 else
-  echo "[3/9] Deploy token already present"
+  echo "[3/9] Host token already present"
 fi
 
 # --- 4. The backup key ------------------------------------------------------
 
 # The access key this node writes its Postgres and OpenBao backups with, stored
 # in OpenBao with the target it writes to, then checks that it can write there.
-# It runs as the deploy token step 3 just created, and does nothing on a node
-# whose node.env sets FILONE_TAKES_BACKUPS=false.
+# It runs as the host token step 3 just created, enables the daily OpenBao
+# snapshot once the key has written to the target, and does nothing on a node
+# whose node.env sets FILONE_TAKES_BACKUPS=false. The secrets the steps below
+# write are snapshotted after step 9, when deploy-platform.sh finishes.
 echo "[4/9] Storing the backup key"
 "$SCRIPT_DIR/provision-backups.sh"
 
@@ -184,8 +170,8 @@ echo "[4/9] Storing the backup key"
 
 # Ingot wraps every object's content-encryption key under this one, in this
 # node's own transit engine, and refuses to start without it. Next to the
-# deploy token because it needs the same root token: enabling a secrets engine
-# and writing a policy are both outside what the deploy token is granted.
+# host token because it needs the same root token: enabling a secrets engine
+# and writing a policy are both outside what the host token is granted.
 echo "[5/9] Creating the region key"
 echo "  paste the root token again (not echoed):"
 read -rsp "root token: " root_token

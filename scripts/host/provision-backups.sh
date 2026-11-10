@@ -12,7 +12,9 @@
 #
 # It then runs check-backup-target.sh, which writes a small object with the
 # stored key, so a key that cannot write fails here rather than at the first
-# backup.
+# backup. Once that write succeeds it uploads the first OpenBao snapshot with
+# snapshot-openbao.sh and enables filone-openbao-snapshot.timer, which takes
+# one daily from then on.
 #
 # provision-platform.sh runs this on a new node. Run it by hand, as root in an
 # SSM session or on the host, to add the key to a node provisioned before it
@@ -52,12 +54,28 @@ fi
 
 bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 
-BACKUP_PATH=backup-target
+BACKUP_PATH="$FILONE_BACKUP_PATH"
+
+# Once the stored key has written to the target, and not before: a timer
+# enabled on a node whose key cannot write would fail every day until the
+# stale-snapshot alert noticed. The first snapshot runs here, in the
+# foreground, so a host token that cannot take one stops this script at the
+# prompt, and the alert has a value to watch from the start.
+check_and_start_snapshots() {
+  "$SCRIPT_DIR/check-backup-target.sh"
+  "$SCRIPT_DIR/snapshot-openbao.sh"
+  # The timer may not be on the box yet: this can run before the first
+  # reconcile pass has installed the checkout's units.
+  sync_systemd_units
+  systemctl enable --now "$FILONE_SNAPSHOT_TIMER" >/dev/null ||
+    die "could not enable $FILONE_SNAPSHOT_TIMER"
+  echo "  $FILONE_SNAPSHOT_TIMER enabled"
+}
 
 if bao_has "$BACKUP_PATH" access_key_id && [ "$REPLACE" != true ]; then
   echo "  backup key already stored: access key $(bao_get "$BACKUP_PATH" access_key_id)"
   echo "  run with --replace after central reissues it"
-  "$SCRIPT_DIR/check-backup-target.sh"
+  check_and_start_snapshots
   exit 0
 fi
 
@@ -121,4 +139,4 @@ echo "  stored access key $(bao_get "$BACKUP_PATH" access_key_id) for" \
   "s3://$(bao_get "$BACKUP_PATH" bucket)/$(bao_get "$BACKUP_PATH" key_prefix)" \
   "in $(bao_get "$BACKUP_PATH" aws_region)"
 
-"$SCRIPT_DIR/check-backup-target.sh"
+check_and_start_snapshots

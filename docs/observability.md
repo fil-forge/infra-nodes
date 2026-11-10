@@ -14,8 +14,8 @@ design](decisions/2026-08-initial-design.md#telemetry).
 **Logs.** Every line each FilOne container writes to stdout or stderr: Piri, Ingot, OpenBao,
 Postgres, and on dev also Caddy and Alloy itself. On staging, Caddy is the host's, and the runtime
 log it writes for itself ships under the `-caddy` service name. The host journal too: on dev the whole journal,
-which is where cloud-init, Docker and a failed unit are legible; on staging only the reconcile
-service's unit, since the rest of that host's journal is not the appliance's.
+which is where cloud-init, Docker and a failed unit are legible; on staging only the reconcile and
+OpenBao snapshot units, since the rest of that host's journal is not the appliance's.
 
 **Metrics.** The host's CPU, disk I/O, filesystems, load and memory from a node exporter, scraped
 every minute, plus the deploy stamp the reconcile timer writes on every pass. Caddy's request
@@ -158,7 +158,8 @@ built on them works on one node only.
 ## Metrics
 
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
-Caddy's `caddy_http_*` family, and `deploy_last_success_timestamp`. Every series carries the four
+Caddy's `caddy_http_*` family, `deploy_last_success_timestamp` and
+`openbao_snapshot_last_success_timestamp`. Every series carries the four
 labels above plus `instance`, which is the node name (`<node>/piri-<n>` on Piri's own series), and
 `job`, which is `integrations/unix` for the host, `cadvisor` for containers, `caddy` for Caddy and
 `forge/piri` for Piri.
@@ -388,6 +389,32 @@ is missing:
 
 [A volume is not mounted](RUNBOOK.md#a-volume-is-not-mounted) has the recovery.
 
+### The OpenBao snapshot stamp
+
+`openbao_snapshot_last_success_timestamp` is the Unix time of the last OpenBao raft snapshot that
+reached the backup bucket. `scripts/host/snapshot-openbao.sh` writes it to the textfile collector
+after each upload, so it ships the way the deploy stamp does, with no Alloy change on either node.
+It exists only on a node that takes backups, from its first successful snapshot on; dev has none.
+infra-central's stale-snapshot alert expects it from every appliance in a stage that takes backups,
+so one that reconciles without reporting it fires the alert as well.
+
+The timer fires daily with up to 30 minutes of random delay, and a write to OpenBao starts an extra
+run. A failed run is retried on the next reconcile pass, so a stamp older than 26 hours means every
+run for a day has failed, or none has started:
+
+```promql
+time() - openbao_snapshot_last_success_timestamp > 26 * 3600
+```
+
+Every run, the timer's and the ones a write starts, logs to the journal of
+`filone-openbao-snapshot.service`. Dev ships it with the rest of its journal. Staging's host Alloy
+gives it its own journal source, which the staging section of the [runbook](RUNBOOK.md) lists, so
+it carries the `-host` service name with the unit on the `unit` label, as on dev:
+
+```logql
+{service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}
+```
+
 ## Traces
 
 Piri and Ingot push their spans to the same Alloy receiver as their metrics. Alloy does not
@@ -419,10 +446,11 @@ What a new service or feature needs so that its logs and metrics reach Grafana, 
 go.
 
 - **Logs.** Container stdout and stderr ship without any extra work, under the labels above. Dev
-  ships the whole host journal, but staging ships only the reconcile service's unit. The staging
-  host's Alloy config lives outside this repository, so for a new host service there, add what it
-  must ship to the staging section of the [runbook](RUNBOOK.md) and say in the PR that the host's
-  config needs the change.
+  ships the whole host journal under the appliance labels, and staging only the units the runbook
+  lists. The rest of the staging host's journal ships as `{hostname="curio"}`, with no appliance
+  labels. That host's Alloy config lives outside this repository, so for a new host service there,
+  add its journal source to the staging section of the [runbook](RUNBOOK.md) and say in the PR that
+  the host's config needs the change.
 - **Metrics pushed over OTLP**, as Piri does. The service sets `service.name` to its Compose
   service name and `service.namespace="forge"`, and sends to Alloy on port 4318: `alloy:4318` on
   dev and `host.docker.internal:4318` on staging, configured as Ingot's entry in each stage's

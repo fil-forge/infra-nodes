@@ -424,9 +424,27 @@ what keeps them out of the appliance rules.
 `terraform/envs/grafana/alerts.tf`, fires while this is not done and goes quiet
 once it is — so this does not depend on anyone remembering to check.
 
-Give the reconcile journal source
-the same `service_name`, `node`, `region` and `appliance` as static labels, plus the shared
-journal relabel rules so the unit lands on its own label.
+Give the reconcile journal source the same `service_name`, `node`, `region` and `appliance` as
+static labels, plus the shared journal relabel rules so the unit lands on its own label. The OpenBao
+snapshot unit gets a second source of the same shape, so the query for a failed snapshot is the
+same as on dev:
+
+```alloy
+loki.source.journal "filone_openbao_snapshot" {
+  matches       = "_SYSTEMD_UNIT=filone-openbao-snapshot.service"
+  forward_to    = [loki.write.grafanacloud.receiver]
+  relabel_rules = loki.relabel.journal.rules
+
+  labels = {
+    hostname     = "curio",
+    service      = "filone-openbao-snapshot",
+    service_name = "appliance-staging-eu-central-3-host",
+    node         = "staging/eu-central-3",
+    region       = "eu-central-3",
+    appliance    = "staging-eu-central-3",
+  }
+}
+```
 
 The host Caddy's runtime log is `/root/storacha/logs/caddy/caddy.log`. Caddy writes and rolls
 that file itself, through a `log` block in the global options of `/root/storacha/caddy/Caddyfile`,
@@ -876,13 +894,15 @@ initialises OpenBao, and prints **one recovery key and one root token**.
 Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
 neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
 
-It then asks for the root token back twice, to create the deploy token and the KV mount and then the
-region key Ingot encrypts objects under. Between the two, on a node that takes backups, it runs
+It then asks for the root token back twice, to create the host token and the KV mount and then the
+region key Ingot encrypts objects under. The host token is what every later deploy, reconcile pass
+and OpenBao snapshot runs as. Between the two, on a node that takes backups, it runs
 `provision-backups.sh`, which asks for the backup-key wrapping token, exchanges it at central,
 stores the key and its target at `filone/backup-target`, and writes a small object with the key to
-prove it can write there. A failed write stops the run with S3's reason; fix it and re-run, which
-skips what is already stored. It then installs the identity tooling (ucantool and cast, pinned in
-the node's `node.env`); generates the node's keys; asks for whichever operator-supplied tokens
+prove it can write there. It then uploads the first OpenBao snapshot and enables the daily snapshot
+timer. A failed write stops the run with S3's reason; fix it and re-run, which skips what is already
+stored. It then installs the identity tooling (ucantool and cast, pinned in the node's `node.env`);
+generates the node's keys; asks for whichever operator-supplied tokens
 that node needs; and starts its platform services. Step 3 says which, for each node.
 
 A lapsed or revoked Ingot region-key token is replaced by a separate run of the same steps:
@@ -988,6 +1008,10 @@ systemctl enable --now filone-reconcile.timer
 systemctl enable --now filone-seal-token-renew.timer
 systemctl list-timers | grep filone
 ```
+
+`filone-openbao-snapshot.timer` is not on that list on purpose. `provision-backups.sh` enables it
+on a node that takes backups, once the stored key has written to the bucket, and a node without a
+working key has nothing to upload with.
 
 From here, changes reach the node by being merged. The node tracks whatever `FILONE_GIT_REF` in
 `/etc/fil-one/node.conf` names, which bootstrap writes as `main`.
@@ -1186,6 +1210,52 @@ scripts/host/provision-backups.sh --replace
 
 The unseal token is left alone; the two credentials are reissued independently.
 
+**OpenBao snapshots.** On a node that takes backups, `filone-openbao-snapshot.timer` uploads a raft
+snapshot of the node's OpenBao once a day, to `<region>/openbao/<UTC timestamp>.snap` in the backup
+bucket. Anything that writes to OpenBao (provisioning, a deploy that stores a new secret, a new
+region key) leaves a marker at `state/openbao-snapshot-pending` under the node's
+`FILONE_CONTROL_DIR`, and the end of that run, or the next reconcile pass, starts a snapshot
+straight away. The marker is cleared only after an upload succeeds, and any run that fails sets it,
+so a failed snapshot, the daily one included, is retried every five minutes. A run renames the
+marker to `state/openbao-snapshot-claimed` while it works; one left behind by a killed run is
+harmless, and the next run takes it over. Runs take turns through
+`/run/fil-one/openbao-snapshot.lock`, so one started by hand waits for the timer's.
+
+A snapshot leaves the node as OpenBao wrote it. OpenBao encrypts every value before it reaches
+raft, and central's `appliance-unseal-<region>` transit key wraps the root key, so a snapshot
+cannot be read without the unseal key at central; the root token and recovery key alone cannot
+unseal it. Mount paths, policy names and secret names stay in plaintext. The bucket locks each
+snapshot in compliance mode for central's `appliance_backups.retention_days` (35 days on staging)
+and deletes it a day after that. Never raise `min_decryption_version` on the unseal key inside
+that window, or the older snapshots stop restoring.
+
+To take one now, as root:
+
+```sh
+scripts/host/snapshot-openbao.sh
+```
+
+Each run stamps `openbao_snapshot_last_success_timestamp`, described in
+[observability.md](observability.md#the-openbao-snapshot-stamp).
+
+**Give a node a new host token.** The host token is the OpenBao token every deploy, reconcile pass
+and snapshot runs as, under the `filone-host` policy. A node provisioned before snapshots existed
+holds one under the older `filone-deploy` policy, which cannot take a snapshot, and its snapshot job
+says so. Rotate the token the same way, or replace it after a restore from a snapshot older than
+the token's 72-hour period:
+
+```sh
+scripts/host/provision-host-token.sh
+```
+
+It asks for the root token from 1Password, writes the policy, puts the new token in
+`/etc/fil-one/bao-token` before revoking the old one, and deletes `filone-deploy`.
+
+On a node that already holds its backup key and predates snapshots, run the two in this order:
+`provision-host-token.sh`, then `provision-backups.sh`. The second checks the key, uploads the
+first snapshot and enables the timer; run first, it stops at the snapshot that the old token
+cannot take.
+
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
 commands against the current `SPRUE_DID` and the script's command list, and reissues when either
@@ -1332,6 +1402,18 @@ somebody else spent it. Ask central to re-mint with `MINT_ARGS=--reissue-backup-
 the key that was taken, store the new one with `provision-backups.sh --replace`, and work out who
 could read the channel.
 
+**The OpenBao snapshot is stale.** The last upload to the backup bucket is more than a day old.
+An age of centuries means the node reports no snapshot stamp at all: it has never uploaded one, so
+run `provision-host-token.sh` if it predates snapshots and then `provision-backups.sh`, or the code
+that writes the stamp is broken. Otherwise the snapshot unit's journal has the failed run's reason:
+`{service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}` in
+Loki, or `journalctl -u filone-openbao-snapshot.service` on the host. A refused snapshot
+means the host token still holds `filone-deploy`: run `provision-host-token.sh`. An
+`InvalidAccessKeyId` means central deleted the backup key: store the new one with
+`provision-backups.sh --replace`. Any other S3 error, or none at all, is easier to read from
+`check-backup-target.sh`, which tests the key and the bucket on their own. A timer that stopped
+firing shows in `systemctl list-timers filone-openbao-snapshot.timer`.
+
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key
 does not exist. A node whose Elastic IP changed has a token bound to the old one and needs a new
@@ -1394,19 +1476,12 @@ infra-central's `docs/observability.md`.
 
 Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say which one:
 
-- The chain-head and Prove-task alerts carry the Piri's `instance` label, for example
-  `staging/eu-central-3/piri-1`. Its last digit is the Piri's number.
-- The proving-failing and proving-period alerts carry the `proof_set` instead. To find its Piri,
-  list each one's proof sets on the host:
+- The chain-head, proving-failing, proving-period, deletion-drain and Prove-task alerts carry the
+  Piri's `instance` label, for example `staging/eu-central-3/piri-1`. Its last digit is the Piri's
+  number. The proving-failing, proving-period and deletion-drain alerts also name the `proof_set`.
 
-  ```sh
-  for i in 0 1 2; do
-    echo "piri-$i"
-    docker exec -w /data/piri filone-piri-$i piri client pdp proofset list
-  done
-  ```
-
-- The unrecoverable alert names only the node. Work through each Piri in turn.
+- The unrecoverable alert carries the Piri's `instance` too, but not the proof set. Step 1 of
+  [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable) finds it in the logs.
 
 1. On the host, run `bash` first if the login shell is Fish (it is on staging), so the commands
    paste as written. Set the Piri's number, for example `n=1` for `staging/eu-central-3/piri-1`.
@@ -1558,25 +1633,41 @@ started, usually because the chain endpoint was unreachable then.
 
 #### Piri proving is failing
 
-**Act now.** The contract rejected a proving transaction. Curio gives up on a proof set for good on
-its fifth rejection without a successful proof between. The retries wait 100, 200, 400 and 800
-epochs, so the fifth can come 12.5 hours after the first, and nothing on the node brings the proof
-set back after that.
+**Act now.** The alert fires in one of two cases:
 
-1. On the host, find the rejection in the `PDPv0_Prove` logs, then in `PDPv0_ProvPeriod` if Prove
-   has none. The revert reason says what the contract refused.
-2. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names. If
+- **No proof landed.** PDPVerifier has accepted no proof for this proof set for longer than a
+  proving period plus its challenge window. The contract has recorded a fault, and each further
+  period records another.
+- **Piri cannot read the last proof.** Piri cannot read the proof set's last proven epoch from
+  PDPVerifier, so a fault is possible but not confirmed. Piri logs `reading proof set's last proven
+  epoch` with the error on the same line. The usual cause is the chain endpoint.
+
+1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
+   firing for this Piri. If either is, follow that entry first: without a chain, Piri can neither
+   send a proof nor read the epoch.
+2. On the host, read the `PDPv0_Prove` logs, then `PDPv0_ProvPeriod`. Look for a contract revert,
+   `no subpiece found`, a send that failed for gas, or no run at all.
+3. In the Piri's shell, run `piri client pdp proofset state` for the proof set the alert names. If
    it fails, read the error as in [Before you start](#before-you-start), step 4.
-3. Act on the revert reason:
-   - **The data set's payment has ended or been terminated:** Curio gives up at once, and the next
-     alert is [Piri proof set is unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
-   - **Anything else:** the node can't fix a revert. Post the revert reason, the proof set's ID
-     and its state in `#filone-eng` on Slack, now, and record them on the incident. The data
-     set's payments are set up from central, which pays from `PAYER_ADDRESS`. The clock is the
-     12.5 hours above.
+4. Act on what the logs showed:
+   - **The data set's payment has ended or been terminated, or the data set is no longer live:**
+     Curio stops proving it for good, and the next alert is [Piri proof set is
+     unrecoverable](#piri-proof-set-is-unrecoverable). Follow that.
+   - **`Proving period scheduling blocked by pending piece deletions; draining first` in the
+     `PDPv0_ProvPeriod` logs, or "Piri's deletion drain is stuck" firing for this proof set:**
+     follow [Piri's deletion drain is stuck](#piris-deletion-drain-is-stuck). PDPVerifier won't
+     schedule the next proving period while piece removals are queued.
+   - **Any other contract revert:** Curio retries, but the node can't fix a revert. Post the revert
+     reason, the proof set's ID and its state in `#filone-eng` on Slack, now, and record them on
+     the incident. The data set's payments are set up from central, which pays from
+     `PAYER_ADDRESS`.
+   - **A send that failed for gas, or no Prove run at all:** follow [Piri's Prove task has not run
+     in 1.5 proving periods](#piris-prove-task-has-not-run-in-15-proving-periods). The owner
+     wallet pays the gas, and that entry checks it.
+   - **`no subpiece found`:** Piri is proving pieces it has no record of. Post the log lines and the
+     proof set's ID in `#filone-eng`, and record them on the incident.
 
-   The node's own owner wallet is not the cause here. If it can't pay for gas, the send fails
-   before it reaches the contract, which Curio doesn't count as a rejection.
+The alert clears on its own once a proof lands.
 
 #### Piri's proving period has not advanced
 
@@ -1584,7 +1675,10 @@ set back after that.
 costs that day's proving period, and nothing more: once scheduling runs again, Curio carries on.
 
 1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
-   firing. If either is, follow that entry first; a head that isn't moving is the usual cause.
+   firing. If either is, follow that entry first; a head that isn't moving is the usual cause. If
+   "Piri's deletion drain is stuck" is firing for this proof set, follow [that
+   entry](#piris-deletion-drain-is-stuck) instead: PDPVerifier won't schedule the next proving
+   period while piece removals are queued.
 2. In the Piri's shell, run `piri status`. If it fails, read the error as in [Before you
    start](#before-you-start), step 4. If it answers, go on: the task engine can still be stalled
    behind a node that answers, which the logs show.
@@ -1598,9 +1692,44 @@ costs that day's proving period, and nothing more: once scheduling runs again, C
 
    Look the address up on a Calibration block explorer. If it holds little or no tFIL, fund it as
    [step 6](#6-onboarding-then-the-apps) describes.
-4. On the host, read the `PDPv0_ProvPeriod` logs for whether scheduling ran, and why not.
+4. On the host, read the `PDPv0_ProvPeriod` logs for whether scheduling ran, and why not. If they
+   say `Proving period scheduling blocked by pending piece deletions; draining first`, follow
+   [Piri's deletion drain is stuck](#piris-deletion-drain-is-stuck): its steps apply before its
+   own alert fires, which is a proving period later than this one.
 5. Once scheduling runs again, if the logs showed AddRoots failing too, [free stranded
    batches](#free-stranded-batches).
+
+#### Piri's deletion drain is stuck
+
+**Act within a day.** Piece removals have been queued on a proof set for longer than its proving
+period. PDPVerifier won't schedule the next proving period while removals are queued, so Curio
+drains them first, with a `processPieceDeletions` transaction from the Piri's owner wallet. Until
+the drain finishes, the proof set's proving periods stop advancing, and each day costs that day's
+period. Once it finishes, Curio carries on. By the time this alert fires, "Piri proving is failing"
+usually is too; if it is, act now.
+
+1. Check whether "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also
+   firing. If either is, follow that entry first: Curio sends the drain when the challenge window
+   closes, which it learns from the chain head.
+2. Check the owner wallet as in step 3 of [Piri's proving period has not
+   advanced](#piris-proving-period-has-not-advanced). It pays for every drain transaction.
+3. On the host, read the Piri's logs for the drain. A `PDPv0_ProcDel` run that failed logs
+   `Removal queue draining failed` with the data set's ID and the error. A drain transaction that
+   was sent but failed on chain logs `PDP removal drain transaction failed` with its `txHash`. A
+   successful one logs `submitted PDP processPieceDeletions`, then `PDP removal drain confirmed`.
+4. Act on what the logs showed:
+   - **`processPieceDeletions gas estimate failed at batch size 1`, `PDP removal drain transaction
+     failed`, or any other contract revert:** the node can't fix it. Post the error, the
+     transaction hash if there is one, and the proof set's ID in `#filone-eng` on Slack, and
+     record them on the incident.
+   - **`submitted PDP processPieceDeletions` with no `confirmed` or `failed` line for its `txHash`
+     an hour later:** the transaction is stuck. Escalate it as above, with the `txHash`.
+   - **Any other error, such as the wallet running out of funds:** check the wallet as step 2 says,
+     and fund it if it's low. Curio retries the drain on its own.
+   - **No `PDPv0_ProcDel` run at all:** run `piri status` as in step 2 of [Piri's proving period
+     has not advanced](#piris-proving-period-has-not-advanced). The task engine may be stalled.
+
+The alert clears once the drain finishes and Piri stops reporting the removals as queued.
 
 #### Piri's Prove task has not run in 1.5 proving periods
 

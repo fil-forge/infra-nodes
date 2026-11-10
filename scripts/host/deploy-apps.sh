@@ -277,6 +277,8 @@ if [ -z "$unmounted_services" ]; then
   stamp_deploy_success apps
   echo "=== apps deploy complete ==="
 fi
+# Whether or not every app deployed: what this run wrote to OpenBao is snapshotted.
+request_openbao_snapshot
 
 # Last, and outside this deploy's success: deploy-rag.sh logs its own warning
 # and leaves a marker that makes the next reconcile pass retry it alone. It
