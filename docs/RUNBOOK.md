@@ -1845,8 +1845,9 @@ recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump 
 edit costs one init run, not just a restart. The chain RPC token is not an input of init's: `serve`
 reads it from the environment, so a rotation needs only a recreate. A re-run that fails, or does not
 finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a whole
-number without leading zeros falls back to 300 with a warning; keep it under the 420 seconds
-`deploy-apps.sh` waits for a recreated Piri to turn healthy), ends in this warning when it is safe
+number without leading zeros falls back to 300 with a warning; keep it well under the 420 seconds
+`deploy-apps.sh` waits for a recreated Piri to turn healthy, at most 360, since that wait also
+covers `serve` starting), ends in this warning when it is safe
 to carry on: the image writes a different config version, it is the first start since the stamp
 replaced the snapshot and the old snapshot still matches the base config, or init timed out. Piri
 then serves the config already on disk, which holds its proof set; `N` is that config's version. A
