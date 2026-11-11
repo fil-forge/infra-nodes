@@ -118,7 +118,16 @@ token_facts "$new_token"
 ```
 
 Expect `display_name: token-root-rotated-<date>`, `policies: ['root']`, `orphan: True` and
-`ttl: 0`. Write the accessor down.
+`ttl: 0`. Write the accessor down for the 1Password note in step 4. An accessor names a token
+without being a secret: it tells which root token a store's audit entries came from, and
+`bao token revoke -accessor <accessor>` revokes the token without anyone pasting it. To read it
+again later, under the token from 1Password:
+
+```sh
+read -rsp "root token (1Password): " root_token; echo
+BAO_TOKEN="$root_token" bao_in filone-openbao token lookup -field=accessor; echo
+unset root_token
+```
 
 `-orphan` is what keeps the new token alive in step 5. Without it, the new token is a child of the
 leaked one and the revoke takes both. OpenBao gives a root-policy token created without `-ttl` no
