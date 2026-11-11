@@ -283,14 +283,16 @@ harmless `Error properly closing policy file` line as a restore.
 ## Rehearse the restore
 
 Run a drill on staging every quarter, with the variables from
-[This node's values](#this-nodes-values) set to staging's. It takes staging out of service for an
-hour or two and covers both disasters:
+[This node's values](#this-nodes-values) set to staging's. The drill lasts about an hour, and
+staging is out of service twice, for under 10 minutes each time. It covers both disasters:
 
 - **Fast restore.** The control storage fails and the node is back within hours, with its seal
   token and host token still live on the root disk. Central mints nothing. This one sets the
   recovery-time budget, since every day without proofs is a proving period that pays nothing.
+  The restore takes under 10 minutes from the first command to a passing smoke test.
 - **Long outage.** The node is down for 72 hours or more, or its host is rebuilt. Every token has
-  lapsed, central reissues the seal token, and the node mints the rest.
+  lapsed, central reissues the seal token, and the node mints the rest. The restore takes as long
+  as a fast restore, because the reissue takes under a minute.
 
 `simulate-openbao-loss.sh` puts the node into either state. It refuses to run on a stage other than
 staging or dev, asks for the node's name, and moves everything it takes away into
