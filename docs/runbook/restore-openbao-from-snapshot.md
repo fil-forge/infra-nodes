@@ -248,9 +248,11 @@ with its new token.
 ```sh
 systemctl enable --now filone-reconcile.timer filone-seal-token-renew.timer
 systemctl start filone-reconcile.service
+systemctl list-timers 'filone-*'
 ```
 
-`systemctl list-timers 'filone-*'` then lists all three timers with their next run.
+The last command lists the three timers. Each must show a time under `NEXT`; a `-` there means the
+timer will not run until the node reboots.
 
 `openbao_snapshot_last_success_timestamp` advances with the snapshot `provision-platform.sh`
 uploaded, so the stale-snapshot alert stays quiet. Once the node checks out, delete the damaged
