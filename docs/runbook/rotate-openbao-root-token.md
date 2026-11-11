@@ -273,10 +273,13 @@ key, so the leaked token in it is worth nothing to someone who cannot reach cent
 or later. From a laptop signed in to the stage's central account, on staging:
 
 ```sh
-aws s3api list-objects-v2 --region us-east-2 \
+aws s3api list-objects-v2 --no-cli-pager --region us-east-2 \
   --bucket forge-nodes-backups-staging-654654381893 --prefix eu-central-3/openbao/ \
   --query 'sort_by(Contents, &Key)[0].Key' --output text
 ```
+
+It prints one key, such as `eu-central-3/openbao/20261109T162837Z.snap`. `--no-cli-pager` keeps
+AWS CLI v2 from handing that line to `less`, which can clear it off the screen on exit.
 
 **Checking a snapshot.** `verify-openbao-snapshot.sh` asks for the root token the snapshot's store
 accepts: the leaked token for a snapshot before `<timestamp>`, the new one for any later snapshot.
