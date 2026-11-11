@@ -82,7 +82,12 @@ Reach the host over SSH as root. Staging's root shell is Fish, so run remote com
 ssh -tt "root@$node_ip" 'bash -lc '\''<commands>'\'''
 ```
 
-Commands on the node run from its infra-nodes checkout, `/root/fil-one/infra-nodes` on staging.
+Commands on the node run from its infra-nodes checkout, `/root/fil-one/infra-nodes` on staging. This
+opens Bash there in one step; the `-t` gives Bash the terminal it needs to stay interactive:
+
+```sh
+ssh -t "root@$node_ip" 'cd /root/fil-one/infra-nodes && exec bash'
+```
 
 ## Pick a snapshot
 
