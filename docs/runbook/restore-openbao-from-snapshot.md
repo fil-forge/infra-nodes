@@ -246,10 +246,11 @@ with its new token.
 `provision-platform.sh` has already enabled the snapshot timer. Enable the other two:
 
 ```sh
-systemctl reset-failed filone-reconcile.service
 systemctl enable --now filone-reconcile.timer filone-seal-token-renew.timer
 systemctl start filone-reconcile.service
 ```
+
+`systemctl list-timers 'filone-*'` then lists all three timers with their next run.
 
 `openbao_snapshot_last_success_timestamp` advances with the snapshot `provision-platform.sh`
 uploaded, so the stale-snapshot alert stays quiet. Once the node checks out, delete the damaged
