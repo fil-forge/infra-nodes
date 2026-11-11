@@ -46,9 +46,11 @@ fi
 echo "[2/9] Starting OpenBao"
 start_openbao
 
+initialised_now=false
 if bao_is_initialised; then
   echo "  already initialised"
 else
+  initialised_now=true
   echo
   echo "  Initialising OpenBao. The recovery key and the root token below are printed"
   echo "  once and are not stored on this node. Put both in 1Password before continuing:"
@@ -76,7 +78,13 @@ bao_is_unsealed || die "OpenBao is sealed. The transit key named in platform/con
 # already on the box. provision_host_token in lib/openbao.sh writes the policy.
 if [ ! -r "$FILONE_BAO_TOKEN_FILE" ]; then
   echo "[3/9] Creating the host token"
-  echo "  paste the root token printed above (not echoed):"
+  # A store restored from a snapshot, or one whose host token was lost, was
+  # initialised on an earlier run, so its root token is in 1Password.
+  if [ "$initialised_now" = true ]; then
+    echo "  paste the root token printed above (not echoed):"
+  else
+    echo "  paste the root token from 1Password (not echoed):"
+  fi
   read -rsp "root token: " root_token
   echo
   [ -n "$root_token" ] || die "no root token given"
@@ -87,9 +95,11 @@ if [ ! -r "$FILONE_BAO_TOKEN_FILE" ]; then
 
   provision_host_token
   unset BAO_TOKEN
-  echo
-  echo "  Store the root token in 1Password and clear it from your shell history."
-  echo "  Nothing on this node holds it."
+  if [ "$initialised_now" = true ]; then
+    echo
+    echo "  Store the root token in 1Password and clear it from your shell history."
+    echo "  Nothing on this node holds it."
+  fi
 else
   echo "[3/9] Host token already present"
 fi
