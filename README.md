@@ -189,10 +189,10 @@ What this repository should have before a node carries anything that matters. Ea
 Linear.
 
 **A backup strategy.** Dev runs with none. Staging uploads a daily OpenBao raft snapshot to
-central's backup bucket, and another after each write to OpenBao. [FIL-1166][] covers snapshots of
-the rest of the control volume and a restore that has actually been run, because the failure this
-protects against is the one where the node's identity is gone. Postgres replication and
-point-in-time recovery is [FIL-807][].
+central's backup bucket, and another after each write to OpenBao.
+[Restore the appliance's OpenBao from a snapshot](docs/runbook/restore-openbao-from-snapshot.md)
+brings a lost store back, and [FIL-1166][] tracks the first restore drill on staging. Postgres
+replication and point-in-time recovery is [FIL-807][].
 
 **Piri and Ingot reading their secrets from OpenBao.** Ingot already reads the region key from
 OpenBao's transit engine over a unix socket; everything else is still a file rendered into a tmpfs

@@ -240,12 +240,13 @@ FilOne rules tied to `docker0` or another Docker bridge after confirming these s
 Piri dials Chain.Love for chain RPC. Staging has its own chain.love token,
 separate from dev's, in OpenBao at `external#chain_rpc_token`. The token is the bare API key, not
 the endpoint URL the Chain.Love dashboard shows with it. The key accepts WebSocket connections only,
-so check it with a WebSocket upgrade request; the token goes in through a file descriptor, so it
-never appears in a command line:
+so check it with a WebSocket upgrade request. The host token goes to `docker exec` through its
+environment and the chain.love token through a file descriptor, so neither appears in a command
+line:
 
 ```sh
-token="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-  filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
+token="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
+  -e BAO_TOKEN filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
 curl --http1.1 -sS -i --max-time 5 \
   -H @<(printf 'Authorization: Bearer %s\n' "$token") \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
@@ -278,8 +279,8 @@ missing:
 
    ```sh
    bao_exec() {
-     docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-       filone-openbao bao "$@"
+     BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 \
+       -e BAO_TOKEN filone-openbao bao "$@"
    }
    bao_exec kv get -mount=filone external   # expect "No value found"
    read -rsp 'chain.love token: ' token; echo
@@ -948,8 +949,8 @@ directly:
 
 ```sh
 for piri in piri-0 piri-1 piri-2; do
-  address="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
-    -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" filone-openbao \
+  address="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec \
+    -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN filone-openbao \
     bao kv get -mount=filone -field=owner_wallet_address "$piri")"
   echo "$piri $address"
 done
@@ -1238,6 +1239,10 @@ scripts/host/snapshot-openbao.sh
 Each run stamps `openbao_snapshot_last_success_timestamp`, described in
 [observability.md](observability.md#the-openbao-snapshot-stamp).
 
+[Restore the appliance's OpenBao from a snapshot](runbook/restore-openbao-from-snapshot.md) brings a
+lost store back from one of these snapshots, checks a snapshot without downtime, and describes the
+quarterly restore drill.
+
 **Give a node a new host token.** The host token is the OpenBao token every deploy, reconcile pass
 and snapshot runs as, under the `filone-host` policy. A node provisioned before snapshots existed
 holds one under the older `filone-deploy` policy, which cannot take a snapshot, and its snapshot job
@@ -1255,6 +1260,10 @@ On a node that already holds its backup key and predates snapshots, run the two 
 `provision-host-token.sh`, then `provision-backups.sh`. The second checks the key, uploads the
 first snapshot and enables the timer; run first, it stops at the snapshot that the old token
 cannot take.
+
+**Rotate the root token after a leak.**
+[Rotate the root token of an appliance's OpenBao](runbook/rotate-openbao-root-token.md) mints a
+replacement, revokes the leaked token and covers the snapshots that still hold it.
 
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
@@ -1340,6 +1349,10 @@ copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
 ## Re-onboarding after identity loss
 
+On a node that takes backups, first
+[restore its OpenBao from a snapshot](runbook/restore-openbao-from-snapshot.md), which keeps every
+identity and needs no re-onboarding. This section is for a node with no snapshot that restores.
+
 Losing the control volume loses the node's keys, so the rebuilt node comes back with new Piri
 DIDs and central still carries the old ones. Ingot is unaffected as long as its hostname holds: the
 `did:web` is derived from the region label and the content domain, both of which central also holds,
@@ -1417,7 +1430,9 @@ firing shows in `systemctl list-timers filone-openbao-snapshot.timer`.
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key
 does not exist. A node whose Elastic IP changed has a token bound to the old one and needs a new
-token.
+token. [Recover from an expired appliance unseal token](runbook/recover-expired-unseal-token.md)
+replaces it. A store restored from a snapshot that stays sealed is missing one of the things
+[a restore needs](runbook/restore-openbao-from-snapshot.md#what-a-restore-needs).
 
 **`deploy-apps.sh` says OpenBao has no hilt-to-ingot delegation.** Onboarding has not finished. Run
 `onboarding-request.sh` and install what central returns with `store-hilt-proof.sh`.
@@ -1686,8 +1701,8 @@ costs that day's proving period, and nothing more: once scheduling runs again, C
    its own; print its address on the host:
 
    ```sh
-   docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-     filone-openbao bao kv get -mount=filone -field=owner_wallet_address "piri-${n:?}"
+   BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
+     -e BAO_TOKEN filone-openbao bao kv get -mount=filone -field=owner_wallet_address "piri-${n:?}"
    ```
 
    Look the address up on a Calibration block explorer. If it holds little or no tFIL, fund it as
@@ -1755,6 +1770,25 @@ already happened, so there is nothing to race.
    before Curio gave up.
 2. Record the proof set's ID and the reason on the incident. What to do with the data set is
    decided outside this runbook.
+
+#### Piri has untracked add pieces
+
+**Act within a day.** A piece addition for the proof set succeeded on chain more than 10 minutes
+ago, and Curio has not recorded its pieces from the receipt. Curio retries on every chain head and
+reports no failure. A new proof set is not scheduled for proving until its first addition is
+recorded, and the added pieces are not proven. The contract records no faults while this holds.
+
+1. On the host, read the Piri's logs for the addition:
+
+   ```sh
+   docker logs "filone-piri-${n:?}" 2>&1 | grep -e 'pieces from receipt' -e 'No such container'
+   ```
+
+2. If the error names an event that wasn't found in the receipt, PDPVerifier now emits an event
+   Piri's Curio can't parse, usually after a contract upgrade. The node can't fix this. Post the
+   error, the proof set's ID and the transaction hash in `#filone-eng` on Slack, and record them on
+   the incident. A Piri release with a newer Curio records the additions once it is deployed.
+3. Otherwise, record the error on the incident and post it in `#filone-eng`.
 
 ### The node rebooted
 
