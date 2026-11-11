@@ -49,6 +49,9 @@ x-piri-base: &piri-base
     OPERATOR_EMAIL: ${OPERATOR_EMAIL}
     PIRI_DB_BACKEND: postgres
     PIRI_BLOB_BACKEND: filesystem
+    # Seconds a re-run of `piri init` may take before it is killed and the
+    # existing config served. Set PIRI_INIT_TIMEOUT in node.env to change it.
+    PIRI_INIT_TIMEOUT: ${PIRI_INIT_TIMEOUT:-300}
   healthcheck:
     test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/readyz | grep -qE '\"status\":[[:space:]]*\"ok\"'"]
     start_interval: 2s
@@ -83,8 +86,8 @@ services:
       # CPU core, minimum four. 16 per Piri keeps the three of them at 48 of
       # Postgres's default 100 connections, with the rest for Ingot and admin
       # sessions. The entrypoint passes the URL to `piri init`, which writes it
-      # into the generated config, so a change here only reaches a running node
-      # when init re-runs (see the base config template).
+      # into the generated config. The entrypoint counts init's arguments among
+      # its inputs, so a change here re-runs init on the next start.
       PIRI_DB_POSTGRES_URL: postgres://piri:${PIRI_POSTGRES_PASSWORD}@postgres:5432/piri_0?sslmode=disable&pool_max_conns=16
       # Names this Piri in its metrics and traces. Without it, instance is the
       # Piri's DID, and nothing says which DID is piri-0.
