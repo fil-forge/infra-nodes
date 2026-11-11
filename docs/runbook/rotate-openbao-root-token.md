@@ -129,12 +129,44 @@ expiry, the same as the token `bao operator init` printed.
 Make two changes in 1Password before anything is revoked:
 
 - **The node's existing root-token item**, the one the provisioning and restore scripts mean by
-  "the root token from 1Password": replace the token with the new one. Note the date, the display
-  name and the accessor.
+  "the root token from 1Password": replace the token with the new one, and replace its notes with
+  the first note below.
 - **A new item for the leaked token**, titled for example "OpenBao root token, staging
-  eu-central-3, snapshots before 2026-11-11 only". Note that it leaked and was revoked on the live
-  node, its accessor, that it is valid only in a store restored from a snapshot older than the key
-  step 6 prints, and that it is revoked again after any such restore.
+  eu-central-3, snapshots before 2026-11-11 only", with the second note below.
+
+Both notes name the key of the first snapshot after the rotation, which step 6 prints. Write
+`<timestamp>` for now and fill it in then. The delete date is 36 days after the rotation: the bucket
+locks a snapshot for 35 days and deletes it a day later.
+
+```text
+Root token of the local OpenBao on <stage>/<region>, minted <date> with
+`bao token create -policy=root -orphan` to replace a leaked root token.
+Display name: token-root-rotated-<date>
+Accessor: <new accessor>
+
+Valid in the live store and in every raft snapshot from
+s3://<bucket>/<region>/openbao/<timestamp>.snap on. A snapshot taken before
+that holds the previous root token instead; see the item "<old item's title>".
+```
+
+```text
+Previous root token of the local OpenBao on <stage>/<region>, printed by
+`bao operator init`. It leaked and was REVOKED on the live node on <date>.
+Do not use it on the live node.
+Accessor: <old accessor>
+
+Valid only in a store restored from a raft snapshot taken before the
+rotation: keys under s3://<bucket>/<region>/openbao/ earlier than
+<timestamp>.snap.
+- verify-openbao-snapshot.sh on such a snapshot takes this token. Its
+  container is thrown away, so nothing needs revoking afterwards.
+- A restore from such a snapshot brings this token back. Give it to
+  provision-platform.sh, then rotate again with
+  docs/runbook/rotate-openbao-root-token.md, which revokes it a second time.
+
+Delete this item once the oldest key under s3://<bucket>/<region>/openbao/
+is <timestamp>.snap or later, on or after <date + 36 days>.
+```
 
 Print the new token, copy it into the existing item, then clear the screen and the scrollback:
 
@@ -205,9 +237,9 @@ run. Take one now:
 scripts/host/snapshot-openbao.sh
 ```
 
-It prints `uploading <n> bytes to s3://<bucket>/<region>/openbao/<timestamp>.snap`. Write
-`<timestamp>` into both 1Password items: snapshots with an earlier key may hold the leaked token,
-and this one and every later one hold only the new one.
+It prints `uploading <n> bytes to s3://<bucket>/<region>/openbao/<timestamp>.snap`. Fill
+`<timestamp>` into both 1Password notes from step 4: snapshots with an earlier key may hold the
+leaked token, and this one and every later one hold only the new one.
 
 Restore drills and restores leave copies of earlier stores in the control directory, and the leaked
 token works in every one of them. A drill's `rollback.sh` would put one back as the live store.
