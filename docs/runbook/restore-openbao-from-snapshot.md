@@ -170,6 +170,11 @@ the raft directory once OpenBao has stopped:
 scripts/host/restore-openbao.sh --move-aside-damaged-store /run/fil-one/bao/restore.snap
 ```
 
+OpenBao 2.6.2 prints `Error properly closing policy file: … file already closed` during the
+restore. The line is harmless and mislabelled: the upload closes the snapshot file, and the restore
+command then closes it a second time. A failed restore prints `Error installing the snapshot`
+instead, and the script stops with `refused the snapshot`.
+
 The script disables the reconcile, snapshot and seal-token-renew timers and leaves them disabled. It
 stops the apps and OpenBao and claims the new seal token when none is on disk. Then it initialises a
 throwaway store, restores the snapshot over it and waits until the snapshot's store is unsealed.
@@ -264,7 +269,8 @@ scripts/host/verify-openbao-snapshot.sh /run/fil-one/bao/verify.snap
 rm /run/fil-one/bao/verify.snap
 ```
 
-It asks for the root token from 1Password, which the restored copy accepts.
+It asks for the root token from 1Password, which the restored copy accepts. It prints the same
+harmless `Error properly closing policy file` line as a restore.
 
 ## Rehearse the restore
 
