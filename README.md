@@ -189,10 +189,10 @@ What this repository should have before a node carries anything that matters. Ea
 Linear.
 
 **A backup strategy.** Dev runs with none. Staging uploads a daily OpenBao raft snapshot to
-central's backup bucket, and another after each write to OpenBao. [FIL-1166][] covers snapshots of
-the rest of the control volume and a restore that has actually been run, because the failure this
-protects against is the one where the node's identity is gone. Postgres replication and
-point-in-time recovery is [FIL-807][].
+central's backup bucket, and another after each write to OpenBao.
+[Restore the appliance's OpenBao from a snapshot](docs/runbook/restore-openbao-from-snapshot.md)
+brings a lost store back, and [FIL-1166][] tracks the first restore drill on staging. Postgres
+replication and point-in-time recovery is [FIL-807][].
 
 **Piri and Ingot reading their secrets from OpenBao.** Ingot already reads the region key from
 OpenBao's transit engine over a unix socket; everything else is still a file rendered into a tmpfs
@@ -239,7 +239,12 @@ after `tofu`, `shell` and `compose` have passed, and the nodes pull it on the ne
 any other merge.
 
 A major bump stays open for someone to read. So does a group whose highest change is a major, and so
-does any Dependabot branch that carries a commit Dependabot did not write.
+does any Dependabot branch whose first commit Dependabot did not write.
+
+The workflow runs on `pull_request`, so a Dependabot run reads its secrets from the Dependabot store.
+`FORGE_BOT_PRIVATE_KEY` is a fil-forge organization secret in both the Actions and the Dependabot
+store, and rotating the key means updating both. Dependabot waits a week before proposing a new
+action release, because the workflow runs the releases a bump proposes while holding that key.
 
 Dependabot rebases its pull requests in place, and the workflow runs again on each new head, so a
 branch that stops qualifying also loses the auto-merge it was given earlier. Each auto-merge is
