@@ -122,6 +122,29 @@ node_ships_telemetry() {
   return 0
 }
 
+# Whether this node pushes backups to central, from FILONE_TAKES_BACKUPS in its
+# node.env. Where the backups go is not in node.env: central wraps the bucket,
+# prefix and AWS region with the access key, and provision-backups.sh stores
+# all five at filone/backup-target, so the target and the key that writes there
+# cannot disagree.
+#
+# Every node.env must say true or false. With a default, a node.env that left
+# the line out would run as if it took no backups, and nothing would notice
+# until a backup was needed.
+node_takes_backups() {
+  case "${FILONE_TAKES_BACKUPS:-}" in
+    true) return 0 ;;
+    false) return 1 ;;
+    "")
+      die "FILONE_TAKES_BACKUPS is not set in $FILONE_NODE_DIR/node.env. Set it to
+       true on a node that pushes its backups to central, or false on one that
+       takes none." ;;
+    *)
+      die "FILONE_TAKES_BACKUPS is '$FILONE_TAKES_BACKUPS' in $FILONE_NODE_DIR/node.env;
+       it must be true or false." ;;
+  esac
+}
+
 # --- systemd ---------------------------------------------------------------
 
 # The service unit this process is running inside, or nothing when it was
@@ -213,272 +236,8 @@ take_deploy_lock() {
 
 # --- OpenBao ---------------------------------------------------------------
 
-# Run the bao CLI inside the OpenBao container. The container publishes no port
-# and its listener is on loopback, so `docker exec` is the only way in and the
-# API is unreachable from anywhere but this box.
-bao() {
-  local token
-  token="$(cat "$FILONE_BAO_TOKEN_FILE" 2>/dev/null || true)"
-  [ -n "${token:-${BAO_TOKEN:-}}" ] || die "no OpenBao token; run provision-platform.sh first"
-
-  docker exec -i \
-    -e "BAO_ADDR=http://127.0.0.1:8200" \
-    -e "BAO_TOKEN=${BAO_TOKEN:-$token}" \
-    "$FILONE_BAO_CONTAINER" bao "$@"
-}
-
-# Put the seal token where compose can interpolate it, and make sure the file
-# holding the rest exists. Compose refuses to start when a named --env-file is
-# missing, and on a first run the rest cannot exist yet: it is read out of the
-# OpenBao this token is about to unseal.
-write_openbao_env() {
-  [ -r "$FILONE_SEAL_TOKEN_FILE" ] ||
-    die "no seal token at $FILONE_SEAL_TOKEN_FILE; run provision-platform.sh"
-
-  # write_secret_file returns 1 for "unchanged", which is not a failure. It
-  # calls die on an actual write failure, so nothing here has to inspect the
-  # status: a `|| true` would also disable errexit inside the function and let
-  # a failed mv leave a stale openbao.env behind.
-  write_secret_file "$FILONE_SECRETS_DIR/openbao.env" \
-    "SEAL_TOKEN=$(cat "$FILONE_SEAL_TOKEN_FILE")
-" || [ "$?" -eq 1 ]
-
-  [ -f "$FILONE_SECRETS_DIR/platform.env" ] ||
-    install -m 0400 /dev/null "$FILONE_SECRETS_DIR/platform.env"
-}
-
-# Where the central OpenBao is, read from the seal stanza in the node's bao.hcl.
-# That stanza is the only statement of the address, so nothing here keeps a
-# second copy that can disagree with the one OpenBao actually seals against.
-#
-# Scoped to the stanza rather than to the whole file. `address` appears in the
-# listener block too, and that block comes first, so the first match in the file
-# is this node's own loopback.
-central_seal_addr() {
-  local config="$FILONE_NODE_DIR/platform/config/openbao/bao.hcl" value
-  value="$(awk '
-    /^seal[[:space:]]+"/ { inside = 1; next }
-    inside && /^}/       { inside = 0 }
-    inside && $1 == "address" && match($0, /"[^"]*"/) {
-      print substr($0, RSTART + 1, RLENGTH - 2)
-      exit
-    }
-  ' "$config")"
-  [ -n "$value" ] || die "no address in the seal stanza of $config"
-  printf '%s' "$value"
-}
-
-bao_is_unsealed() {
-  # `bao status` exits 0 unsealed, 2 sealed, 1 unreachable, and needs no token.
-  docker exec -i -e "BAO_ADDR=http://127.0.0.1:8200" "$FILONE_BAO_CONTAINER" \
-    bao status >/dev/null 2>&1
-}
-
-# Renew the node's local deploy token. It is periodic, which means it renews
-# forever but only for as long as something calls renew, and nothing on the node
-# holds it long enough to: every use is a one-shot `docker exec ... bao` that
-# exits when the command does, leaving no client behind to keep a lease alive.
-# The seal token works the other way, and the local OpenBao renews that one
-# itself through the lifetime watcher on its transit seal.
-#
-# So this runs on every reconcile pass, including a pass with nothing to deploy.
-# Let the period lapse and the next deploy stops at its first secret read.
-renew_bao_token() {
-  bao token renew >/dev/null ||
-    die "could not renew the local OpenBao deploy token"
-}
-
-# Renew the token Ingot holds for the region wrap key. Periodic like the deploy
-# token, and renewed on the same schedule and for the same reason: Ingot's own
-# lifetime watcher is not shipped yet, so nothing inside the running process
-# keeps its lease alive.
-#
-# The read and the renewal use different tokens on purpose. bao() prefers
-# BAO_TOKEN over the deploy token file, so the assignment below makes `bao token
-# renew` act on the region token, while bao_get above it still runs under the
-# deploy token that is allowed to read the secret. Written as two statements
-# rather than one prefixed command: a die inside the substitution of a
-# `BAO_TOKEN="$(bao_get ...)" bao ...` prefix is swallowed, BAO_TOKEN lands
-# empty, and the renewal silently extends the deploy token instead.
-renew_ingot_regionkey_token() {
-  local token
-  bao_has ingot regionkey_token ||
-    die "OpenBao has no token for the region wrap key. Run
-       scripts/host/provision-regionkey.sh; without it Ingot cannot encrypt or
-       decrypt any object."
-  token="$(bao_get ingot regionkey_token)"
-
-  BAO_TOKEN="$token" bao token renew >/dev/null ||
-    die "could not renew Ingot's region-key token. If it has already lapsed,
-       scripts/host/provision-regionkey.sh mints a replacement."
-}
-
-# Create the transit engine, the region key, the policy that reaches it and the
-# token Ingot holds. Called by provision-platform.sh on a new node and by
-# provision-regionkey.sh on one that predates the key; both run it under the
-# root token, which is what enabling an engine and writing a policy need.
-provision_regionkey() {
-  bao secrets enable -path=transit transit >/dev/null 2>&1 ||
-    echo "  transit engine already enabled"
-
-  # aes256-gcm96 with derived keys: Ingot passes each object's own context to
-  # encrypt and decrypt, so one region key produces a distinct key per object
-  # and the ciphertexts cannot be moved between them.
-  if bao read "transit/keys/$FILONE_REGIONKEY_NAME" >/dev/null 2>&1; then
-    echo "  transit key $FILONE_REGIONKEY_NAME already exists"
-  else
-    bao write "transit/keys/$FILONE_REGIONKEY_NAME" type=aes256-gcm96 derived=true >/dev/null ||
-      die "could not create transit/keys/$FILONE_REGIONKEY_NAME"
-    echo "  transit key $FILONE_REGIONKEY_NAME created"
-  fi
-
-  # Wrap and unwrap under this one key, and nothing else. Reading the key
-  # material is not on the list, so a copy of the token lifted out of Ingot's
-  # config wraps and unwraps against this node's OpenBao while it is running and
-  # is worth nothing once the node is out of service.
-  bao policy write ingot-regionkey - <<POLICY >/dev/null
-path "transit/encrypt/$FILONE_REGIONKEY_NAME" {
-  capabilities = ["update"]
-}
-path "transit/decrypt/$FILONE_REGIONKEY_NAME" {
-  capabilities = ["update"]
-}
-POLICY
-
-  # No -no-default-policy: renew-self and lookup-self come from `default`, which
-  # is how the deploy token renews as well.
-  #
-  # Orphan, so revoking the root token later does not take Ingot's writes with
-  # it. Periodic, so it renews forever; every reconcile pass renews it, which is
-  # every five minutes, because nothing inside the running Ingot keeps its lease
-  # alive yet.
-  #
-  # Minted on every run, unlike everything above it. This script is the path
-  # back from a revoked or lapsed token, and a re-run that kept the dead one
-  # would report success and leave Ingot unable to write an object.
-  local token
-  token="$(bao token create -policy=ingot-regionkey -orphan -period=72h -field=token)" ||
-    die "could not create the ingot-regionkey token"
-
-  # patch where the path exists, so Ingot's key, DID and hilt proof survive; put
-  # where it does not, because patch fails on a missing path and on a new node
-  # this runs before keygen creates it. Over stdin either way: on the command
-  # line the token would be in the container's argv.
-  if bao_path_exists ingot; then
-    bao kv patch -mount="$FILONE_BAO_MOUNT" ingot regionkey_token=- <<<"$token" >/dev/null ||
-      die "could not write $FILONE_BAO_MOUNT/ingot#regionkey_token"
-  else
-    bao kv put -mount="$FILONE_BAO_MOUNT" ingot regionkey_token=- <<<"$token" >/dev/null ||
-      die "could not create $FILONE_BAO_MOUNT/ingot"
-  fi
-  unset token
-  echo "  ingot#regionkey_token written"
-}
-
-# Read one field. Missing paths and missing fields both fail loudly rather than
-# rendering an empty string into a config file.
-bao_get() {
-  local path="$1" field="$2" value
-  value="$(bao kv get -mount="$FILONE_BAO_MOUNT" -field="$field" "$path" 2>/dev/null)" ||
-    die "OpenBao has no $FILONE_BAO_MOUNT/$path#$field"
-  [ -n "$value" ] || die "OpenBao returned an empty value for $FILONE_BAO_MOUNT/$path#$field"
-  printf '%s' "$value"
-}
-
-bao_has() {
-  bao kv get -mount="$FILONE_BAO_MOUNT" -field="$2" "$1" >/dev/null 2>&1
-}
-
-bao_path_exists() {
-  bao kv get -mount="$FILONE_BAO_MOUNT" "$1" >/dev/null 2>&1
-}
-
-# Write one or more field/value pairs, in a single OpenBao write, and only if
-# the first field is not already there. Key generation runs on every provision,
-# and a second run must not mint a new identity for a node that is already
-# registered with central.
-#
-# The whole group lands or none of it does, because a key and the metadata that
-# names it are useless apart. A Piri key written without its DID leaves a node
-# that cannot be provisioned and cannot be retried either: the next run finds
-# the key, refuses to mint a second identity, and has nothing to derive the DID
-# from. The first field is the one that is looked up, so pass the key itself
-# first and its metadata after it.
-bao_put_if_absent() {
-  local path="$1" field="$2"
-  shift
-  if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
-    die "bao_put_if_absent $path: expected field/value pairs, got $# arguments"
-  fi
-
-  if bao_has "$path" "$field"; then
-    echo "  $path#$field already set, keeping it"
-    return 0
-  fi
-
-  bao_write_fields "$path" "$@"
-}
-
-# Write one or more field/value pairs unconditionally, overwriting any that are
-# already there. For rotating a value bao_put_if_absent would otherwise leave
-# alone, such as a delegation whose audience has changed underneath it.
-bao_replace_fields() {
-  local path="$1"
-  shift
-  if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
-    die "bao_replace_fields $path: expected field/value pairs, got $# arguments"
-  fi
-
-  bao_write_fields "$path" "$@"
-}
-
-# The write both functions above share, in a single OpenBao write. The whole
-# group lands or none of it does, because a value and the metadata that names
-# it are useless apart.
-bao_write_fields() {
-  local path="$1" fields json
-  shift
-
-  json="$(bao_fields_json "$@")" || die "could not encode the fields for $FILONE_BAO_MOUNT/$path"
-
-  # patch adds fields, put replaces the whole data map. Which one is correct
-  # depends on whether the path is there at all, so this asks rather than trying
-  # patch and falling back: a patch that failed for any other reason would send
-  # a put at a populated path and delete every field already on it.
-  #
-  # The values go in over stdin as one JSON object. On the command line they
-  # would be in the container's argv, which every user on the box can read.
-  fields="$(bao_field_names "$@")"
-  if bao_path_exists "$path"; then
-    bao kv patch -mount="$FILONE_BAO_MOUNT" "$path" - <<<"$json" >/dev/null ||
-      die "could not add $fields to $FILONE_BAO_MOUNT/$path"
-  else
-    bao kv put -mount="$FILONE_BAO_MOUNT" "$path" - <<<"$json" >/dev/null ||
-      die "could not create $FILONE_BAO_MOUNT/$path"
-  fi
-  echo "  $path#$fields written"
-}
-
-# Encode field/value pairs as a JSON object. The pairs arrive over stdin, NUL
-# separated, so no secret is ever an argument to anything.
-bao_fields_json() {
-  printf '%s\0' "$@" | python3 -c '
-import json, sys
-
-parts = sys.stdin.buffer.read().split(b"\0")[:-1]
-names, values = parts[0::2], parts[1::2]
-json.dump(dict(zip((n.decode() for n in names), (v.decode() for v in values))), sys.stdout)
-'
-}
-
-bao_field_names() {
-  local names=""
-  while [ "$#" -gt 0 ]; do
-    names="${names:+$names,}$1"
-    shift 2
-  done
-  printf '%s' "$names"
-}
+# shellcheck source=lib/openbao.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/openbao.sh"
 
 # --- Rendering -------------------------------------------------------------
 
@@ -920,6 +679,102 @@ wait_healthy() {
     fi
     sleep 5
   done
+}
+
+# --- Backups ---------------------------------------------------------------
+
+FILONE_BACKUP_PATH=backup-target
+FILONE_SNAPSHOT_SERVICE=filone-openbao-snapshot.service
+FILONE_SNAPSHOT_TIMER=filone-openbao-snapshot.timer
+
+# Read the backup target and the key that writes to it from
+# filone/backup-target, where provision-backups.sh stored all five, into
+# backup_bucket, backup_key_prefix, backup_aws_region, backup_access_key_id and
+# backup_secret_access_key. Callers keep the secret in that variable and unset
+# it once the upload is done.
+load_backup_target() {
+  bao_has "$FILONE_BACKUP_PATH" access_key_id ||
+    die "OpenBao has no backup key at $FILONE_BAO_MOUNT/$FILONE_BACKUP_PATH; run
+       scripts/host/provision-backups.sh"
+  bao_has "$FILONE_BACKUP_PATH" bucket ||
+    die "$FILONE_BAO_MOUNT/$FILONE_BACKUP_PATH holds the key pair but not the target it
+       writes to, so it was stored before provision-backups.sh kept the target
+       with it. Ask central to re-mint with MINT_ARGS=--reissue-backup-key, then
+       run scripts/host/provision-backups.sh --replace."
+
+  backup_bucket="$(bao_get "$FILONE_BACKUP_PATH" bucket)"
+  backup_key_prefix="$(bao_get "$FILONE_BACKUP_PATH" key_prefix)"
+  backup_aws_region="$(bao_get "$FILONE_BACKUP_PATH" aws_region)"
+  backup_access_key_id="$(bao_get "$FILONE_BACKUP_PATH" access_key_id)"
+  backup_secret_access_key="$(bao_get "$FILONE_BACKUP_PATH" secret_access_key)"
+
+  [ "$backup_key_prefix" = "$REGION_LABEL/" ] ||
+    die "the stored backup key writes under $backup_key_prefix, but this node is $REGION_LABEL
+       and central's writer for it can write only under $REGION_LABEL/"
+  # The key pair goes into a curl config line between double quotes, where a
+  # quote or a backslash would change what curl reads. AWS keys contain neither.
+  [[ "$backup_access_key_id" =~ ^[A-Z0-9]+$ ]] ||
+    die "the stored access key ID is not in the form AWS issues"
+  [[ "$backup_secret_access_key" =~ ^[A-Za-z0-9/+=]+$ ]] ||
+    die "the stored secret access key is not in the form AWS issues"
+}
+
+# PUT one local file to s3://<backup_bucket>/<object_key> with the key
+# load_backup_target read. Returns 0 on a 200. On any other answer it returns 1
+# with the HTTP status in S3_PUT_STATUS and S3's error code and message in
+# S3_PUT_ERROR, so each caller can say what the failure means for it. A request
+# that never got an answer dies here: the backup jobs and the check share the
+# route, and the fix is the same for all of them.
+s3_put_file() {
+  local file="$1" object_key="$2" content_type="$3"
+  local url sha256 md5 curl_status=0 response
+  url="https://$backup_bucket.s3.$backup_aws_region.amazonaws.com/$object_key"
+
+  # S3 signs over the payload's SHA-256, and Object Lock refuses a put that
+  # carries no Content-MD5 or other checksum. Hashed from the path, so a large
+  # snapshot is read in chunks rather than held in memory.
+  {
+    read -r sha256
+    read -r md5
+  } < <(python3 - "$file" <<'PY'
+import base64, hashlib, sys
+
+sha, md = hashlib.sha256(), hashlib.md5()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        sha.update(chunk)
+        md.update(chunk)
+print(sha.hexdigest())
+print(base64.b64encode(md.digest()).decode())
+PY
+  )
+  [ -n "${sha256:-}" ] && [ -n "${md5:-}" ] || die "could not hash $file"
+
+  # The key pair goes in on stdin as a curl config line. As a --user argument it
+  # would sit in curl's argv, where anything on the host that can read /proc can
+  # take it. printf is a shell builtin and never gets an argv of its own.
+  response="$(printf 'user = "%s:%s"\n' "$backup_access_key_id" "$backup_secret_access_key" |
+    curl -sS --max-time 300 --config - \
+      --aws-sigv4 "aws:amz:$backup_aws_region:s3" \
+      --upload-file "$file" \
+      --header "Content-Type: $content_type" \
+      --header "Content-MD5: $md5" \
+      --header "x-amz-content-sha256: $sha256" \
+      --write-out '\n%{http_code}' \
+      "$url")" || curl_status=$?
+
+  [ "$curl_status" -eq 0 ] ||
+    die "could not reach $url (curl $curl_status). The backup jobs upload over the
+       same route, so fix this node's HTTPS egress to S3 in $backup_aws_region."
+
+  S3_PUT_STATUS="$(printf '%s' "$response" | tail -1)"
+  # SC2034: read by the callers in check-backup-target.sh and snapshot-openbao.sh.
+  # shellcheck disable=SC2034
+  # Joined onto one line first: S3 puts Code and Message on one line, but an
+  # S3-compatible target or a proxy may indent its XML across several.
+  S3_PUT_ERROR="$(printf '%s' "$response" | sed '$d' | tr -d '\n' |
+    sed -n 's|.*<Code>\(.*\)</Code>.*<Message>\(.*\)</Message>.*|\1: \2|p')"
+  [ "$S3_PUT_STATUS" = 200 ]
 }
 
 # --- Metrics ---------------------------------------------------------------

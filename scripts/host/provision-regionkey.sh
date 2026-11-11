@@ -8,7 +8,7 @@
 # key, by an operator in an SSM session.
 #
 # It needs the root token, because enabling a secrets engine and writing a
-# policy are both outside what the deploy token is granted.
+# policy are both outside what the host token is granted.
 #
 # Safe to re-run. The transit mount, the key and the policy are created only if
 # absent; the token is minted every time, because this is also the rotation
@@ -39,6 +39,11 @@ export BAO_TOKEN
 unset root_token
 
 provision_regionkey
+unset BAO_TOKEN
+
+# A new region key goes off the host straight away: Postgres backups hold CEKs
+# wrapped under it, and they cannot be read without it.
+request_openbao_snapshot
 
 echo
 echo "=== region key provisioned ==="

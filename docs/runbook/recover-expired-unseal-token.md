@@ -74,11 +74,11 @@ systemctl stop filone-reconcile.service
 Run this from the `infra-central` checkout using the staging AWS credentials:
 
 ```sh
-make mint-appliance-token \
+make mint-appliance-credentials \
   STAGE=staging \
   REGION=eu-central-3 \
   NODE_IP=23.83.66.244 \
-  TOKEN_ARGS=--reissue
+  MINT_ARGS=--reissue-unseal-token
 ```
 
 The command returns a one-time wrapping token. Pass it only to the
@@ -130,10 +130,10 @@ mv /etc/fil-one/seal-token /etc/fil-one/seal-token.expired-$ts
 mv /etc/fil-one/bao-token /etc/fil-one/bao-token.expired-$ts
 ```
 
-The deploy token goes with it because it is periodic on a 72-hour period and
+The host token goes with it because it is periodic on a 72-hour period and
 `deploy-platform.sh` renews it only once OpenBao is unsealed. Past three days
 of sealed OpenBao the token is dead while the file is still there, and
-`provision-platform.sh` would report `Deploy token already present` and then
+`provision-platform.sh` would report `Host token already present` and then
 fail with 403 at its first secret read. Moving it costs one root-token prompt
 on a shorter outage.
 
@@ -147,7 +147,7 @@ scripts/host/provision-platform.sh
 ```
 
 Enter the wrapping token when prompted. The script then asks for the root token
-twice, once for the deploy token and once for the region key; it is in the
+twice, once for the host token and once for the region key; it is in the
 operator password manager. Because the OpenBao store is already initialised,
 the run reports that the region key already exists, starts OpenBao, regenerates
 the volatile environment files, and finishes the platform health check.

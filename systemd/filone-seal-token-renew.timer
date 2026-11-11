@@ -5,6 +5,11 @@ Description=Renew the FilOne node OpenBao seal token daily
 # Daily, and on boot. The boot run is the one that matters: a box that has been
 # off is the case OpenBao's own renewal cannot cover.
 OnBootSec=2min
+# Also two minutes after the timer is enabled. OnUnitActiveSec counts from the
+# service's last run, which systemd does not know once the timer has been
+# disabled, so a timer enabled on a running box (after provisioning, a restore
+# or a drill's rollback) would otherwise wait for the next boot.
+OnActiveSec=2min
 OnUnitActiveSec=24h
 RandomizedDelaySec=30m
 Persistent=true
