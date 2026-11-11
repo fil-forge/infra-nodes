@@ -125,9 +125,12 @@ again later, under the token from 1Password:
 
 ```sh
 read -rsp "root token (1Password): " root_token; echo
-BAO_TOKEN="$root_token" bao_in filone-openbao token lookup -field=accessor; echo
+BAO_TOKEN="$root_token" bao_in filone-openbao token lookup -format=json |
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["data"]["accessor"])'
 unset root_token
 ```
+
+`bao token lookup` takes no `-field` flag, hence the JSON.
 
 `-orphan` is what keeps the new token alive in step 5. Without it, the new token is a child of the
 leaked one and the revoke takes both. OpenBao gives a root-policy token created without `-ttl` no
