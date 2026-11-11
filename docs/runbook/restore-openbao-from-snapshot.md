@@ -290,13 +290,24 @@ staging or dev, asks for the node's name, and moves everything it takes away int
    [What a restore needs](#what-a-restore-needs) describes.
 3. Record the newest snapshot's key, as in [Pick a snapshot](#pick-a-snapshot), and each Piri's DID,
    as in [Check the node](#check-the-node).
-4. Write a marker object through Ingot with an access key from the Fil One staging console. The
-   timestamp in its name keeps it apart from the markers of earlier drills. The key stays on the
-   laptop:
+4. In the Fil One staging console, create a bucket in the **Europe (Amsterdam)** region, which is
+   `eu-central-3`. A bucket in another region is served by another gateway and never touches this
+   node. One bucket serves every drill, so reuse it when it exists.
+5. Create an access key in the same region. A service key needs these permissions on that bucket
+   alone, with **Which buckets can this key access?** set to the bucket from step 4:
+
+   - **Write** uploads the marker.
+   - **Read** reads it back after each restore.
+   - **Delete** removes it at clean-up.
+
+   A personal key has no permissions of its own: it acts as you, and the bucket's policy decides what
+   it reaches. Set the key to expire the day after the drill.
+6. Write a marker object through Ingot with the key from step 5. The timestamp in its name keeps it
+   apart from the markers of earlier drills. The key stays on the laptop:
 
    ```sh
    marker=drill-marker-$(date -u +%Y%m%dT%H%M%SZ).bin
-   marker_bucket=<a bucket you own in the staging console>
+   marker_bucket=<the bucket from step 4>
    head -c 65536 /dev/urandom > "$marker"
    shasum -a 256 "$marker"
    ```
