@@ -335,8 +335,13 @@ staging or dev, asks for the node's name, and moves everything it takes away int
 
    ```sh
    AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
-     aws s3 cp --endpoint-url "$ingot_url" "$marker" "s3://$marker_bucket/$marker"
+     aws s3 cp --region "$region" --endpoint-url "$ingot_url" "$marker" "s3://$marker_bucket/$marker"
    ```
+
+   Each command to Ingot passes `--region "$region"`, because the AWS CLI otherwise signs for the
+   profile's region. Ingot refuses that with HTTP 400 and names the right region in the response
+   body. The CLI retries an upload in that region, but a download starts with a HeadObject, whose
+   response has no body, so it fails with a bare `Bad Request`.
 
    Keep the checksum and the name `shasum` prints. The read-backs below need `marker`,
    `marker_bucket`, `ingot_key_id` and `ingot_secret`, so set them again in a new shell.
@@ -374,7 +379,8 @@ Time this from the first command to a passing smoke test.
 
    ```sh
    AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
-     aws s3 cp --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker" - | shasum -a 256
+     aws s3 cp --region "$region" --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker" - |
+     shasum -a 256
    ```
 
 Leave the timers disabled and go straight on to the long outage, in the same window.
@@ -411,7 +417,7 @@ Then delete the marker object from the laptop:
 
 ```sh
 AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
-  aws s3 rm --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker"
+  aws s3 rm --region "$region" --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker"
 rm "$marker"
 unset ingot_key_id ingot_secret
 ```
