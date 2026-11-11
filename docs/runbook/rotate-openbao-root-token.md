@@ -1,9 +1,10 @@
 # Rotate the root token of an appliance's OpenBao
 
 Use this procedure when the root token of a node's own OpenBao has leaked: it was pasted into a
-chat, a log, a ticket or a shell history. The token is worth something only to someone with root on
-the node, because OpenBao listens on loopback inside its container, but it is a full administrator
-of every secret the node holds and it never expires.
+chat, a log, a ticket or a shell history. The token never expires and administers every secret the
+node holds, for whoever can reach OpenBao's API. That is root on the host, through `docker exec`,
+and code running in the Ingot container, which runs as root and mounts OpenBao's unix socket from
+`/run/fil-one/bao`.
 
 The rotation mints a replacement under the leaked token, stores it in 1Password, revokes the leaked
 one and takes a snapshot. The node keeps serving throughout. Nothing on the node uses the root
@@ -146,9 +147,15 @@ Make two changes in 1Password before anything is revoked:
 - **A new item for the leaked token**, titled for example "OpenBao root token, staging
   eu-central-3, snapshots before 2026-11-11 only", with the second note below.
 
-Both notes name the key of the first snapshot after the rotation, which step 6 prints. Write
-`<timestamp>` for now and fill it in then. The delete date is 36 days after the rotation: the bucket
-locks a snapshot for 35 days and deletes it a day later.
+Each root-token item opens a range of snapshot keys, and the notes say which. The placeholders:
+
+- `<timestamp>` is the key of the first snapshot after this rotation, which step 6 prints. Write it
+  in then.
+- `<start>` is where the leaked token's range begins. On the first rotation that is
+  `the first snapshot`. After an earlier rotation it is the key that rotation's step 6 printed,
+  which the existing item's note names.
+- The delete date is 36 days after the rotation: the bucket locks a snapshot for 35 days and
+  deletes it a day later.
 
 ```text
 Root token of the local OpenBao on <stage>/<region>, minted <date> with
@@ -157,18 +164,18 @@ Display name: token-root-rotated-<date>
 Accessor: <new accessor>
 
 Valid in the live store and in every raft snapshot from
-s3://<bucket>/<region>/openbao/<timestamp>.snap on. A snapshot taken before
-that holds the previous root token instead; see the item "<old item's title>".
+s3://<bucket>/<region>/openbao/<timestamp>.snap on. An older snapshot takes
+the root token of the item whose range holds its key, starting with
+"<old item's title>".
 ```
 
 ```text
-Previous root token of the local OpenBao on <stage>/<region>, printed by
-`bao operator init`. It leaked and was REVOKED on the live node on <date>.
-Do not use it on the live node.
+Previous root token of the local OpenBao on <stage>/<region>. It leaked and
+was REVOKED on the live node on <date>. Do not use it on the live node.
 Accessor: <old accessor>
 
-Valid only in a store restored from a raft snapshot taken before the
-rotation: keys under s3://<bucket>/<region>/openbao/ earlier than
+Valid only in a store restored from a raft snapshot with a key under
+s3://<bucket>/<region>/openbao/ from <start> up to, not including,
 <timestamp>.snap.
 - verify-openbao-snapshot.sh on such a snapshot takes this token. Its
   container is thrown away, so nothing needs revoking afterwards.
@@ -253,19 +260,17 @@ It prints `uploading <n> bytes to s3://<bucket>/<region>/openbao/<timestamp>.sna
 `<timestamp>` into both 1Password notes from step 4: snapshots with an earlier key may hold the
 leaked token, and this one and every later one hold only the new one.
 
-Restore drills and restores leave copies of earlier stores in the control directory, and the leaked
-token works in every one of them. A drill's `rollback.sh` would put one back as the live store.
-List them:
-
-```sh
-ls -d /mnt/fil-one/control/openbao-drill-* /mnt/fil-one/control/openbao.damaged-* 2>/dev/null
-```
-
-If any are listed and the node checks out, delete them:
+Restore drills and restores leave copies of earlier stores in the node's control directory, and the
+leaked token works in every one of them. A drill's `rollback.sh` would put one back as the live
+store. Run the cleanup script, which looks in the directory the node's `node.env` names
+(`/mnt/data/fil-one/control` on staging):
 
 ```sh
 scripts/host/openbao-restore-cleanup.sh
 ```
+
+It prints `No restore leftovers on <node>.` when there are none. Otherwise it lists them, together
+with any seal or host tokens a restore moved aside, and deletes them once you type the node's name.
 
 Then clear the tokens from the shell and leave:
 
@@ -281,6 +286,10 @@ each snapshot for 35 days and deletes it a day later, so the last of them is gon
 after the rotation. A snapshot unseals only through central's `appliance-unseal-<region>` transit
 key, so the leaked token in it is worth nothing to someone who cannot reach central.
 
+A rotation inside those 36 days of an earlier one leaves three ranges of keys, each opened by a
+different root token, and a third rotation leaves four. The 1Password notes from step 4 name each
+item's range. To find the token a snapshot takes, pick the item whose range holds its key.
+
 **Deleting the leaked token's item.** Delete it once the oldest key in the bucket is `<timestamp>`
 or later. From a laptop signed in to the stage's central account, on staging:
 
@@ -294,12 +303,12 @@ It prints one key, such as `eu-central-3/openbao/20261109T162837Z.snap`. `--no-c
 AWS CLI v2 from handing that line to `less`, which can clear it off the screen on exit.
 
 **Checking a snapshot.** `verify-openbao-snapshot.sh` asks for the root token the snapshot's store
-accepts: the leaked token for a snapshot before `<timestamp>`, the new one for any later snapshot.
-Its container is thrown away on exit, so nothing needs revoking afterwards.
+accepts: the token of the item whose range holds the snapshot's key. Its container is thrown away on
+exit, so nothing needs revoking afterwards.
 
-**Restoring from a snapshot before the rotation.** The restored store accepts the leaked token and
-has no record of the new one. `provision-platform.sh` asks for the root token once or twice; give it
-the leaked one. Once the node checks out, rotate again with this procedure: it mints a third token,
-revokes the leaked one a second time and takes a snapshot. Keep the token from the first rotation in
-an item of its own, valid for snapshots from its `<timestamp>` up to the restore, until those expire
-as well.
+**Restoring from a snapshot before the rotation.** The restored store accepts the token of the item
+whose range holds the snapshot's key, and has no record of any later one. `provision-platform.sh`
+asks for the root token once or twice; give it that token. Once the node checks out, rotate again
+with this procedure: it mints a new token, revokes the restored one a second time and takes a
+snapshot. Keep the item of the token that was current before the restore, with its range ending at
+the restore, until those snapshots expire as well.
