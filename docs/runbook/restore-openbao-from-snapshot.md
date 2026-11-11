@@ -37,6 +37,21 @@ central_region=us-east-2
 backup_bucket=forge-nodes-backups-staging-654654381893
 ```
 
+The AWS commands below, `make mint-appliance-credentials` among them, run as the
+`AdministratorAccess` role in the stage's central account. Export the AWS CLI profile you use for
+that role in the same shell, then check that it reaches the account in `backup_bucket`'s name:
+
+```sh
+export AWS_PROFILE=<your profile for that role>
+export AWS_PAGER=""
+aws sts get-caller-identity --query Account --output text
+```
+
+An empty `AWS_PAGER` stops the AWS CLI from opening each result in `less`, which would hold up the
+piped commands below.
+
+Without a profile, the mint stops at its first Lambda call with `Unable to locate credentials`.
+
 Signed in to the stage's central account, this lists the backup bucket:
 
 ```sh
@@ -67,7 +82,12 @@ Reach the host over SSH as root. Staging's root shell is Fish, so run remote com
 ssh -tt "root@$node_ip" 'bash -lc '\''<commands>'\'''
 ```
 
-Commands on the node run from its infra-nodes checkout, `/root/fil-one/infra-nodes` on staging.
+Commands on the node run from its infra-nodes checkout, `/root/fil-one/infra-nodes` on staging. This
+opens Bash there in one step; the `-t` gives Bash the terminal it needs to stay interactive:
+
+```sh
+ssh -t "root@$node_ip" 'cd /root/fil-one/infra-nodes && exec bash'
+```
 
 ## Pick a snapshot
 
@@ -155,6 +175,11 @@ the raft directory once OpenBao has stopped:
 scripts/host/restore-openbao.sh --move-aside-damaged-store /run/fil-one/bao/restore.snap
 ```
 
+OpenBao 2.6.2 prints `Error properly closing policy file: … file already closed` during the
+restore. The line is harmless and mislabelled: the upload closes the snapshot file, and the restore
+command then closes it a second time. A failed restore prints `Error installing the snapshot`
+instead, and the script stops with `refused the snapshot`.
+
 The script disables the reconcile, snapshot and seal-token-renew timers and leaves them disabled. It
 stops the apps and OpenBao and claims the new seal token when none is on disk. Then it initialises a
 throwaway store, restores the snapshot over it and waits until the snapshot's store is unsealed.
@@ -221,10 +246,13 @@ with its new token.
 `provision-platform.sh` has already enabled the snapshot timer. Enable the other two:
 
 ```sh
-systemctl reset-failed filone-reconcile.service
 systemctl enable --now filone-reconcile.timer filone-seal-token-renew.timer
 systemctl start filone-reconcile.service
+systemctl list-timers 'filone-*'
 ```
+
+The last command lists the three timers. Each must show a time under `NEXT`; a `-` there means the
+timer will not run until the node reboots.
 
 `openbao_snapshot_last_success_timestamp` advances with the snapshot `provision-platform.sh`
 uploaded, so the stale-snapshot alert stays quiet. Once the node checks out, delete the damaged
@@ -249,19 +277,22 @@ scripts/host/verify-openbao-snapshot.sh /run/fil-one/bao/verify.snap
 rm /run/fil-one/bao/verify.snap
 ```
 
-It asks for the root token from 1Password, which the restored copy accepts.
+It asks for the root token from 1Password, which the restored copy accepts. It prints the same
+harmless `Error properly closing policy file` line as a restore.
 
 ## Rehearse the restore
 
 Run a drill on staging every quarter, with the variables from
-[This node's values](#this-nodes-values) set to staging's. It takes staging out of service for an
-hour or two and covers both disasters:
+[This node's values](#this-nodes-values) set to staging's. The drill lasts about an hour, and
+staging is out of service twice, for under 10 minutes each time. It covers both disasters:
 
 - **Fast restore.** The control storage fails and the node is back within hours, with its seal
   token and host token still live on the root disk. Central mints nothing. This one sets the
   recovery-time budget, since every day without proofs is a proving period that pays nothing.
+  The restore takes under 10 minutes from the first command to a passing smoke test.
 - **Long outage.** The node is down for 72 hours or more, or its host is rebuilt. Every token has
-  lapsed, central reissues the seal token, and the node mints the rest.
+  lapsed, central reissues the seal token, and the node mints the rest. The restore takes as long
+  as a fast restore, because the reissue takes under a minute.
 
 `simulate-openbao-loss.sh` puts the node into either state. It refuses to run on a stage other than
 staging or dev, asks for the node's name, and moves everything it takes away into
@@ -275,21 +306,50 @@ staging or dev, asks for the node's name, and moves everything it takes away int
    [What a restore needs](#what-a-restore-needs) describes.
 3. Record the newest snapshot's key, as in [Pick a snapshot](#pick-a-snapshot), and each Piri's DID,
    as in [Check the node](#check-the-node).
-4. Write a marker object through Ingot with an access key from the Fil One staging console. The
-   timestamp in its name keeps it apart from the markers of earlier drills. The key stays on the
-   laptop:
+4. In the Fil One staging console, create a bucket in the **Europe (Amsterdam)** region, which is
+   `eu-central-3`. A bucket in another region is served by another gateway and never touches this
+   node. One bucket serves every drill, so reuse it when it exists.
+5. Create an access key in the same region. A service key needs these permissions on that bucket
+   alone, with **Which buckets can this key access?** set to the bucket from step 4:
+
+   - **Write** uploads the marker.
+   - **Read** reads it back after each restore.
+   - **Delete** removes it at clean-up.
+
+   A personal key has no permissions of its own: it acts as you, and the bucket's policy decides what
+   it reaches. Set the key to expire the day after the drill.
+6. Write a marker object through Ingot with the key from step 5. The timestamp in its name keeps it
+   apart from the markers of earlier drills. The key stays on the laptop:
 
    ```sh
    marker=drill-marker-$(date -u +%Y%m%dT%H%M%SZ).bin
+   marker_bucket=<the bucket from step 4>
    head -c 65536 /dev/urandom > "$marker"
    shasum -a 256 "$marker"
-   AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-     aws s3 cp --endpoint-url "$ingot_url" \
-     "$marker" "s3://<your staging bucket>/$marker"
    ```
 
-   Keep the checksum and the name `shasum` prints. The read-backs below need `marker` set to that
-   name, so set it again in a new shell.
+   Enter the key at a prompt, so the secret stays out of the shell history:
+
+   ```sh
+   printf 'Access key ID: '; read -r ingot_key_id
+   printf 'Secret access key: '; read -rs ingot_secret; echo
+   ```
+
+   Then upload the marker. The two key variables replace `AWS_PROFILE` for this one command only, so
+   the central commands in the same shell keep working:
+
+   ```sh
+   AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
+     aws s3 cp --region "$region" --endpoint-url "$ingot_url" "$marker" "s3://$marker_bucket/$marker"
+   ```
+
+   Each command to Ingot passes `--region "$region"`, because the AWS CLI otherwise signs for the
+   profile's region. Ingot refuses that with HTTP 400 and names the right region in the response
+   body. The CLI retries an upload in that region, but a download starts with a HeadObject, whose
+   response has no body, so it fails with a bare `Bad Request`.
+
+   Keep the checksum and the name `shasum` prints. The read-backs below need `marker`,
+   `marker_bucket`, `ingot_key_id` and `ingot_secret`, so set them again in a new shell.
 
 ### Check the oldest and the newest snapshot
 
@@ -298,6 +358,18 @@ newest snapshot and on the oldest one the bucket still holds. The oldest shows t
 in the retention window unseals. It reports as missing any Piri added after it was taken, and then
 fails; the unseal it printed before that is what this check is for. The newest exercises the init,
 restore and unseal steps of the restore script before the node depends on them, and must pass.
+
+This prints the oldest snapshot's key, then the newest's:
+
+```sh
+aws s3api list-objects-v2 --region "$central_region" \
+  --bucket "$backup_bucket" \
+  --prefix "$region/openbao/" \
+  --query '[sort_by(Contents, &Key)[0].Key, sort_by(Contents, &Key)[-1].Key]' --output json
+```
+
+JSON output keeps the sort over every page of the listing. With `--output text`, the AWS CLI applies
+`--query` to each page of 1,000 keys on its own.
 
 ### Fast restore
 
@@ -311,9 +383,9 @@ Time this from the first command to a passing smoke test.
 4. [Check the node](#check-the-node), and read back the marker object byte for byte:
 
    ```sh
-   AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-     aws s3 cp --endpoint-url "$ingot_url" \
-     "s3://<your staging bucket>/$marker" - | shasum -a 256
+   AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
+     aws s3 cp --region "$region" --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker" - |
+     shasum -a 256
    ```
 
 Leave the timers disabled and go straight on to the long outage, in the same window.
@@ -349,8 +421,8 @@ scripts/host/openbao-restore-cleanup.sh
 Then delete the marker object from the laptop:
 
 ```sh
-AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-  aws s3 rm --endpoint-url "$ingot_url" \
-  "s3://<your staging bucket>/$marker"
+AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
+  aws s3 rm --region "$region" --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker"
 rm "$marker"
+unset ingot_key_id ingot_secret
 ```
