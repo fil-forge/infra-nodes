@@ -1238,6 +1238,10 @@ scripts/host/snapshot-openbao.sh
 Each run stamps `openbao_snapshot_last_success_timestamp`, described in
 [observability.md](observability.md#the-openbao-snapshot-stamp).
 
+[Restore the appliance's OpenBao from a snapshot](runbook/restore-openbao-from-snapshot.md) brings a
+lost store back from one of these snapshots, checks a snapshot without downtime, and describes the
+quarterly restore drill.
+
 **Give a node a new host token.** The host token is the OpenBao token every deploy, reconcile pass
 and snapshot runs as, under the `filone-host` policy. A node provisioned before snapshots existed
 holds one under the older `filone-deploy` policy, which cannot take a snapshot, and its snapshot job
@@ -1340,6 +1344,10 @@ copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
 ## Re-onboarding after identity loss
 
+On a node that takes backups, first
+[restore its OpenBao from a snapshot](runbook/restore-openbao-from-snapshot.md), which keeps every
+identity and needs no re-onboarding. This section is for a node with no snapshot that restores.
+
 Losing the control volume loses the node's keys, so the rebuilt node comes back with new Piri
 DIDs and central still carries the old ones. Ingot is unaffected as long as its hostname holds: the
 `did:web` is derived from the region label and the content domain, both of which central also holds,
@@ -1417,7 +1425,9 @@ firing shows in `systemctl list-timers filone-openbao-snapshot.timer`.
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key
 does not exist. A node whose Elastic IP changed has a token bound to the old one and needs a new
-token.
+token. [Recover from an expired appliance unseal token](runbook/recover-expired-unseal-token.md)
+replaces it. A store restored from a snapshot that stays sealed is missing one of the things
+[a restore needs](runbook/restore-openbao-from-snapshot.md#what-a-restore-needs).
 
 **`deploy-apps.sh` says OpenBao has no hilt-to-ingot delegation.** Onboarding has not finished. Run
 `onboarding-request.sh` and install what central returns with `store-hilt-proof.sh`.
