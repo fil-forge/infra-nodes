@@ -17,15 +17,16 @@
 # Run the bao CLI inside the OpenBao container. The container publishes no port
 # and its listener is on loopback, so `docker exec` is the only way in and the
 # API is unreachable from anywhere but this box.
+#
+# Runs under BAO_TOKEN when the caller sets it, and under the host token
+# otherwise. bao_in hands the token to docker by name, so its value never
+# appears in docker's argv.
 bao() {
-  local token
-  token="$(cat "$FILONE_BAO_TOKEN_FILE" 2>/dev/null || true)"
-  [ -n "${token:-${BAO_TOKEN:-}}" ] || die "no OpenBao token; run provision-platform.sh first"
+  local token="${BAO_TOKEN:-}"
+  [ -n "$token" ] || token="$(cat "$FILONE_BAO_TOKEN_FILE" 2>/dev/null || true)"
+  [ -n "$token" ] || die "no OpenBao token; run provision-platform.sh first"
 
-  docker exec -i \
-    -e "BAO_ADDR=http://127.0.0.1:8200" \
-    -e "BAO_TOKEN=${BAO_TOKEN:-$token}" \
-    "$FILONE_BAO_CONTAINER" bao "$@"
+  BAO_TOKEN="$token" bao_in "$FILONE_BAO_CONTAINER" "$@"
 }
 
 # Put the seal token where compose can interpolate it, and make sure the file
@@ -595,8 +596,8 @@ move_bao_store_aside() {
 # OpenBao restores only into an initialised, unsealed server and only under a
 # root token, so this initialises one that exists for the restore alone. Its
 # recovery key and root token are never printed or stored: the restore replaces
-# the store they belong to, and from then on the root token in 1Password is the
-# valid one.
+# the store they belong to, and from then on the valid root token is the one in
+# 1Password that was valid when the snapshot was taken.
 #
 # Usage: restore_bao_snapshot <container> <snapshot file name>
 restore_bao_snapshot() {

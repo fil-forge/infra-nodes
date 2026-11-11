@@ -240,12 +240,13 @@ FilOne rules tied to `docker0` or another Docker bridge after confirming these s
 Piri dials Chain.Love for chain RPC. Staging has its own chain.love token,
 separate from dev's, in OpenBao at `external#chain_rpc_token`. The token is the bare API key, not
 the endpoint URL the Chain.Love dashboard shows with it. The key accepts WebSocket connections only,
-so check it with a WebSocket upgrade request; the token goes in through a file descriptor, so it
-never appears in a command line:
+so check it with a WebSocket upgrade request. The host token goes to `docker exec` through its
+environment and the chain.love token through a file descriptor, so neither appears in a command
+line:
 
 ```sh
-token="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-  filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
+token="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
+  -e BAO_TOKEN filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
 curl --http1.1 -sS -i --max-time 5 \
   -H @<(printf 'Authorization: Bearer %s\n' "$token") \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
@@ -278,8 +279,8 @@ missing:
 
    ```sh
    bao_exec() {
-     docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-       filone-openbao bao "$@"
+     BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 \
+       -e BAO_TOKEN filone-openbao bao "$@"
    }
    bao_exec kv get -mount=filone external   # expect "No value found"
    read -rsp 'chain.love token: ' token; echo
@@ -948,8 +949,8 @@ directly:
 
 ```sh
 for piri in piri-0 piri-1 piri-2; do
-  address="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
-    -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" filone-openbao \
+  address="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec \
+    -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN filone-openbao \
     bao kv get -mount=filone -field=owner_wallet_address "$piri")"
   echo "$piri $address"
 done
@@ -1259,6 +1260,10 @@ On a node that already holds its backup key and predates snapshots, run the two 
 `provision-host-token.sh`, then `provision-backups.sh`. The second checks the key, uploads the
 first snapshot and enables the timer; run first, it stops at the snapshot that the old token
 cannot take.
+
+**Rotate the root token after a leak.**
+[Rotate the root token of an appliance's OpenBao](runbook/rotate-openbao-root-token.md) mints a
+replacement, revokes the leaked token and covers the snapshots that still hold it.
 
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
@@ -1696,8 +1701,8 @@ costs that day's proving period, and nothing more: once scheduling runs again, C
    its own; print its address on the host:
 
    ```sh
-   docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-     filone-openbao bao kv get -mount=filone -field=owner_wallet_address "piri-${n:?}"
+   BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
+     -e BAO_TOKEN filone-openbao bao kv get -mount=filone -field=owner_wallet_address "piri-${n:?}"
    ```
 
    Look the address up on a Calibration block explorer. If it holds little or no tFIL, fund it as
