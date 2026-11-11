@@ -37,6 +37,21 @@ central_region=us-east-2
 backup_bucket=forge-nodes-backups-staging-654654381893
 ```
 
+The AWS commands below, `make mint-appliance-credentials` among them, run as the
+`AdministratorAccess` role in the stage's central account. Export the AWS CLI profile you use for
+that role in the same shell, then check that it reaches the account in `backup_bucket`'s name:
+
+```sh
+export AWS_PROFILE=<your profile for that role>
+export AWS_PAGER=""
+aws sts get-caller-identity --query Account --output text
+```
+
+An empty `AWS_PAGER` stops the AWS CLI from opening each result in `less`, which would hold up the
+piped commands below.
+
+Without a profile, the mint stops at its first Lambda call with `Unable to locate credentials`.
+
 Signed in to the stage's central account, this lists the backup bucket:
 
 ```sh
@@ -281,15 +296,28 @@ staging or dev, asks for the node's name, and moves everything it takes away int
 
    ```sh
    marker=drill-marker-$(date -u +%Y%m%dT%H%M%SZ).bin
+   marker_bucket=<a bucket you own in the staging console>
    head -c 65536 /dev/urandom > "$marker"
    shasum -a 256 "$marker"
-   AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-     aws s3 cp --endpoint-url "$ingot_url" \
-     "$marker" "s3://<your staging bucket>/$marker"
    ```
 
-   Keep the checksum and the name `shasum` prints. The read-backs below need `marker` set to that
-   name, so set it again in a new shell.
+   Enter the key at a prompt, so the secret stays out of the shell history:
+
+   ```sh
+   printf 'Access key ID: '; read -r ingot_key_id
+   printf 'Secret access key: '; read -rs ingot_secret; echo
+   ```
+
+   Then upload the marker. The two key variables replace `AWS_PROFILE` for this one command only, so
+   the central commands in the same shell keep working:
+
+   ```sh
+   AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
+     aws s3 cp --endpoint-url "$ingot_url" "$marker" "s3://$marker_bucket/$marker"
+   ```
+
+   Keep the checksum and the name `shasum` prints. The read-backs below need `marker`,
+   `marker_bucket`, `ingot_key_id` and `ingot_secret`, so set them again in a new shell.
 
 ### Check the oldest and the newest snapshot
 
@@ -298,6 +326,18 @@ newest snapshot and on the oldest one the bucket still holds. The oldest shows t
 in the retention window unseals. It reports as missing any Piri added after it was taken, and then
 fails; the unseal it printed before that is what this check is for. The newest exercises the init,
 restore and unseal steps of the restore script before the node depends on them, and must pass.
+
+This prints the oldest snapshot's key, then the newest's:
+
+```sh
+aws s3api list-objects-v2 --region "$central_region" \
+  --bucket "$backup_bucket" \
+  --prefix "$region/openbao/" \
+  --query '[sort_by(Contents, &Key)[0].Key, sort_by(Contents, &Key)[-1].Key]' --output json
+```
+
+JSON output keeps the sort over every page of the listing. With `--output text`, the AWS CLI applies
+`--query` to each page of 1,000 keys on its own.
 
 ### Fast restore
 
@@ -311,9 +351,8 @@ Time this from the first command to a passing smoke test.
 4. [Check the node](#check-the-node), and read back the marker object byte for byte:
 
    ```sh
-   AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-     aws s3 cp --endpoint-url "$ingot_url" \
-     "s3://<your staging bucket>/$marker" - | shasum -a 256
+   AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
+     aws s3 cp --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker" - | shasum -a 256
    ```
 
 Leave the timers disabled and go straight on to the long outage, in the same window.
@@ -349,8 +388,8 @@ scripts/host/openbao-restore-cleanup.sh
 Then delete the marker object from the laptop:
 
 ```sh
-AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE \
-  aws s3 rm --endpoint-url "$ingot_url" \
-  "s3://<your staging bucket>/$marker"
+AWS_ACCESS_KEY_ID="$ingot_key_id" AWS_SECRET_ACCESS_KEY="$ingot_secret" \
+  aws s3 rm --endpoint-url "$ingot_url" "s3://$marker_bucket/$marker"
 rm "$marker"
+unset ingot_key_id ingot_secret
 ```
