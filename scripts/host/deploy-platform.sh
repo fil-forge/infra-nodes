@@ -160,7 +160,6 @@ compose_platform up -d --no-recreate --remove-orphans
 
 echo "[6/7] Health"
 wait_healthy compose_platform 300
-forget_reverted_postgres_migration
 
 echo "[7/7] Piri and Ingot"
 if [ "$apps_stopped" -eq 1 ]; then

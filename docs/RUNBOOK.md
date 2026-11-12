@@ -1377,7 +1377,9 @@ place. What it does goes to `state/migrate-postgres.log` in the control director
 Ctrl-C or a closed window does not cut it short. A `kill` sent to the script's own process takes
 effect when the step it is in finishes, which during the proving gate can take most of an hour.
 Fix the cause and run it again; it moves the half-built `postgres-glibc` aside to
-`postgres-glibc.failed-<time>`, which you remove once you no longer need it.
+`postgres-glibc.failed-<time>`, which you remove once you no longer need it. A failure after the
+restore, in the platform deploy or the apps' start, leaves the data migrated: the apps start on the
+new cluster, and the next reconcile pass, or `deploy-platform.sh` by hand, finishes the deploy.
 
 A run killed outright, by `kill -9` or a reboot, cannot put anything back. Killed before step 3 it
 leaves the apps stopped; from step 3 on it also leaves the old cluster stopped and the half-built
@@ -1390,13 +1392,14 @@ sudo scripts/host/migrate-postgres-to-debian.sh --rollback
 
 Afterwards `docker inspect -f '{{.Config.Image}}' filone-platform-postgres-1` shows
 `postgres:16-bookworm`, and the smoke test passes. The old `postgres` directory is the way back
-until you remove it: reverting the change starts the old image on it, with the data as it was when
-the move began, so everything written since is lost. Once that deploy has the old cluster running,
-it forgets the migration, so merging the change again later waits for a fresh move rather than
-starting the stale copy. Once the node has run normally for a few days, remove the old directory
-(`sudo rm -rf /mnt/fil-one/control/postgres` on dev, `sudo rm -rf /mnt/data/fil-one/control/postgres`
-on staging). After that there is no way back but a restore, and a revert is refused rather than
-starting an empty cluster.
+until you remove it. Revert the node's `platform/versions.env` and `platform/compose.yml` only, not
+the change as a whole, which would take the guards with it: the next deploy starts the old image on
+the old directory, with the data as it was when the move began, so everything written since is
+lost. Once the old cluster has run, the migration no longer counts, so merging the move again later
+waits for a fresh one rather than starting the stale copy. Once the node has run normally for a few
+days, remove the old directory (`sudo rm -rf /mnt/fil-one/control/postgres` on dev,
+`sudo rm -rf /mnt/data/fil-one/control/postgres` on staging). After that there is no way back but a
+restore, and the guard refuses a revert of those two files rather than starting an empty cluster.
 
 ## Re-onboarding after identity loss
 
