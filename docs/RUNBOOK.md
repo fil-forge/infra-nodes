@@ -1799,31 +1799,34 @@ Piri's oldest waiting blob is under 5 minutes old. After about 3.5 hours of fail
 gives up on a batch, and its blobs wait until it is freed.
 
 1. If "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also firing for
-   this Piri, follow that entry first: AddRoots needs the chain endpoint. Come back to step 5 once
+   this Piri, follow that entry first: AddRoots needs the chain endpoint. Come back to step 2 once
    it clears.
-2. On the host, read the AddRoots logs:
+2. On the host, read the AddRoots logs. Read all of them: a batch Piri gave up on hours ago leaves
+   nothing in the recent ones.
 
    ```sh
-   docker logs --since 1h "filone-piri-${n:?}" 2>&1 | grep -e PDPAddRoots -e 'AddRoots transaction' -e 'No such container'
+   docker logs "filone-piri-${n:?}" 2>&1 | grep -e PDPAddRoots -e 'AddRoots transaction' -e 'No such container'
    ```
 
-   - **Errors, and no `AddRoots transaction confirmed successfully`:** AddRoots is failing. Go to
-     step 3.
-   - **`AddRoots transaction confirmed successfully` lines keep appearing:** batches are landing,
-     but aggregates are folded faster than AddRoots sends them. Go to step 4.
-   - **Nothing:** run `piri status` in the Piri's shell. If it fails, read the error as in [Before
-     you start](#before-you-start), step 4. If it answers, record that on the incident and go to
-     step 5.
+   - **`AddRoots transaction confirmed successfully` lines keep appearing up to now:** batches are
+     landing, but aggregates are folded faster than AddRoots sends them. Go to step 4.
+   - **Anything else** (errors, or no AddRoots lines at all): go to step 3. If there are no lines at
+     all, run `piri status` in the Piri's shell first; if it fails, read the error as in [Before you
+     start](#before-you-start), step 4.
 3. Check the owner wallet as in step 3 of [Piri's proving period has not
    advanced](#piris-proving-period-has-not-advanced): an empty one fails every AddRoots
-   transaction. If it has tFIL, record the error the logs show on the incident and post it in
-   `#filone-eng` on Slack. Then go to step 5.
+   transaction.
+   - **It holds little or no FIL:** fund it as that step describes, then go to step 5.
+   - **It holds FIL:** record the last AddRoots error from step 2 on the incident and post it in
+     `#filone-eng` on Slack. Go to step 5 once the error is understood and fixed, or straight away
+     if the logs showed no error, since the batch may have failed on something that has passed.
 4. AddRoots sends at most 10 aggregates per transaction, three transactions at a time, so a Piri
    folding more than about 30 aggregates every 5 minutes falls behind. The node can't change this.
    Post the alert and the logs' rate of confirmed transactions in `#filone-eng`; the fix is a larger
    `pdp.aggregation.manager.batch_size` in Piri's base config, or larger aggregates.
-5. Once the cause is fixed, [free stranded batches](#free-stranded-batches). The alert clears when
-   the oldest waiting blob is under 10 minutes old again.
+5. [Free stranded batches](#free-stranded-batches). Then, after 5 minutes, read the logs as in step
+   2 again: `AddRoots transaction confirmed successfully` should appear. If AddRoots fails again,
+   go back to step 3. The alert clears when the oldest waiting blob is under 10 minutes old again.
 
 ### The node rebooted
 
