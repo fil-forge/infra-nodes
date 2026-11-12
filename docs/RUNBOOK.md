@@ -1352,34 +1352,48 @@ copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 ([the decision record](decisions/2026-11-postgres-on-debian.md) says why), so the cluster moves by a
 dump and restore into `postgres-glibc`, beside `postgres` in the control directory. Once the change
 reaches a node, `deploy-platform.sh` refuses to run there until the move is done. Each reconcile
-pass then stops at that point without changing anything: the apps deploy, image bumps included,
-waits behind it, and the stale-deploy warning fires after 15 minutes. So run the move as soon as the
-merge has reached the checkout:
+pass then stops at that point without changing anything, and the apps deploy, image bumps
+included, waits behind it. On staging, "Appliance has stopped reconciling" fires about 25 minutes
+later (15 minutes stale, then 10 pending); dev has no such alert. So run the move as soon as the
+merge has reached the checkout, inside `tmux` or `screen` so a dropped session does not cut it
+short:
 
 ```sh
 sudo scripts/host/migrate-postgres-to-debian.sh
 ```
 
 It prints each database's size and asks you to type `migrate-<stage>`; `--yes` skips the question.
-It waits for the proving gate and stops Piri and Ingot. Then it dumps every database into
-`postgres-migration` on the control volume, starts the new cluster with locale `C.UTF-8`, runs
-`postgres-init`, restores each dump in one transaction, and compares every table's exact row count.
-Last it runs `deploy-platform.sh` and starts the apps. They are down from the gate to the end, which
-takes as long as reading every database twice and writing it once; a Piri whose challenge window
-opens meanwhile misses that proof.
+It pulls the new image, waits for the proving gate and stops Piri and Ingot. Then it dumps every
+database into `postgres-migration` on the control volume, starts the new cluster with locale
+`C.UTF-8`, runs `postgres-init`, restores each dump in one transaction, and compares every table's
+exact row count. Last it runs `deploy-platform.sh` and starts the apps. They are down from the gate
+to the end, which takes as long as reading every database twice and writing it once; a Piri whose
+challenge window opens meanwhile misses that proof. The reconcile stamp waits on the script too, so
+a move that takes longer than 25 minutes on staging fires the alert above while it runs.
 
-If a step fails after the old cluster stopped, the script starts the old cluster again under its old
-image and the apps on it, and the guard stays in place. Fix the cause and run it again; it moves the
-half-built `postgres-glibc` aside to `postgres-glibc.failed-<time>`, which you remove once you no
-longer need it.
+If a step fails after the old cluster stopped, or the run is interrupted (Ctrl-C, `kill`, a
+hangup), the script starts the old cluster again under its old image and the apps on it, and the
+guard stays in place. After a hangup, what it printed is in `state/migrate-postgres.log` in the
+control directory. Fix the cause and run it again; it moves the half-built `postgres-glibc` aside to
+`postgres-glibc.failed-<time>`, which you remove once you no longer need it.
+
+A run killed outright, by `kill -9` or a reboot, cannot undo itself. It leaves the old cluster
+stopped and the half-built one running, and `deploy-apps.sh` refuses to start the apps on it.
+Put the old cluster back, with the apps on it, and then run the move again:
+
+```sh
+sudo scripts/host/migrate-postgres-to-debian.sh --rollback
+```
 
 Afterwards `docker inspect -f '{{.Config.Image}}' filone-platform-postgres-1` shows
 `postgres:16-bookworm`, and the smoke test passes. The old `postgres` directory is the way back
 until you remove it: reverting the change starts the old image on it, with the data as it was when
-the move began, so everything written since is lost. Once the node has run normally for a few days,
-remove it (`sudo rm -rf /mnt/fil-one/control/postgres` on dev,
-`sudo rm -rf /mnt/data/fil-one/control/postgres` on staging). After that there is no way back but a
-restore.
+the move began, so everything written since is lost. The deploy that does that also forgets the
+migration, so merging the change again later waits for a fresh move rather than starting the stale
+copy. Once the node has run normally for a few days, remove the old directory
+(`sudo rm -rf /mnt/fil-one/control/postgres` on dev, `sudo rm -rf /mnt/data/fil-one/control/postgres`
+on staging). After that there is no way back but a restore, and a revert is refused rather than
+starting an empty cluster.
 
 ## Re-onboarding after identity loss
 

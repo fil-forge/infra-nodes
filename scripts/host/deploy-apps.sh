@@ -44,6 +44,8 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
   die "INGOT_LOCAL_BLOB_MAX_BYTES in nodes/$FILONE_NODE/node.env is '${INGOT_LOCAL_BLOB_MAX_BYTES:-}', not a
        positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
 
+require_postgres_settled
+
 piri_services="$(piri_services)"
 # shellcheck disable=SC2206 # one service name per word
 piris=($piri_services)
