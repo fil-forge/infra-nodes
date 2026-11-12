@@ -1491,8 +1491,8 @@ infra-central's `docs/observability.md`.
 
 Dev and staging each run three Piris, `piri-0` to `piri-2`. Most alerts say which one:
 
-- The chain-head, proving-failing, proving-period, deletion-drain and Prove-task alerts carry the
-  Piri's `instance` label, for example `staging/eu-central-3/piri-1`. Its last digit is the Piri's
+- The chain-head, proving-failing, proving-period, deletion-drain, Prove-task and AddRoots alerts
+  carry the Piri's `instance` label, for example `staging/eu-central-3/piri-1`. Its last digit is the Piri's
   number. The proving-failing, proving-period and deletion-drain alerts also name the `proof_set`.
 
 - The unrecoverable alert carries the Piri's `instance` too, but not the proof set. Step 1 of
@@ -1789,6 +1789,44 @@ recorded, and the added pieces are not proven. The contract records no faults wh
    error, the proof set's ID and the transaction hash in `#filone-eng` on Slack, and record them on
    the incident. A Piri release with a newer Curio records the additions once it is deployed.
 3. Otherwise, record the error on the incident and post it in `#filone-eng`.
+
+#### Piri is not adding aggregates on chain
+
+**Act within a day.** Blobs folded into an aggregate more than 10 minutes ago are still waiting for
+AddRoots to add the aggregate on chain. They stay readable but are not proven until they land.
+AddRoots sends a batch within 30 seconds and waits about 4 minutes for it to confirm, so a healthy
+Piri's oldest waiting blob is under 5 minutes old. After about 3.5 hours of failing retries Piri
+gives up on a batch, and its blobs wait until it is freed.
+
+1. If "Piri's chain head is stale" or "Piri is reporting but has no chain head" is also firing for
+   this Piri, follow that entry first: AddRoots needs the chain endpoint. Come back to step 2 once
+   it clears.
+2. On the host, read the AddRoots logs. Read all of them: a batch Piri gave up on hours ago leaves
+   nothing in the recent ones.
+
+   ```sh
+   docker logs "filone-piri-${n:?}" 2>&1 | grep -e PDPAddRoots -e 'AddRoots transaction' -e 'No such container'
+   ```
+
+   - **`AddRoots transaction confirmed successfully` lines keep appearing up to now:** batches are
+     landing, but aggregates are folded faster than AddRoots sends them. Go to step 4.
+   - **Anything else** (errors, or no AddRoots lines at all): go to step 3. If there are no lines at
+     all, run `piri status` in the Piri's shell first; if it fails, read the error as in [Before you
+     start](#before-you-start), step 4.
+3. Check the owner wallet as in step 3 of [Piri's proving period has not
+   advanced](#piris-proving-period-has-not-advanced): an empty one fails every AddRoots
+   transaction.
+   - **It holds little or no FIL:** fund it as that step describes, then go to step 5.
+   - **It holds FIL:** record the last AddRoots error from step 2 on the incident and post it in
+     `#filone-eng` on Slack. Go to step 5 once the error is understood and fixed, or straight away
+     if the logs showed no error, since the batch may have failed on something that has passed.
+4. AddRoots sends at most 10 aggregates per transaction, three transactions at a time, so a Piri
+   folding more than about 30 aggregates every 5 minutes falls behind. The node can't change this.
+   Post the alert and the logs' rate of confirmed transactions in `#filone-eng`; the fix is a larger
+   `pdp.aggregation.manager.batch_size` in Piri's base config, or larger aggregates.
+5. [Free stranded batches](#free-stranded-batches). Then, after 5 minutes, read the logs as in step
+   2 again: `AddRoots transaction confirmed successfully` should appear. If AddRoots fails again,
+   go back to step 3. The alert clears when the oldest waiting blob is under 10 minutes old again.
 
 ### A volume is not mounted
 
