@@ -1352,8 +1352,9 @@ copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 ([the decision record](decisions/2026-11-postgres-on-debian.md) says why), so the cluster moves by a
 dump and restore into `postgres-glibc`, beside `postgres` in the control directory. Once the change
 reaches a node, `deploy-platform.sh` refuses to run there until the move is done. Each reconcile
-pass then fails at that point without changing anything, and `deploy_last_success_timestamp` for
-the platform stops advancing, so run the move as soon as the merge has reached the checkout:
+pass then stops at that point without changing anything: the apps deploy, image bumps included,
+waits behind it, and the stale-deploy warning fires after 15 minutes. So run the move as soon as the
+merge has reached the checkout:
 
 ```sh
 sudo scripts/host/migrate-postgres-to-debian.sh
