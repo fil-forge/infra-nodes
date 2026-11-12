@@ -1391,15 +1391,22 @@ sudo scripts/host/migrate-postgres-to-debian.sh --rollback
 ```
 
 Afterwards `docker inspect -f '{{.Config.Image}}' filone-platform-postgres-1` shows
-`postgres:16-bookworm`, and the smoke test passes. The old `postgres` directory is the way back
-until you remove it. Revert the node's `platform/versions.env` and `platform/compose.yml` only, not
-the change as a whole, which would take the guards with it: the next deploy starts the old image on
-the old directory, with the data as it was when the move began, so everything written since is
-lost. Once the old cluster has run, the migration no longer counts, so merging the move again later
-waits for a fresh one rather than starting the stale copy. Once the node has run normally for a few
-days, remove the old directory (`sudo rm -rf /mnt/fil-one/control/postgres` on dev,
-`sudo rm -rf /mnt/data/fil-one/control/postgres` on staging). After that there is no way back but a
-restore, and the guard refuses a revert of those two files rather than starting an empty cluster.
+`postgres:16-bookworm`, and the smoke test passes. Keep the old `postgres` directory for a few days
+as the way back; then, if you keep the move, remove it (`sudo rm -rf /mnt/fil-one/control/postgres`
+on dev, `sudo rm -rf /mnt/data/fil-one/control/postgres` on staging). Until then, do not start a
+Postgres server on it, not even to look. Any start rewrites its `pg_control`, which is how the node
+tells that the old cluster has run again, and the migration then stops counting: every platform and
+apps deploy refuses. To look at the old data, copy the directory and start a server on the copy. If
+a server did run on it with nothing writing, `sudo touch <control dir>/state/postgres-migrated`
+restores the record.
+
+To go back, revert the node's `platform/versions.env` and `platform/compose.yml`, not the whole
+change, which would also remove the guards. The next deploy starts the old image on the old
+directory, with the data as it was when the move began, so everything written since is lost. Once
+the old cluster has run, the migration stops counting, so merging the move again later waits for a
+fresh migration, which carries the old cluster's newer data across and moves the stale copy aside.
+After the old directory is removed there is no way back but a restore, and the guard refuses a
+revert of those two files rather than starting an empty cluster.
 
 ## Re-onboarding after identity loss
 

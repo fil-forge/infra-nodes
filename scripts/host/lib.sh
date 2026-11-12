@@ -399,6 +399,24 @@ postgres_migration_recorded() {
   [ ! "$(postgres_previous_data_dir)/global/pg_control" -nt "$marker" ]
 }
 
+# Whether the marker names this directory but the old cluster has run since, so
+# the record no longer stands. Either a revert put the apps back on the old
+# cluster, or a server was started on the old directory by hand; the guards
+# tell the two apart for the operator, who knows which it was.
+postgres_record_lapsed() {
+  [ "$(cat "$(postgres_migrated_marker)" 2>/dev/null)" = "$1" ] && ! postgres_migration_recorded "$1"
+}
+
+# The refusal both guards give when the record has lapsed.
+die_postgres_record_lapsed() {
+  die "the migration into $1 is on record, but the old cluster in
+       $(postgres_previous_data_dir) has run since, so the record no longer counts.
+       If the apps ran on the old cluster, as after a revert, it holds the newest
+       data: run migrate-postgres-to-debian.sh with the old cluster running to move
+       it across. If a server was started on it only to look, with nothing writing,
+       touch $(postgres_migrated_marker) to restore the record. docs/RUNBOOK.md has both."
+}
+
 # The host directory the platform project mounts as Postgres's data directory,
 # read from the resolved compose file.
 postgres_data_dir() {
@@ -451,6 +469,7 @@ require_postgres_migrated() {
   fi
   [ -f "$previous/PG_VERSION" ] || return 0
   postgres_migration_recorded "$configured" && return 0
+  ! postgres_record_lapsed "$configured" || die_postgres_record_lapsed "$configured"
 
   die "compose.yml mounts $configured as Postgres's data directory, but this node's
        cluster is still in $previous. Starting Postgres there would hand Piri and
@@ -472,6 +491,7 @@ require_postgres_settled() {
   [ "$running" != "$previous" ] || return 0
   [ -f "$previous/PG_VERSION" ] || return 0
   postgres_migration_recorded "$running" && return 0
+  ! postgres_record_lapsed "$running" || die_postgres_record_lapsed "$running"
 
   die "$FILONE_POSTGRES_CONTAINER runs on $running, which migrate-postgres-to-debian.sh
        has not finished filling. Starting the apps would hand them a cluster without
