@@ -427,19 +427,24 @@ die_postgres_record_lapsed() {
   running="$(postgres_container_data_dir 2>/dev/null)" || running=""
 
   if [ "$running" = "$previous" ]; then
-    die "the migration into $dir is on record, but Postgres runs on the old cluster
-       in $previous again, as after a revert. That cluster holds the newest data,
-       so the record no longer counts. Run migrate-postgres-to-debian.sh to move it
-       across; it moves the stale copy in $dir aside."
+    die "the migration into $dir is on record, but Postgres is on the old cluster in
+       $previous again, as after a revert. That cluster holds the newest data, so
+       the record no longer counts. With $FILONE_POSTGRES_CONTAINER running, run
+       migrate-postgres-to-debian.sh to move it across; it moves the stale copy in
+       $dir aside."
   fi
   if [ "$running" = "$dir" ] && [ ! -e "$(postgres_migration_workdir)/old-image" ]; then
     die "the migration into $dir is on record, but a server has run on the old
-       cluster in $previous since, so the record no longer counts. Postgres still
-       runs on $dir. If that server was started only to look, nothing wrote to it,
-       and it has stopped, touch $marker to restore the record."
+       cluster in $previous since, so the record no longer counts. Postgres is on
+       $dir. If that server was started only to look, nothing wrote to it, and it
+       has stopped, touch $marker to restore the record."
   fi
+  local seen="no $FILONE_POSTGRES_CONTAINER container"
+  [ -z "$running" ] ||
+    seen="$FILONE_POSTGRES_CONTAINER on $running, and $(postgres_migration_workdir) left behind"
   die "the migration into $dir is on record, but the old cluster in $previous has run
-       since, so the record no longer counts. docs/RUNBOOK.md has what to do."
+       since, so the record no longer counts, and this guard found $seen.
+       docs/RUNBOOK.md has what to do."
 }
 
 # The host directory the platform project mounts as Postgres's data directory,
