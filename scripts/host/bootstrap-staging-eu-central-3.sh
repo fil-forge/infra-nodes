@@ -26,7 +26,7 @@ command -v ufw >/dev/null || { echo "ERROR: ufw is not installed" >&2; exit 1; }
 
 install -d -m 0755 \
   /mnt/data/fil-one/control/openbao \
-  /mnt/data/fil-one/control/postgres \
+  /mnt/data/fil-one/control/postgres-glibc \
   /mnt/data/fil-one/control/state/metrics \
   /mnt/data/fil-one/data/piri-0 \
   /mnt/data/fil-one/data/piri-1 \

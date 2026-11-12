@@ -29,7 +29,10 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
-    volumes: ["/mnt/data/fil-one/control/postgres:/var/lib/postgresql/data"]
+      # Read only when the data directory is empty. C.UTF-8 sorts by code
+      # point, the order the cluster had under the Alpine image's musl.
+      POSTGRES_INITDB_ARGS: --locale=C.UTF-8 --encoding=UTF8
+    volumes: ["${POSTGRES_DATA_DIR}:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U admin -d admin"]
       start_interval: 1s
