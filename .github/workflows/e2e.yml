@@ -1,0 +1,237 @@
+# Checks that the dev and staging nodes serve a customer: create a tenant
+# through Hilt and a bucket on the node's Ingot, upload two objects, download
+# them and compare, then delete everything. scripts/ci/e2e-test.sh has the
+# details.
+#
+# The smoke test proves the services answer. This proves the write path, which
+# runs through central's Hilt as well as the node, so it runs when either side
+# changes, and daily for what changes without a deploy:
+#
+# - After the smoke test of a push to main, on each node that passed it. The
+#   smoke test has already waited for the node to reach the commit.
+# - After infra-central deploys to dev or staging. infra-central dispatches the
+#   run with the change it deployed, and the alert names that change.
+# - Daily, which catches a rotated partner key or drift on either side.
+#
+# Not hourly like the smoke test: Hilt does not yet delete a tenant's records in
+# Sprue or its PLC entry, so every run leaves those behind (FIL-1488).
+name: End-to-end test
+
+on:
+  workflow_run:
+    workflows: [Smoke test]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage to test
+        type: choice
+        options: [all, dev, staging]
+        default: all
+      # infra-central sets these when its deploy starts the run. Leave them
+      # empty when starting a run by hand.
+      central_sha:
+        description: infra-central commit that was deployed (full sha)
+        required: false
+      central_subject:
+        description: Subject of that commit
+        required: false
+      central_author:
+        description: GitHub login that pushed it
+        required: false
+  schedule:
+    - cron: "47 5 * * *"
+
+# No concurrency group. Runs on one node do not interfere, since each creates
+# its own tenant, and a group would let a newer run replace a queued one and
+# drop the central change it was started for.
+
+permissions:
+  contents: read
+
+jobs:
+  # A job-level `if` cannot read the matrix, so choosing the nodes is a job of
+  # its own, and it can choose none.
+  select:
+    name: Select nodes
+    # Every Smoke test run triggers this workflow, the hourly ones included.
+    # Only a push brings a new commit to test.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # To read the smoke run's jobs.
+      actions: read
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      has_nodes: ${{ steps.select.outputs.has_nodes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The alert interpolates these into a link and a mention, so a malformed
+      # dispatch fails here, loudly, instead of producing a broken alert later.
+      - name: Check the dispatch inputs
+        if: github.event_name == 'workflow_dispatch' && inputs.central_sha != ''
+        env:
+          CENTRAL_SHA: ${{ inputs.central_sha }}
+          CENTRAL_SUBJECT: ${{ inputs.central_subject }}
+          CENTRAL_AUTHOR: ${{ inputs.central_author }}
+        run: |
+          set -euo pipefail
+          [[ "$CENTRAL_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::central_sha is not a full commit sha: $CENTRAL_SHA"; exit 1; }
+          [[ "$CENTRAL_AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] ||
+            { echo "::error::central_author is not a GitHub login: $CENTRAL_AUTHOR"; exit 1; }
+          [ -n "$CENTRAL_SUBJECT" ] ||
+            { echo "::error::central_subject is empty"; exit 1; }
+
+      # filter=latest, so a re-run smoke job counts with its latest attempt.
+      - name: Select the nodes
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          SMOKE_RUN_ID: ${{ github.event.workflow_run.id }}
+          STAGE: ${{ inputs.stage || 'all' }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then
+            jobs="$RUNNER_TEMP/smoke-jobs.json"
+            gh api "repos/$REPO/actions/runs/$SMOKE_RUN_ID/jobs?filter=latest&per_page=100" >"$jobs"
+            scripts/ci/e2e-select.sh all "$jobs"
+          else
+            scripts/ci/e2e-select.sh "$STAGE"
+          fi
+
+      # Without this, a run that cannot choose its nodes would end without a
+      # word: the alert below lives in the test job, which never starts.
+      - if: failure()
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": ${{ toJSON(format('The end-to-end test could not start. Details: {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id)) }},
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(format(':warning: *The end-to-end test could not start* · <{0}/{1}/actions/runs/{2}|Details>', github.server_url, github.repository, github.run_id)) }}
+                  }
+                }
+              ]
+            }
+
+  e2e:
+    name: End-to-end test (${{ matrix.node }})
+    needs: select
+    if: needs.select.outputs.has_nodes == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    # HILT_PARTNER_KEY can manage every tenant on the stage's Hilt. Each
+    # Environment admits only main, so a pushed branch cannot read it, and this
+    # workflow cannot be dispatched from a branch. deployment: false, because
+    # a test is not a deployment and should not appear as one.
+    environment:
+      name: ${{ matrix.env }}
+      deployment: false
+    # The test and the cleanup stop themselves well inside this. A job that hits
+    # it is cancelled, and the alert steps do not run on a cancel.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Not retried: a retry would hide an upload path that fails some of the
+      # time. Each run creates its own tenant, so the next run starts clean.
+      - name: Run the end-to-end test
+        id: e2e
+        timeout-minutes: 10
+        env:
+          HILT_PARTNER_KEY: ${{ secrets.HILT_PARTNER_KEY }}
+          NODE: ${{ matrix.node }}
+        run: scripts/ci/e2e-test.sh "$NODE"
+
+      # Runs after a failed test too, since a failure halfway leaves the tenant
+      # and bucket behind. The script deletes only what the test recorded
+      # creating, so it is safe after a test that never got going.
+      - name: Clean up after the end-to-end test
+        id: cleanup
+        if: always() && steps.e2e.outcome != 'skipped'
+        timeout-minutes: 15
+        env:
+          HILT_PARTNER_KEY: ${{ secrets.HILT_PARTNER_KEY }}
+          NODE: ${{ matrix.node }}
+        run: scripts/ci/e2e-test.sh "$NODE" --cleanup
+
+      # On workflow_run, github.sha and github.actor describe main's tip when
+      # the smoke run finished, so the pushed commit comes from the event.
+      - id: what
+        if: failure()
+        env:
+          NODE: ${{ matrix.node }}
+          TRIGGER: ${{ github.event_name == 'workflow_run' && 'push' || github.event_name == 'schedule' && 'schedule' || inputs.central_sha != '' && 'central' || 'manual' }}
+          E2E_OUTCOME: ${{ steps.e2e.outcome }}
+          E2E_FAILED_OP: ${{ steps.e2e.outputs.failed_op }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          LEFTOVER_TENANT: ${{ steps.cleanup.outputs.leftover_tenant }}
+          LEFTOVER_BUCKET: ${{ steps.cleanup.outputs.leftover_bucket }}
+          RUNBOOK: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/RUNBOOK.md#cleaning-up-after-the-end-to-end-test
+          ACTOR: ${{ github.event.workflow_run.actor.login || github.actor }}
+          COMMIT_SUBJECT: ${{ github.event.workflow_run.head_commit.message }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.event.workflow_run.head_sha }}
+          CENTRAL_SHA: ${{ inputs.central_sha }}
+          CENTRAL_SUBJECT: ${{ inputs.central_subject }}
+          CENTRAL_AUTHOR: ${{ inputs.central_author }}
+        run: scripts/ci/e2e-alert.sh
+
+      # For a bump, the service commit that produced the image. Best-effort,
+      # like the same step in smoke.yml.
+      - id: source
+        if: failure() && github.event_name == 'workflow_run'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+        run: |
+          set -uo pipefail
+          line=$(printf '%s\n' "$COMMIT_MESSAGE" | scripts/ci/service-commit-line.sh)
+          echo "line=$line" >> "$GITHUB_OUTPUT"
+
+      # Every interpolation goes through toJSON, because the payload is JSON and
+      # a commit subject is free to contain a quote or a backslash.
+      - if: failure()
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": ${{ toJSON(format('{0}. {1}{2}Details: {3}/{4}/actions/runs/{5}', steps.what.outputs.headline, steps.what.outputs.cause && format('{0}. ', steps.what.outputs.cause) || '', steps.source.outputs.line && format('{0}. ', steps.source.outputs.line) || '', github.server_url, github.repository, github.run_id)) }},
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(format(':warning: *{0}* · <{1}/{2}/actions/runs/{3}|Details>', steps.what.outputs.headline, github.server_url, github.repository, github.run_id)) }}
+                  }
+                },
+                ${{ steps.what.outputs.cause && format('{{"type":"section","text":{{"type":"mrkdwn","text":{0}}}}},', toJSON(steps.what.outputs.cause)) || '' }}
+                ${{ steps.source.outputs.line && format('{{"type":"section","text":{{"type":"mrkdwn","text":{0}}}}},', toJSON(steps.source.outputs.line)) || '' }}
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(steps.what.outputs.next) }}
+                  }
+                }
+              ]
+            }

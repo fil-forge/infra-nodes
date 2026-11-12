@@ -1121,12 +1121,19 @@ on every pass; `apps` and `platform` move only when that project deploys. The sm
 took. The Piris it checks are the ones `compose.yml` defined at `apps`, so a merged Piri the node has
 not deployed yet is not probed. `smoke.yml` runs the same test after every merge and hourly.
 
-**Run the end-to-end test by hand.** After the smoke test passes, `smoke.yml` runs
-`scripts/ci/e2e-test.sh`, which creates a tenant through Hilt and a bucket on the node's Ingot,
-uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart upload, downloads both and
-compares them. `--cleanup` then deletes the objects and the bucket, disables the tenant and deletes
-it. It needs Hilt's partner key, the one FilOne uses, which central keeps in SSM and the workflow
-reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment named after the stage:
+**Run the end-to-end test by hand.** `scripts/ci/e2e-test.sh` creates a tenant through Hilt and a
+bucket on the node's Ingot, uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart
+upload, downloads both and compares them. `--cleanup` then deletes the objects and the bucket,
+disables the tenant and deletes it. `e2e.yml` runs it after the smoke test of every push to main,
+after every infra-central deploy to dev or staging, and daily. To start that workflow on one stage:
+
+```sh
+gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=dev
+```
+
+Running the script from your machine needs Hilt's partner key, the one FilOne uses, which central
+keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment
+named after the stage:
 
 ```sh
 export HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text)"
@@ -1980,7 +1987,9 @@ step 2 did not happen, or its weight is zero.
 in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, and in the
 `AWS_REGION` the client signs with.
 
-**A `filone-alerts` message arrived.** It says which of four things happened.
+**A `filone-alerts` message arrived.** The headline says what happened: the node never reached a
+commit or failed its smoke test (from `smoke.yml`), or the node failed its end-to-end test or the
+cleanup after it (from `e2e.yml`).
 
 When the failing commit is an image bump, the message carries a further line naming the service
 commit that produced the image and who wrote it, read from the source commit link the bump left in
@@ -2010,10 +2019,26 @@ longer matches central's `hilt/partner-key`. Anything after that points at the n
 like a failed smoke test and suspect the image. The entries above on `CandidateUnavailable` and
 region mismatches cover the usual Ingot causes.
 
+The second line of the message says what started the run, and that decides where to look first:
+
+- A line naming an infra-nodes commit means the test ran after that push, once the node passed its
+  smoke test. Suspect the image the commit pinned, or Hilt.
+- A line starting *Triggered by central change* means infra-central deployed that commit to the
+  stage and started the test. Suspect the central change first. Every central push starts a run,
+  and the run tests the node as it stands, so a central change that touched nothing on the write
+  path points at the node instead.
+- No such line means the daily run, and a line *Started by hand* means somebody dispatched it.
+  Nothing was deployed for either, so suspect drift on the node or in central, such as a rotated
+  partner key.
+
 *The cleanup after the end-to-end test failed.* Each delete was tried four times, and the message
 names the tenant and bucket left behind. Cleanup stops at the first delete that keeps failing and
 never deletes a tenant whose bucket may still hold data, because Hilt cannot recover a deleted
 tenant's storage. Delete them by hand as below.
+
+*The end-to-end test could not start.* The run failed while choosing which nodes to test, before it
+touched any. The run log has the error: a dispatch with a malformed `central_*` input, a GitHub API
+error reading the smoke run's jobs, or a smoke job renamed so that no job matches a node.
 
 **A bump pull request is sitting open.** The refresh workflow rebuilds every open bump on current
 main, so a stale base is not the reason. It leaves one alone in exactly one case: main moved that
@@ -2036,21 +2061,31 @@ Environment named after the stage, `dev` or `staging`. It is the key FilOne uses
 every tenant on that stage's Hilt, so the only thing keeping a pushed branch from reading it is the
 Environment's branch rule. Production gets no Environment until
 [FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491) finds a credential that cannot
-reach customer tenants. Create the Environment with that rule before the secret goes in, and before a node of
-that stage joins the matrix in `smoke.yml`: a workflow that names a missing Environment creates it
-with no rules.
+reach customer tenants.
 
-1. In the repository's **Settings → Environments**, create the Environment, and under **Deployment
-   branches and tags** choose **Selected branches and tags** and add `main`.
-2. Copy the key from central's SSM into it without printing it. Run this with AWS credentials for
-   the stage's account:
+Create the Environment with its branch rule before the secret goes in, and before a node of that
+stage joins `NODES` in `scripts/ci/e2e-select.sh`: a workflow that names a missing Environment
+creates it with no rules. The commands below are for dev; repeat them with `staging`.
 
-   ```sh
-   aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text | gh secret set HILT_PARTNER_KEY --env dev --repo fil-forge/infra-nodes
-   ```
+```sh
+gh api -X PUT repos/fil-forge/infra-nodes/environments/dev --input - <<<'{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+gh api -X POST repos/fil-forge/infra-nodes/environments/dev/deployment-branch-policies -f name=main -f type=branch
+gh api repos/fil-forge/infra-nodes/environments/dev/deployment-branch-policies --jq '.branch_policies[].name'
+```
 
-Repeat step 2 whenever central's `hilt/partner-key` changes. Until then, every end-to-end test on
+The last command must print `main` and nothing else. Then copy the key from central's SSM into the
+Environment without printing it, with AWS credentials for the stage's account:
+
+```sh
+aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text | gh secret set HILT_PARTNER_KEY --env dev --repo fil-forge/infra-nodes
+```
+
+Repeat that whenever central's `hilt/partner-key` changes. Until then, every end-to-end test on
 that stage fails with HTTP 401.
+
+The workflow names the Environment with `deployment: false`, so its runs create no deployment
+records. Only `e2e.yml` names these Environments; `smoke.yml` needs no secret and can still be
+dispatched from any branch.
 
 ### Cleaning up after the end-to-end test
 

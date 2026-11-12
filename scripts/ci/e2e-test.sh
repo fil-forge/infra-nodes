@@ -234,8 +234,9 @@ create_access_key() {
   access_key="$(jq -r '.accessKeyId // empty' "$RESPONSE")"
   secret_key="$(jq -r '.secretAccessKey // empty' "$RESPONSE")"
   rm -f "$RESPONSE"
-  [ -n "$access_key" ] && [ -n "$secret_key" ] ||
+  if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
     abort "create an access key — Hilt answered 201 without a key pair"
+  fi
   [ "${GITHUB_ACTIONS-}" != true ] || echo "::add-mask::$secret_key"
 
   printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
