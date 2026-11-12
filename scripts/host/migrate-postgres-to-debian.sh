@@ -113,10 +113,13 @@ trap 'exit 129' HUP
 trap 'exit 141' PIPE
 
 # The log gets the reason a run stopped, not only what putting it back did.
-# Replaces lib.sh's die for this script and the helpers it calls.
+# Replaces lib.sh's die for this script and the helpers it calls. The log first,
+# because a write to a stderr that is gone ends the script. A --rollback started
+# by on_exit already writes its stderr to the log, and says so.
 die() {
+  [ "${FILONE_MIGRATE_STDERR_IS_LOG:-}" = 1 ] ||
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR: $*" >>"$log" 2>/dev/null
   echo "ERROR: $*" >&2
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR: $*" >>"$log" 2>/dev/null
   exit 1
 }
 
@@ -290,9 +293,11 @@ on_exit() {
   fi
   if [ "$progress" -lt 1 ]; then
     rm -rf -- "$workdir"
+    say "nothing had been changed yet. Fix the cause and run this again."
     return
   fi
-  if ! detached "$SELF" --rollback; then
+  say "starting the old cluster again if it stopped, then the apps; this can take a few minutes"
+  if ! FILONE_MIGRATE_STDERR_IS_LOG=1 detached "$SELF" --rollback; then
     say "could not put the node back. Fix the cause, then run this script with --rollback."
     return
   fi
