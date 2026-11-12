@@ -425,18 +425,12 @@ require_postgres_migrated() {
   marker="$(postgres_migrated_marker)"
 
   if [ "$configured" = "$previous" ]; then
-    [ -e "$marker" ] || return 0
     # A revert after a migration. With the old cluster gone, Postgres would
     # initialise an empty one in its place.
-    [ -f "$previous/PG_VERSION" ] ||
+    [ ! -e "$marker" ] || [ -f "$previous/PG_VERSION" ] ||
       die "compose.yml mounts $previous again, but the cluster there was removed after
        the migration into $(cat "$marker"). Starting Postgres would hand Piri and
        Ingot empty databases. Undo the revert."
-    # From here the old cluster takes the writes and the migrated copy falls
-    # behind, so the migration no longer stands: a later merge waits for a new
-    # one, which moves the stale copy aside, rather than starting it.
-    rm -f -- "$marker"
-    echo "  compose.yml mounts $previous again; forgot the migration into the stale copy"
     return 0
   fi
   [ -f "$previous/PG_VERSION" ] || return 0
@@ -447,6 +441,25 @@ require_postgres_migrated() {
        Ingot empty databases. Run scripts/host/migrate-postgres-to-debian.sh, which
        moves the data across and finishes the deploy; docs/RUNBOOK.md has the
        procedure."
+}
+
+# Forget a migration once a revert has Postgres running on the old directory
+# again. From then the old cluster takes the writes and the migrated copy falls
+# behind, so a later merge has to wait for a new migration, which moves the
+# stale copy aside, rather than start it. Not before: until the old cluster
+# runs, the apps may still be on the migrated one, which holds the newest data.
+# deploy-platform.sh calls this once the platform is healthy.
+forget_reverted_postgres_migration() {
+  local marker previous running
+  marker="$(postgres_migrated_marker)"
+  [ -e "$marker" ] || return 0
+  previous="$(postgres_previous_data_dir)"
+  [ "$(postgres_data_dir)" = "$previous" ] || return 0
+  running="$(postgres_container_data_dir)" || return 0
+  [ "$running" = "$previous" ] || return 0
+
+  echo "  Postgres runs on $previous again; forgetting the migration into $(cat "$marker")"
+  rm -f -- "$marker"
 }
 
 # Refuse to start the apps on a cluster a migration left half built. The

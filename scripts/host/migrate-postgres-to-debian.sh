@@ -21,7 +21,8 @@
 #
 # The old directory is left as it was. If a step fails after the old cluster
 # stopped, or the run is interrupted, the script starts the old cluster again
-# under its old image and brings the apps back on it; the next run moves the
+# under its old image and brings the apps back on it, logging to
+# state/migrate-postgres.log in the control directory; the next run moves the
 # half-built new directory aside first. A run killed outright (SIGKILL, a
 # reboot) cannot do that, and deploy-apps.sh then refuses to start the apps on
 # the half-built cluster: --rollback starts the old cluster and the apps.
@@ -97,17 +98,16 @@ configured="$(postgres_data_dir)" ||
 marker="$(postgres_migrated_marker)"
 workdir="$FILONE_CONTROL_DIR/postgres-migration"
 # The image the old cluster ran under, written before anything is stopped, so a
-# rollback can start it again after a run that died without undoing itself.
+# rollback can start it again after a run that died without putting it back.
 old_image_file="$workdir/old-image"
 log="$FILONE_STATE_DIR/migrate-postgres.log"
 
 # Bash runs the EXIT trap after a fatal signal with a status of 0, which would
-# read as success and skip the undo below. Exiting from a trap of their own
-# hands it the signal's status instead. A hangup has also taken the terminal, so
-# what the undo prints goes to a log.
+# read as success and skip putting the node back. Exiting from a trap of their
+# own hands it the signal's status instead.
 trap 'exit 130' INT
 trap 'exit 143' TERM
-trap 'exec >>"$log" 2>&1; echo "terminal hung up at $(date -u +%Y-%m-%dT%H:%M:%SZ)"; exit 129' HUP
+trap 'exit 129' HUP
 
 [ "$configured" != "$previous" ] ||
   die "compose.yml still mounts $previous. Run this once the change that moves this
@@ -125,7 +125,7 @@ esac
 # before. The shell's values win over the env files', so this one start uses
 # them while compose.yml keeps the new ones, and the deploy-platform.sh guard
 # leaves the cluster alone until a migration finishes. Returns non-zero rather
-# than dying, for the undo below.
+# than dying, for on_exit below.
 start_old_cluster() {
   local image="$1"
   echo "  starting the old cluster again under $image"
@@ -233,33 +233,54 @@ if [ "$assume_yes" -eq 0 ]; then
   [ "$answer" = "migrate-$STAGE" ] || die "not confirmed; nothing was changed"
 fi
 
-# --- Undoing a failed run -------------------------------------------------------
+# --- Putting the node back --------------------------------------------------
 
 # 0: nothing changed yet. 1: the apps are stopped. 2: the old cluster is stopped
 # too, so it has to come back before the apps do.
 progress=0
-# Without errexit, so that nothing in it, a write to a terminal that is gone
-# included, cuts it short; what can die runs in a subshell.
-undo() {
+# Runs on every exit, and after a failure or an interrupt puts the node back:
+# onto the old cluster until the marker says the data is migrated, and onto the
+# new one after. The marker decides rather than which step was reached, so a
+# signal that lands just as the marker is written cannot send the apps back to
+# the old cluster.
+#
+# A second Ctrl-C, a closed terminal or a dead pipe must not cut this short, so
+# it ignores those signals, without errexit, and sends what its steps print to
+# the log. Its own lines go to the terminal too while there is one.
+on_exit() {
   local status=$?
-  set +e
   [ "$status" -ne 0 ] || return 0
+  set +e
+  trap '' INT TERM HUP PIPE
+  exec 7>&2
+  exec >>"$log" 2>&1
+  say() {
+    echo "$*" >&7 2>/dev/null
+    echo "$*"
+  }
+  say "$(date -u +%Y-%m-%dT%H:%M:%SZ) the run stopped (status $status); putting the node back. Details: $log"
+  if [ "$(cat "$marker" 2>/dev/null)" = "$configured" ]; then
+    say "the data is migrated, but finishing the deploy failed; starting Piri and"
+    say "Ingot on the new cluster. The next reconcile pass retries the deploy."
+    ( start_apps ) || say "could not start every app; start them with deploy-apps.sh"
+    return
+  fi
   if [ "$progress" -ge 2 ]; then
-    echo "migration failed; putting the old cluster back" >&2
+    say "putting the old cluster back"
     if ! start_old_cluster "$old_image"; then
-      echo "could not start the old cluster, so Piri and Ingot stay stopped. Fix the" >&2
-      echo "cause, then run this script with --rollback." >&2
+      say "could not start the old cluster, so Piri and Ingot stay stopped. Fix the"
+      say "cause, then run this script with --rollback."
       return
     fi
   fi
   if [ "$progress" -ge 1 ]; then
-    echo "bringing Piri and Ingot back up" >&2
-    ( start_apps ) || echo "could not start every app; start them with deploy-apps.sh" >&2
+    say "bringing Piri and Ingot back up"
+    ( start_apps ) || say "could not start every app; start them with deploy-apps.sh"
   fi
   rm -rf -- "$workdir"
-  echo "nothing was migrated; $previous is unchanged. Fix the cause and run this again." >&2
+  say "nothing was migrated; $previous is unchanged. Fix the cause and run this again."
 }
-trap undo EXIT
+trap on_exit EXIT
 
 # --- Dumping ------------------------------------------------------------------
 
@@ -349,20 +370,10 @@ done
 # short, so the next start does not begin with crash recovery.
 psql_in admin "CHECKPOINT" >/dev/null || die "could not checkpoint the new cluster"
 
-# From the marker on, the new cluster is the node's, so a failure below starts
-# the apps on it rather than going back. Nothing runs between the move and the
-# new trap.
+# From the marker on, the new cluster is the node's, and a failure below starts
+# the apps on it rather than going back.
 printf '%s\n' "$configured" >"$marker.tmp"
 mv -f "$marker.tmp" "$marker"
-finish_failed() {
-  local status=$?
-  set +e
-  [ "$status" -ne 0 ] || return 0
-  echo "the data is migrated, but finishing the deploy failed; starting Piri and" >&2
-  echo "Ingot on the new cluster. The next reconcile pass retries the deploy." >&2
-  ( start_apps ) || echo "could not start every app; start them with deploy-apps.sh" >&2
-}
-trap finish_failed EXIT
 rm -rf -- "$workdir"
 
 echo "[6/6] Finishing the platform deploy, then the apps"

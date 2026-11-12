@@ -1371,15 +1371,18 @@ to the end, which takes as long as reading every database twice and writing it o
 challenge window opens meanwhile misses that proof. The reconcile stamp waits on the script too, so
 a move that takes longer than 25 minutes on staging fires the alert above while it runs.
 
-If a step fails after the old cluster stopped, or the run is interrupted (Ctrl-C, `kill`, a
-hangup), the script starts the old cluster again under its old image and the apps on it, and the
-guard stays in place. After a hangup, what it printed is in `state/migrate-postgres.log` in the
-control directory. Fix the cause and run it again; it moves the half-built `postgres-glibc` aside to
+If a step fails, or the run is interrupted (Ctrl-C, `kill`, a hangup), the script puts the node
+back: the old cluster under its old image, if it had stopped, and the apps on it. The guard stays in
+place. What it does goes to `state/migrate-postgres.log` in the control directory, and a second
+Ctrl-C or a closed window does not cut it short. A `kill` sent to the script's own process takes
+effect when the step it is in finishes, which during the proving gate can take most of an hour.
+Fix the cause and run it again; it moves the half-built `postgres-glibc` aside to
 `postgres-glibc.failed-<time>`, which you remove once you no longer need it.
 
-A run killed outright, by `kill -9` or a reboot, cannot undo itself. It leaves the old cluster
-stopped and the half-built one running, and `deploy-apps.sh` refuses to start the apps on it.
-Put the old cluster back, with the apps on it, and then run the move again:
+A run killed outright, by `kill -9` or a reboot, cannot put anything back. Killed before step 3 it
+leaves the apps stopped; from step 3 on it also leaves the old cluster stopped and the half-built
+one running, and `deploy-apps.sh` refuses to start the apps on that. Either way, put the old cluster
+back with the apps on it, and then run the move again:
 
 ```sh
 sudo scripts/host/migrate-postgres-to-debian.sh --rollback
@@ -1388,9 +1391,9 @@ sudo scripts/host/migrate-postgres-to-debian.sh --rollback
 Afterwards `docker inspect -f '{{.Config.Image}}' filone-platform-postgres-1` shows
 `postgres:16-bookworm`, and the smoke test passes. The old `postgres` directory is the way back
 until you remove it: reverting the change starts the old image on it, with the data as it was when
-the move began, so everything written since is lost. The deploy that does that also forgets the
-migration, so merging the change again later waits for a fresh move rather than starting the stale
-copy. Once the node has run normally for a few days, remove the old directory
+the move began, so everything written since is lost. Once that deploy has the old cluster running,
+it forgets the migration, so merging the change again later waits for a fresh move rather than
+starting the stale copy. Once the node has run normally for a few days, remove the old directory
 (`sudo rm -rf /mnt/fil-one/control/postgres` on dev, `sudo rm -rf /mnt/data/fil-one/control/postgres`
 on staging). After that there is no way back but a restore, and a revert is refused rather than
 starting an empty cluster.
