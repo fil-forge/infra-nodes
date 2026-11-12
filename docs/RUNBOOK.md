@@ -1347,6 +1347,39 @@ before the copy, Ingot fails to start on the missing directory rather than start
 `/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, remove the old
 copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
+**Move Postgres to the Debian image.** A one-off per node, for the change that moves Postgres from
+`postgres:16-alpine` to `postgres:16-bookworm`. The new image cannot open the old cluster safely
+([the decision record](decisions/2026-11-postgres-on-debian.md) says why), so the cluster moves by a
+dump and restore into `postgres-glibc`, beside `postgres` in the control directory. Once the change
+reaches a node, `deploy-platform.sh` refuses to run there until the move is done. Each reconcile
+pass then fails at that point without changing anything, and `deploy_last_success_timestamp` for
+the platform stops advancing, so run the move as soon as the merge has reached the checkout:
+
+```sh
+sudo scripts/host/migrate-postgres-to-debian.sh
+```
+
+It prints each database's size and asks you to type `migrate-<stage>`; `--yes` skips the question.
+It waits for the proving gate and stops Piri and Ingot. Then it dumps every database into
+`postgres-migration` on the control volume, starts the new cluster with locale `C.UTF-8`, runs
+`postgres-init`, restores each dump in one transaction, and compares every table's exact row count.
+Last it runs `deploy-platform.sh` and starts the apps. They are down from the gate to the end, which
+takes as long as reading every database twice and writing it once; a Piri whose challenge window
+opens meanwhile misses that proof.
+
+If a step fails after the old cluster stopped, the script starts the old cluster again under its old
+image and the apps on it, and the guard stays in place. Fix the cause and run it again; it moves the
+half-built `postgres-glibc` aside to `postgres-glibc.failed-<time>`, which you remove once you no
+longer need it.
+
+Afterwards `docker inspect -f '{{.Config.Image}}' filone-platform-postgres-1` shows
+`postgres:16-bookworm`, and the smoke test passes. The old `postgres` directory is the way back
+until you remove it: reverting the change starts the old image on it, with the data as it was when
+the move began, so everything written since is lost. Once the node has run normally for a few days,
+remove it (`sudo rm -rf /mnt/fil-one/control/postgres` on dev,
+`sudo rm -rf /mnt/data/fil-one/control/postgres` on staging). After that there is no way back but a
+restore.
+
 ## Re-onboarding after identity loss
 
 On a node that takes backups, first

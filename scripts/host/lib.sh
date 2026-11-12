@@ -361,6 +361,70 @@ compose_apps() {
     "$@"
 }
 
+# --- Postgres ----------------------------------------------------------------
+
+# SC2034: migrate-postgres-to-debian.sh uses this after sourcing the library.
+# shellcheck disable=SC2034
+FILONE_POSTGRES_CONTAINER=filone-platform-postgres-1
+
+# Where a node kept its cluster while it ran the Alpine Postgres image. That
+# cluster was initialised with en_US.utf8, which musl sorts in byte order and
+# glibc sorts by language, so the Debian image opening it would read every text
+# index out of order and miss rows without an error. Nor would Postgres notice:
+# musl reports no collation version to compare. migrate-postgres-to-debian.sh
+# moves the data into a new cluster in a directory of its own instead.
+postgres_previous_data_dir() {
+  printf '%s' "$FILONE_CONTROL_DIR/postgres"
+}
+
+# Written by migrate-postgres-to-debian.sh once the new cluster holds every
+# database, with the directory it migrated into.
+postgres_migrated_marker() {
+  printf '%s' "$FILONE_STATE_DIR/postgres-migrated"
+}
+
+# The host directory the platform project mounts as Postgres's data directory,
+# read from the resolved compose file.
+postgres_data_dir() {
+  compose_platform config --format json | python3 -c '
+import json, sys
+
+service = json.load(sys.stdin)["services"]["postgres"]
+for volume in service.get("volumes") or []:
+    if volume.get("target") == "/var/lib/postgresql/data":
+        print(volume["source"])
+        break
+else:
+    sys.exit("the postgres service mounts nothing at /var/lib/postgresql/data")
+'
+}
+
+# Refuse to start Postgres on a data directory that the node's cluster has not
+# been migrated into. Without this, the merge that moves a node to the Debian
+# image would start an empty cluster under Piri and Ingot on the next reconcile
+# pass, and postgres-init would hand them empty databases.
+#
+# Passes on a node that never had a cluster in the old directory, since a new
+# node initialises the configured one itself; on one whose checkout still mounts
+# the old directory, because its image has not moved or the move was reverted;
+# and on one migrate-postgres-to-debian.sh has finished.
+require_postgres_migrated() {
+  local configured previous
+  configured="$(postgres_data_dir)" ||
+    die "could not read Postgres's data directory from $FILONE_NODE_DIR/platform/compose.yml"
+  previous="$(postgres_previous_data_dir)"
+
+  [ "$configured" != "$previous" ] || return 0
+  [ -f "$previous/PG_VERSION" ] || return 0
+  [ "$(cat "$(postgres_migrated_marker)" 2>/dev/null)" = "$configured" ] && return 0
+
+  die "compose.yml mounts $configured as Postgres's data directory, but this node's
+       cluster is still in $previous. Starting Postgres there would hand Piri and
+       Ingot empty databases. Run scripts/host/migrate-postgres-to-debian.sh, which
+       moves the data across and finishes the deploy; docs/RUNBOOK.md has the
+       procedure."
+}
+
 # --- Change detection --------------------------------------------------------
 
 # Set a flag variable when a check reports "changed" by exit status, which

@@ -80,6 +80,10 @@ render_template \
   "$FILONE_NODE_DIR/platform/templates/platform.env.tpl" \
   "$FILONE_SECRETS_DIR/platform.env" || true
 
+# After the rendering, so the migration this asks for finds platform.env in
+# place, and before anything that could start Postgres.
+require_postgres_migrated
+
 echo "[3/7] Pulling images"
 # Before the gate, not after. Pulling can take minutes, and doing it inside the
 # safe window would spend the window on a download.

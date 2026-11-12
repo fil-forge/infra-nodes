@@ -78,8 +78,11 @@ services:
     environment:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=${POSTGRES_ADMIN_PASSWORD}
+      # Read only when the data directory is empty. C.UTF-8 sorts by code
+      # point, the order the cluster had under the Alpine image's musl.
+      - POSTGRES_INITDB_ARGS=--locale=C.UTF-8 --encoding=UTF8
     volumes:
-      - /mnt/fil-one/control/postgres:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_DIR}:/var/lib/postgresql/data
     healthcheck:
       # -h 127.0.0.1 forces a TCP check. On a fresh data directory the image
       # runs a temporary bootstrap server on the unix socket only while initdb
