@@ -399,22 +399,47 @@ postgres_migration_recorded() {
   [ ! "$(postgres_previous_data_dir)/global/pg_control" -nt "$marker" ]
 }
 
+# Where a migration keeps its dumps and the old image it may need to go back
+# to, from the moment it starts changing things until it finishes or is rolled
+# back.
+postgres_migration_workdir() {
+  printf '%s' "$FILONE_CONTROL_DIR/postgres-migration"
+}
+
 # Whether the marker names this directory but the old cluster has run since, so
-# the record no longer stands. Either a revert put the apps back on the old
-# cluster, or a server was started on the old directory by hand; the guards
-# tell the two apart for the operator, who knows which it was.
+# the record no longer stands: a revert put the apps back on the old cluster, or
+# a server was started on the old directory by hand. A migration that starts
+# after a revert removes the lapsed record first, so a run of it killed partway
+# reads as a run to roll back rather than as either of these.
 postgres_record_lapsed() {
   [ "$(cat "$(postgres_migrated_marker)" 2>/dev/null)" = "$1" ] && ! postgres_migration_recorded "$1"
 }
 
-# The refusal both guards give when the record has lapsed.
+# The refusal both guards give when the record has lapsed, worded for where
+# Postgres runs now. On the old directory, the apps went back to it and it holds
+# the newest data. On the migrated one, with no migration in progress, a server
+# was started on the old directory beside it, and if nothing wrote to that the
+# record can be restored. Anything else needs a person.
 die_postgres_record_lapsed() {
-  die "the migration into $1 is on record, but the old cluster in
-       $(postgres_previous_data_dir) has run since, so the record no longer counts.
-       If the apps ran on the old cluster, as after a revert, it holds the newest
-       data: run migrate-postgres-to-debian.sh with the old cluster running to move
-       it across. If a server was started on it only to look, with nothing writing,
-       touch $(postgres_migrated_marker) to restore the record. docs/RUNBOOK.md has both."
+  local dir="$1" previous marker running
+  previous="$(postgres_previous_data_dir)"
+  marker="$(postgres_migrated_marker)"
+  running="$(postgres_container_data_dir 2>/dev/null)" || running=""
+
+  if [ "$running" = "$previous" ]; then
+    die "the migration into $dir is on record, but Postgres runs on the old cluster
+       in $previous again, as after a revert. That cluster holds the newest data,
+       so the record no longer counts. Run migrate-postgres-to-debian.sh to move it
+       across; it moves the stale copy in $dir aside."
+  fi
+  if [ "$running" = "$dir" ] && [ ! -e "$(postgres_migration_workdir)/old-image" ]; then
+    die "the migration into $dir is on record, but a server has run on the old
+       cluster in $previous since, so the record no longer counts. Postgres still
+       runs on $dir. If that server was started only to look, nothing wrote to it,
+       and it has stopped, touch $marker to restore the record."
+  fi
+  die "the migration into $dir is on record, but the old cluster in $previous has run
+       since, so the record no longer counts. docs/RUNBOOK.md has what to do."
 }
 
 # The host directory the platform project mounts as Postgres's data directory,

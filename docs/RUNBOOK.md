@@ -1396,9 +1396,17 @@ as the way back; then, if you keep the move, remove it (`sudo rm -rf /mnt/fil-on
 on dev, `sudo rm -rf /mnt/data/fil-one/control/postgres` on staging). Until then, do not start a
 Postgres server on it, not even to look. Any start rewrites its `pg_control`, which is how the node
 tells that the old cluster has run again, and the migration then stops counting: every platform and
-apps deploy refuses. To look at the old data, copy the directory and start a server on the copy. If
-a server did run on it with nothing writing, `sudo touch <control dir>/state/postgres-migrated`
-restores the record.
+apps deploy refuses. To look at the old data, copy the directory and start a throwaway server on the
+copy, under the image it was written with and outside the platform project, so no app reaches it.
+On dev (on staging the old directory is `/mnt/data/fil-one/control/postgres`):
+
+```sh
+sudo cp -a /mnt/fil-one/control/postgres /root/postgres-copy
+sudo docker run --rm -d --name postgres-look -v /root/postgres-copy:/var/lib/postgresql/data postgres:16-alpine
+```
+
+If a server did run on the old directory itself, with nothing writing to it, the guards say so and
+name the marker: once that server has stopped, `sudo touch` the marker to restore the record.
 
 To go back, revert the node's `platform/versions.env` and `platform/compose.yml`, not the whole
 change, which would also remove the guards. The next deploy starts the old image on the old
