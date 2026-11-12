@@ -18,6 +18,16 @@ ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/reconcile.sh
 # Shorter than this and a deploy that is working normally gets killed halfway.
 TimeoutStartSec=4200
 
-# No Restart=. A failed pass is not retried: the timer fires again in five
-# minutes anyway, and a tight retry loop against a broken commit would hammer
-# the registry and fill the journal.
+# A failed pass is retried after 1 minute, then about 1m45s, about 3 minutes,
+# and every 5 minutes from then on, the timer's own cadence. After a reboot that
+# brings the Piris and Ingot back within minutes when the first pass fails, for
+# example on an OpenBao that has not unsealed yet. A successful pass resets the
+# sequence. The one-minute floor and five-minute cap keep a broken commit from
+# turning this into a tight loop, and deploy-apps.sh pulls only the Piri and
+# Ingot images the host does not have.
+#
+# RestartSteps and RestartMaxDelaySec need systemd 254 or later.
+Restart=on-failure
+RestartSec=1min
+RestartSteps=3
+RestartMaxDelaySec=5min
