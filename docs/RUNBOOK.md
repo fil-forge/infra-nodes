@@ -1398,15 +1398,23 @@ Postgres server on it, not even to look. Any start rewrites its `pg_control`, wh
 tells that the old cluster has run again, and the migration then stops counting: every platform and
 apps deploy refuses. To look at the old data, copy the directory and start a throwaway server on the
 copy, under the image it was written with and outside the platform project, so no app reaches it.
-On dev (on staging the old directory is `/mnt/data/fil-one/control/postgres`):
+Compare its size (`du -sh`) with the free space (`df -h`) of where you copy it, and copy it nowhere
+an app needs the room: dev's root volume is small and holds the images, and the data volume holds
+Ingot's spool. With `COPY` set to that place, on dev (on staging the old directory is
+`/mnt/data/fil-one/control/postgres`):
 
 ```sh
-sudo cp -a /mnt/fil-one/control/postgres /root/postgres-copy
-sudo docker run --rm -d --name postgres-look -v /root/postgres-copy:/var/lib/postgresql/data postgres:16-alpine
+sudo cp -a /mnt/fil-one/control/postgres "$COPY"
+sudo docker run --rm -d --name postgres-look -v "$COPY":/var/lib/postgresql/data postgres:16-alpine
+sudo docker exec -it postgres-look psql -U admin -d admin
+sudo docker stop postgres-look && sudo rm -rf "$COPY"
 ```
 
 If a server did run on the old directory itself, with nothing writing to it, the guards say so and
-name the marker: once that server has stopped, `sudo touch` the marker to restore the record.
+name the marker: once that server has stopped, `sudo touch` the marker to restore the record. If
+instead a guard says it found no Postgres container, or `postgres-migration` left behind, the node's
+state needs a person: find which cluster the apps last wrote to (the old one if a revert ran, the
+new one otherwise), make sure Postgres runs on it, and go on from the case above that matches.
 
 To go back, revert the node's `platform/versions.env` and `platform/compose.yml`, not the whole
 change, which would also remove the guards. The next deploy starts the old image on the old

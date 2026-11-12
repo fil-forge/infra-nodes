@@ -158,6 +158,11 @@ old_cluster_running() {
 # --- Rolling back a run that died ---------------------------------------------
 
 if [ "$mode" = rollback ]; then
+  # A run removes a lapsed record before it writes old-image, so a record naming
+  # the new directory, lapsed or not, means old-image is left over from a run
+  # that finished, and going back would start the data from before it.
+  [ "$(cat "$marker" 2>/dev/null)" != "$configured" ] ||
+    die "$marker names $configured, so no run is in progress to roll back"
   [ -s "$old_image_file" ] ||
     die "$old_image_file is missing: no run of this script stopped the old cluster,
        or one already put it back"
