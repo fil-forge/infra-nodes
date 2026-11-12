@@ -240,12 +240,13 @@ FilOne rules tied to `docker0` or another Docker bridge after confirming these s
 Piri dials Chain.Love for chain RPC. Staging has its own chain.love token,
 separate from dev's, in OpenBao at `external#chain_rpc_token`. The token is the bare API key, not
 the endpoint URL the Chain.Love dashboard shows with it. The key accepts WebSocket connections only,
-so check it with a WebSocket upgrade request; the token goes in through a file descriptor, so it
-never appears in a command line:
+so check it with a WebSocket upgrade request. The host token goes to `docker exec` through its
+environment and the chain.love token through a file descriptor, so neither appears in a command
+line:
 
 ```sh
-token="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-  filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
+token="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
+  -e BAO_TOKEN filone-openbao bao kv get -mount=filone -field=chain_rpc_token external)"
 curl --http1.1 -sS -i --max-time 5 \
   -H @<(printf 'Authorization: Bearer %s\n' "$token") \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
@@ -278,8 +279,8 @@ missing:
 
    ```sh
    bao_exec() {
-     docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-       filone-openbao bao "$@"
+     BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 \
+       -e BAO_TOKEN filone-openbao bao "$@"
    }
    bao_exec kv get -mount=filone external   # expect "No value found"
    read -rsp 'chain.love token: ' token; echo
@@ -948,8 +949,8 @@ directly:
 
 ```sh
 for piri in piri-0 piri-1 piri-2; do
-  address="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
-    -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" filone-openbao \
+  address="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec \
+    -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN filone-openbao \
     bao kv get -mount=filone -field=owner_wallet_address "$piri")"
   echo "$piri $address"
 done
@@ -1259,6 +1260,10 @@ On a node that already holds its backup key and predates snapshots, run the two 
 `provision-host-token.sh`, then `provision-backups.sh`. The second checks the key, uploads the
 first snapshot and enables the timer; run first, it stops at the snapshot that the old token
 cannot take.
+
+**Rotate the root token after a leak.**
+[Rotate the root token of an appliance's OpenBao](runbook/rotate-openbao-root-token.md) mints a
+replacement, revokes the leaked token and covers the snapshots that still hold it.
 
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
@@ -1696,8 +1701,8 @@ costs that day's proving period, and nothing more: once scheduling runs again, C
    its own; print its address on the host:
 
    ```sh
-   docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$(cat /etc/fil-one/bao-token)" \
-     filone-openbao bao kv get -mount=filone -field=owner_wallet_address "piri-${n:?}"
+   BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec -e BAO_ADDR=http://127.0.0.1:8200 \
+     -e BAO_TOKEN filone-openbao bao kv get -mount=filone -field=owner_wallet_address "piri-${n:?}"
    ```
 
    Look the address up on a Calibration block explorer. If it holds little or no tFIL, fund it as
@@ -1765,6 +1770,25 @@ already happened, so there is nothing to race.
    before Curio gave up.
 2. Record the proof set's ID and the reason on the incident. What to do with the data set is
    decided outside this runbook.
+
+#### Piri has untracked add pieces
+
+**Act within a day.** A piece addition for the proof set succeeded on chain more than 10 minutes
+ago, and Curio has not recorded its pieces from the receipt. Curio retries on every chain head and
+reports no failure. A new proof set is not scheduled for proving until its first addition is
+recorded, and the added pieces are not proven. The contract records no faults while this holds.
+
+1. On the host, read the Piri's logs for the addition:
+
+   ```sh
+   docker logs "filone-piri-${n:?}" 2>&1 | grep -e 'pieces from receipt' -e 'No such container'
+   ```
+
+2. If the error names an event that wasn't found in the receipt, PDPVerifier now emits an event
+   Piri's Curio can't parse, usually after a contract upgrade. The node can't fix this. Post the
+   error, the proof set's ID and the transaction hash in `#filone-eng` on Slack, and record them on
+   the incident. A Piri release with a newer Curio records the additions once it is deployed.
+3. Otherwise, record the error on the incident and post it in `#filone-eng`.
 
 ### A volume is not mounted
 
@@ -1841,10 +1865,90 @@ Piris whose challenge windows rarely line up can take longer than one.
 **The gate says `piri-config.toml` is missing.** The container is running but the file is not there
 yet, which is where a node sits while `piri init` is still working and where it stays if init died.
 `docker logs filone-piri-<n>` says which of the two it is. The gate lets the deploy through only
-when `piri-base-config.applied.toml` is missing too, because init writes that file last and a node
-that has never got that far holds no proof set. A missing config next to a present snapshot aborts
-the deploy: init has completed here before, so Piri may still owe a proof. Restore the config, or
-`docker stop filone-piri-<n>` if that Piri is being decommissioned.
+when init's stamp is missing too: `piri-init.stamp`, or `piri-base-config.applied.toml` on a node
+that has not re-run init since the stamp replaced it. The entrypoint writes the stamp once init
+returns, so a node that has never got that far holds no proof set. A missing config next to a
+present stamp aborts the deploy: init has completed here before, so Piri may still owe a proof.
+Restore the config, or `docker stop filone-piri-<n>` if that Piri is being decommissioned.
+
+**Piri logs `WARNING: init failed; serving the existing config version N`.** Piri's entrypoint
+re-runs `piri init` whenever one of init's inputs changes: the base config, a `node.env` value init
+takes as a flag (public URL, chain endpoint, registrar, PLC directory, operator email), the Postgres
+URL, so a rotation of Piri's database password too, or a Piri image that writes a different config
+version, which a rollback to an older image does as well as an upgrade. It happens on the next
+recreate, which `deploy-apps.sh` does behind the proving gate, so an image bump or such a `node.env`
+edit costs one init run, not just a restart. The chain RPC token is not an input of init's: `serve`
+reads it from the environment, so a rotation needs only a recreate. A re-run that fails, or does not
+finish within 5 minutes (`PIRI_INIT_TIMEOUT` in `node.env`, in seconds; a value that is not a whole
+number without leading zeros falls back to 300 with a warning; keep it well under the 420 seconds
+`deploy-apps.sh` waits for a recreated Piri to turn healthy, at most 360, since that wait also
+covers `serve` starting), ends in this warning when it is safe
+to carry on: the image writes a different config version, it is the first start since the stamp
+replaced the snapshot and the old snapshot still matches the base config, or init timed out. Piri
+then serves the config already on disk, which holds its proof set; `N` is that config's version. A
+preceding `did not finish within` line means init was killed with SIGKILL (exit 137): usually by the
+timeout, but the kernel's OOM killer exits the same way, and `dmesg` on the host tells the two
+apart. The first-start case can hide a `node.env` change that lands in the same deploy: the
+config served lacks it until init next succeeds. Any other failure of a re-run still exits, and
+Docker restarts the container into the same init. The lines before the warning in the Piri's `docker
+logs` carry init's own error, most often the registrar or chain RPC being unreachable. A kill
+partway through init is harmless: the wallet import is idempotent and the key files are mounted
+read-only, so the next run recovers.
+
+**Piri logs `WARNING: skipping init: it already failed for this Piri and these inputs`.** After the
+warning above, the entrypoint writes `piri-init.failed` beside `piri-config.toml`, holding the Piri
+binary's hash, the config version it tried to write and the hash of init's inputs. While all three
+still match, every later start, whether a gated recreate, a crash, a reboot or a Docker restart,
+skips init and serves the existing config straight away, rather than holding off proving for another
+failed run each time. Until init succeeds the node serves the older config, which is safe but misses
+whatever the re-run was for. A new Piri image or a change to any of init's inputs retries on its
+own, a start that needs no init deletes the file, and so does a successful init. To retry with
+nothing changed, fix the cause, then wait for the gate, delete the file and restart Piri, in that
+order and straight away, so the restart lands in the window the gate found. Run it from the
+checkout, holding the deploy lock so a reconcile can neither reset the checkout under the gate nor
+recreate Piri around the restart:
+
+```sh
+cd /opt/fil-one/infra-nodes
+sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh piri-0 \
+  && rm /mnt/fil-one/piri-0/piri-init.failed \
+  && docker restart filone-piri-0'
+```
+
+Those are dev's checkout and `piri-0`'s service, data directory and container; the other Piris are
+`piri-1` and `piri-2`. Staging runs the same three Piris, with the same service and container names;
+only its checkout (`/root/fil-one/infra-nodes`) and data directories
+(`/mnt/data/fil-one/data/piri-<n>/`) differ.
+Deleting the file without the restart retries on the next start of any kind, gated or not;
+`deploy-apps.sh` does not recreate Piri when nothing has changed.
+
+**Piri logs `ERROR: init wrote a config naming proof set N in place of M`.** A re-run of init
+came back with a config naming a different proof set from the one the node was proving. `piri init`
+reuses the one proof set listed in Piri's Postgres (`pdp_data_sets`), and creates a new one on chain
+when that table lists none. So the database init used either had lost the node's proof set or was a
+different database: a reset, a restore from an older backup, or a `node.env` change to the Postgres
+URL. A different database that already lists a proof set is adopted rather than created, and that
+proof set need not be this node's. Either way, by the time the entrypoint sees the config, init has
+already done it. The entrypoint puts the previous config back, serves it, and writes
+`piri-init.failed` as for the warnings above, so later starts skip init until the image or init's
+inputs change.
+
+What that leaves depends on the cause. `serve` reads the database URL from the config, not from
+`node.env`, so after a URL change the restored config points Piri back at the database it had, and
+the node keeps proving `M`; put the URL in `node.env` back, or decide to move. After a reset or an
+older restore of the same database, the restored config names `M` but the database no longer
+holds it: Piri cannot add roots to `M` or prove it, and it will fault. Restoring that database is
+then urgent. In both cases, make sure the database `node.env` points at holds proof set `M` before
+retrying; a retry against one that lists only `N` comes back with `N` again. What to do with `N` on
+chain is a decision for whoever owns the wallet, not something to do from the node.
+
+**Piri logs `WARNING: restoring the config from before an init that did not finish`.** The
+container stopped during a re-run of init, after the entrypoint copied the config to
+`piri-config.toml.before-init` and before it checked what init wrote. The copy is put back before
+anything else reads the config, so this start decides from the config the node was serving, and a
+proof set that run created or adopted is caught by the check above if init runs again. If init does
+not run again, for instance because the change to its inputs was reverted in the meantime, check the
+wallet's proof sets on chain for one the interrupted run created.
 
 **Caddy will not get a certificate.** ACME needs port 80 reachable and DNS pointing at this node.
 Check that the A records resolve to the Elastic IP and that the security group still allows 80.

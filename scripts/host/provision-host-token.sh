@@ -35,8 +35,7 @@ bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 
 echo "=== provision host token ($FILONE_NODE) ==="
 echo
-echo "  Paste the root token printed when this node's OpenBao was initialised."
-echo "  It is in 1Password and is not echoed here."
+echo "  Paste this node's root token from 1Password. It is not echoed here."
 read -rsp "root token: " root_token
 echo
 [ -n "$root_token" ] || die "no root token given"

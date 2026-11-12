@@ -69,8 +69,11 @@ aws s3api list-buckets --query "Buckets[?starts_with(Name, 'forge-nodes-backups-
 - **A live seal token.** The token is a central credential on the node's root disk, outside the
   snapshot. Any live token for the region unseals any snapshot of the region. It lapses 72 hours
   after its last renewal, and it is bound to the node's IP.
-- **The root token from 1Password**, the one printed when the node's OpenBao was first initialised.
-  The restore brings it back to life.
+- **The root token from 1Password that was valid when the snapshot was taken.** That is the
+  current one unless the root token was rotated after the snapshot;
+  [Snapshots taken before the rotation](rotate-openbao-root-token.md#snapshots-taken-before-the-rotation)
+  says which token to use then, and to revoke it again afterwards. The restore brings the token
+  back to life.
 - **The `AdministratorAccess` SSO role in the stage's central account**, for every AWS command
   below. `ReadOnlyAccess` can read the backup bucket and the Piri DIDs central recorded, but not run
   `make mint-appliance-credentials`, which the key check and a seal-token reissue need: every round

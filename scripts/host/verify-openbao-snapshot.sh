@@ -8,8 +8,8 @@
 # publishes no ports. It unseals through central exactly as the node's OpenBao
 # would after a restore, so a snapshot that passes here restores on the node.
 #
-# Then asks for the root token from 1Password, which is valid in the restored
-# store, and compares each Piri's and Ingot's DID in the snapshot with the one
+# Then asks for the root token from 1Password that was valid when the snapshot
+# was taken, and compares each Piri's and Ingot's DID in the snapshot with the one
 # the node's OpenBao holds. Exits non-zero when an identity differs or is
 # missing from the snapshot, because a restore from it would lose that identity.
 #
@@ -99,8 +99,10 @@ token_status=0
 bao_rejects_token "$VERIFY_CONTAINER" "$root_token" || token_status=$?
 case "$token_status" in
   1) ;;
-  0) die "the restored store rejects that root token. It is the token printed when
-       this node's OpenBao was initialised, kept in 1Password." ;;
+  0) die "the restored store rejects that root token. It takes the root token that
+       was valid when the snapshot was taken. A snapshot older than a rotation of
+       the root token takes the earlier one, which 1Password keeps in an item of
+       its own; docs/runbook/rotate-openbao-root-token.md says which." ;;
   *) die "could not ask the restored store about the root token; 'docker logs $VERIFY_CONTAINER'
        may say why, until this script exits and removes it." ;;
 esac
