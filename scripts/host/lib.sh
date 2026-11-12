@@ -399,6 +399,15 @@ else:
 '
 }
 
+# The host directory the running Postgres container has as its data directory,
+# read off the container rather than compose.yml, which may already name
+# another.
+postgres_container_data_dir() {
+  docker inspect \
+    -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' \
+    "$FILONE_POSTGRES_CONTAINER"
+}
+
 # Refuse to start Postgres on a data directory that the node's cluster has not
 # been migrated into. Without this, the merge that moves a node to the Debian
 # image would start an empty cluster under Piri and Ingot on the next reconcile
@@ -409,20 +418,55 @@ else:
 # the old directory, because its image has not moved or the move was reverted;
 # and on one migrate-postgres-to-debian.sh has finished.
 require_postgres_migrated() {
-  local configured previous
+  local configured previous marker
   configured="$(postgres_data_dir)" ||
     die "could not read Postgres's data directory from $FILONE_NODE_DIR/platform/compose.yml"
   previous="$(postgres_previous_data_dir)"
+  marker="$(postgres_migrated_marker)"
 
-  [ "$configured" != "$previous" ] || return 0
+  if [ "$configured" = "$previous" ]; then
+    [ -e "$marker" ] || return 0
+    # A revert after a migration. With the old cluster gone, Postgres would
+    # initialise an empty one in its place.
+    [ -f "$previous/PG_VERSION" ] ||
+      die "compose.yml mounts $previous again, but the cluster there was removed after
+       the migration into $(cat "$marker"). Starting Postgres would hand Piri and
+       Ingot empty databases. Undo the revert."
+    # From here the old cluster takes the writes and the migrated copy falls
+    # behind, so the migration no longer stands: a later merge waits for a new
+    # one, which moves the stale copy aside, rather than starting it.
+    rm -f -- "$marker"
+    echo "  compose.yml mounts $previous again; forgot the migration into the stale copy"
+    return 0
+  fi
   [ -f "$previous/PG_VERSION" ] || return 0
-  [ "$(cat "$(postgres_migrated_marker)" 2>/dev/null)" = "$configured" ] && return 0
+  [ "$(cat "$marker" 2>/dev/null)" = "$configured" ] && return 0
 
   die "compose.yml mounts $configured as Postgres's data directory, but this node's
        cluster is still in $previous. Starting Postgres there would hand Piri and
        Ingot empty databases. Run scripts/host/migrate-postgres-to-debian.sh, which
        moves the data across and finishes the deploy; docs/RUNBOOK.md has the
        procedure."
+}
+
+# Refuse to start the apps on a cluster a migration left half built. The
+# migration stops them before it starts the new cluster, and starts them again
+# once that cluster holds every database or the old one is back. A run killed
+# in between leaves the new cluster running without the apps' data.
+require_postgres_settled() {
+  local running previous
+  container_exists "$FILONE_POSTGRES_CONTAINER" || return 0
+  running="$(postgres_container_data_dir)" || die "could not inspect $FILONE_POSTGRES_CONTAINER"
+  previous="$(postgres_previous_data_dir)"
+
+  [ "$running" != "$previous" ] || return 0
+  [ -f "$previous/PG_VERSION" ] || return 0
+  [ "$(cat "$(postgres_migrated_marker)" 2>/dev/null)" = "$running" ] && return 0
+
+  die "$FILONE_POSTGRES_CONTAINER runs on $running, which migrate-postgres-to-debian.sh
+       has not finished filling. Starting the apps would hand them a cluster without
+       their data. Run migrate-postgres-to-debian.sh --rollback to start the old
+       cluster and the apps, or run the migration again."
 }
 
 # --- Change detection --------------------------------------------------------

@@ -42,8 +42,10 @@ other may hold. The directory is `postgres-glibc`, beside the old `postgres` in 
 directory. Once a node's checkout names the new pair, `deploy-platform.sh` refuses to run until
 `migrate-postgres-to-debian.sh` has moved the data, so a merge cannot start an empty cluster under
 the apps. The script dumps every database, restores it into the new cluster, compares every table's
-row count, and leaves the old directory as the way back. If a step fails after the old cluster
-stopped, it starts the old cluster again. The runbook has the procedure.
+row count, and leaves the old directory as the way back. If a step fails, or the run is
+interrupted, after the old cluster stopped, it starts the old cluster again. A run killed outright
+cannot, so `deploy-apps.sh` refuses to start the apps on a cluster a migration left half built, and
+`--rollback` puts the old one back. The runbook has the procedure.
 
 Dev moves first, then staging. Both have to move before FIL-1600's standby is cloned from the
 primary: a physical standby, and a cluster restored from WAL-G's base backups, have to run the
