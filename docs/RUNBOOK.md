@@ -1987,9 +1987,10 @@ step 2 did not happen, or its weight is zero.
 in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, and in the
 `AWS_REGION` the client signs with.
 
-**A `filone-alerts` message arrived.** The headline says what happened: the node never reached a
-commit or failed its smoke test (from `smoke.yml`), or the node failed its end-to-end test or the
-cleanup after it (from `e2e.yml`).
+**A `filone-alerts` message arrived.** The headline says what happened. From `smoke.yml`: the node
+never reached a commit, failed its smoke test, or passed it and could not start its end-to-end
+test. From `e2e.yml`: the node failed its end-to-end test, the cleanup after it failed, or the
+run could not start.
 
 When the failing commit is an image bump, the message carries a further line naming the service
 commit that produced the image and who wrote it, read from the source commit link the bump left in
@@ -2011,6 +2012,10 @@ if the revision is still nowhere on origin, the node is following another ref an
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
 ```
 
+*The dev node passed its smoke test, but its end-to-end test could not be started.* GitHub refused
+the dispatch of `e2e.yml`, and the run log has its answer. The message gives the command to start
+the test by hand.
+
 *The dev node failed its end-to-end test.* The node answers its health checks, but cannot create a
 tenant, create a bucket, store an object or serve it back. The headline names the operation that
 failed, and the run log has the error Hilt or Ingot returned. A failure creating the tenant or its
@@ -2021,12 +2026,12 @@ region mismatches cover the usual Ingot causes.
 
 The second line of the message says what started the run, and that decides where to look first:
 
-- A line naming an infra-nodes commit means the test ran after that push, once the node passed its
-  smoke test. Suspect the image the commit pinned, or Hilt.
-- A line starting *Triggered by central change* means infra-central deployed that commit to the
-  stage and started the test. Suspect the central change first. Every central push starts a run,
-  and the run tests the node as it stands, so a central change that touched nothing on the write
-  path points at the node instead.
+- *Triggered by infra-nodes change* means `smoke.yml` started the test after that push, once the
+  node passed its smoke test. Suspect the image the commit pinned, or Hilt.
+- *Triggered by infra-central change* means infra-central deployed that commit to the stage and
+  started the test. Suspect the central change first. Every central push starts a run, and the run
+  tests the node as it stands, so a central change that touched nothing on the write path points
+  at the node instead.
 - No such line means the daily run, and a line *Started by hand* means somebody dispatched it.
   Nothing was deployed for either, so suspect drift on the node or in central, such as a rotated
   partner key.
@@ -2037,8 +2042,8 @@ never deletes a tenant whose bucket may still hold data, because Hilt cannot rec
 tenant's storage. Delete them by hand as below.
 
 *The end-to-end test could not start.* The run failed while choosing which nodes to test, before it
-touched any. The run log has the error: a dispatch with a malformed `central_*` input, a GitHub API
-error reading the smoke run's jobs, or a smoke job renamed so that no job matches a node.
+touched any. The usual cause is a dispatch with a malformed `change_*` input, and the run log names
+the input.
 
 **A bump pull request is sitting open.** The refresh workflow rebuilds every open bump on current
 main, so a stale base is not the reason. It leaves one alone in exactly one case: main moved that

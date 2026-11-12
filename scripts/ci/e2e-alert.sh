@@ -8,19 +8,18 @@
 # Everything comes from the environment, as e2e.yml passes it:
 #
 #   NODE              the node tested
-#   TRIGGER           push, central, schedule or manual
+#   TRIGGER           change (a deploy dispatched the run), schedule or manual
 #   E2E_OUTCOME       the test step's outcome
 #   E2E_FAILED_OP     the operation that failed, from e2e-test.sh
 #   CLEANUP_OUTCOME   the cleanup step's outcome
 #   LEFTOVER_TENANT   what cleanup left behind, from e2e-test.sh
 #   LEFTOVER_BUCKET
 #   RUNBOOK           the runbook section on cleaning up by hand
-#   ACTOR             who pushed (push) or started the run (manual)
-#   COMMIT_SUBJECT    the infra-nodes commit (push)
-#   COMMIT_URL
-#   CENTRAL_SHA       the infra-central change (central)
-#   CENTRAL_SUBJECT
-#   CENTRAL_AUTHOR
+#   ACTOR             who started the run (manual)
+#   CHANGE_REPO       the deployed change (change): infra-nodes or
+#   CHANGE_SHA        infra-central, its full sha, its subject and the
+#   CHANGE_SUBJECT    login that pushed it
+#   CHANGE_AUTHOR
 #
 # Writes headline, cause and next, each one line of Slack mrkdwn, to
 # $GITHUB_OUTPUT, or prints them outside GitHub Actions. cause is empty for a
@@ -32,9 +31,9 @@ main() {
 
   if [ "$E2E_OUTCOME" = failure ]; then
     headline="The $NODE node failed its end-to-end test: $(slack_escape "${E2E_FAILED_OP:-see the run log}")"
-    case "$TRIGGER" in
-      push) next="The node answers its health checks but cannot serve a customer. Suspect the image this commit pinned, or Hilt." ;;
-      central) next="Suspect the central change first, then the node's own state: every central deploy starts this test, whatever it changed." ;;
+    case "$TRIGGER:${CHANGE_REPO-}" in
+      change:infra-nodes) next="The node answers its health checks but cannot serve a customer. Suspect the image this commit pinned, or Hilt." ;;
+      change:infra-central) next="Suspect the central change first, then the node's own state: every central deploy starts this test, whatever it changed." ;;
       *) next="Nothing was deployed for this run. Suspect drift on the node or in central, such as a rotated partner key." ;;
     esac
   elif [ "$CLEANUP_OUTCOME" = failure ]; then
@@ -49,11 +48,12 @@ main() {
   fi
 
   case "$TRIGGER" in
-    push)
-      cause="Commit: \`$(first_line "$COMMIT_SUBJECT")\` by $(github_user "$ACTOR") (<$COMMIT_URL|infra-nodes@$(commit_sha7 "$COMMIT_URL")>)"
-      ;;
-    central)
-      cause="Triggered by central change: \`$(first_line "$CENTRAL_SUBJECT")\` by $(github_user "$CENTRAL_AUTHOR") (<https://github.com/fil-forge/infra-central/commit/$CENTRAL_SHA|infra-central@${CENTRAL_SHA:0:7}>)"
+    change)
+      case "$CHANGE_REPO" in
+        infra-nodes | infra-central) ;;
+        *) echo "unknown CHANGE_REPO: $CHANGE_REPO" >&2; exit 2 ;;
+      esac
+      cause="Triggered by $CHANGE_REPO change: \`$(first_line "$CHANGE_SUBJECT")\` by $(github_user "$CHANGE_AUTHOR") (<https://github.com/fil-forge/$CHANGE_REPO/commit/$CHANGE_SHA|$CHANGE_REPO@${CHANGE_SHA:0:7}>)"
       ;;
     manual) cause="Started by hand by $(github_user "$ACTOR")" ;;
     schedule) cause="" ;;
@@ -69,11 +69,6 @@ main() {
 # contain anything.
 first_line() {
   slack_escape "${1%%$'\n'*}"
-}
-
-commit_sha7() {
-  local sha="${1##*/}"
-  echo "${sha:0:7}"
 }
 
 # github_user — a login as a link. An App acting as itself, such as

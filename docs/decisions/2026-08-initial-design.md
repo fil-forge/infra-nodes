@@ -366,15 +366,20 @@ The write path runs through central as well as the node, so the test runs when e
 
 | Trigger | Nodes tested |
 | --- | --- |
-| `smoke.yml` finished a run for a push to main | each node whose smoke test passed |
-| infra-central deployed to dev or staging, and dispatched the run | the nodes of that stage |
+| `smoke.yml` dispatches it after a push to main, from each node's job that passed | that node's stage |
+| infra-central dispatches it after deploying to dev or staging | the nodes of that stage |
 | daily schedule | dev and staging |
 | manual dispatch | the chosen stage |
 
 After a push, the smoke test has already waited for the node to reach the commit, and a node that
-failed it has already alerted, so the test runs only where the smoke test passed. After a central
-deploy, the alert names the central change. The daily run covers what changes without any deploy,
-such as a rotated partner key.
+failed it has already alerted, so only a node that passed starts the test. Both dispatches pass the
+change that started the run, and the alert names it. The daily run covers what changes without any
+deploy, such as a rotated partner key.
+
+`smoke.yml` starts the run with a dispatch rather than `e2e.yml` listening for finished smoke runs
+(`workflow_run`). That trigger fires on every smoke run, the hourly ones included, and cannot tell
+how a run started, so it would add a skipped run to the Actions list every hour. The dispatch also
+gives infra-nodes and infra-central one way to start the test, with the same inputs.
 
 It is a workflow of its own, rather than a step in `smoke.yml`, because the two run on different
 triggers and the end-to-end test holds a credential. The smoke test runs hourly. The end-to-end test
