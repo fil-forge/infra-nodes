@@ -97,7 +97,7 @@ previous="$(postgres_previous_data_dir)"
 configured="$(postgres_data_dir)" ||
   die "could not read Postgres's data directory from $FILONE_NODE_DIR/platform/compose.yml"
 marker="$(postgres_migrated_marker)"
-workdir="$FILONE_CONTROL_DIR/postgres-migration"
+workdir="$(postgres_migration_workdir)"
 # The image the old cluster ran under, written before anything is stopped, so a
 # rollback can start it again after a run that died without putting it back.
 old_image_file="$workdir/old-image"
@@ -117,9 +117,10 @@ trap 'exit 141' PIPE
 # because a write to a stderr that is gone ends the script. A --rollback started
 # by on_exit already writes its stderr to the log, and says so.
 die() {
-  [ "${FILONE_MIGRATE_STDERR_IS_LOG:-}" = 1 ] ||
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR: $*" >>"$log" 2>/dev/null
-  echo "ERROR: $*" >&2
+  if [ "${FILONE_MIGRATE_STDERR_IS_LOG:-}" != 1 ]; then
+    { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR: $*" >>"$log"; } 2>/dev/null || :
+  fi
+  echo "ERROR: $*" >&2 || :
   exit 1
 }
 
@@ -311,6 +312,13 @@ echo "[1/6] Stopping Piri and Ingot"
 # Before the gate, so the download is not part of the outage.
 echo "  pulling the new image"
 compose_platform pull --quiet postgres || die "could not pull the new Postgres image"
+# A record a revert left lapsed carries nothing this run needs. Left in place, a
+# run killed from here on would read to the guards as a look at the old
+# directory, and they would offer to restore the record over a half-built
+# cluster.
+if postgres_record_lapsed "$configured"; then
+  rm -f -- "$marker"
+fi
 # Only this script writes here, so whatever an earlier run left is safe to clear.
 rm -rf -- "$workdir"
 install -d -m 0700 -o root -g root "$workdir"
