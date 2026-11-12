@@ -38,6 +38,7 @@ set -euo pipefail
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+SELF="$(readlink -f "$0")"
 
 # The roles postgres-init makes, and the one the image's entrypoint makes. The
 # new cluster gets these from the same places, with their passwords from
@@ -104,18 +105,29 @@ log="$FILONE_STATE_DIR/migrate-postgres.log"
 
 # Bash runs the EXIT trap after a fatal signal with a status of 0, which would
 # read as success and skip putting the node back. Exiting from a trap of their
-# own hands it the signal's status instead.
+# own hands it the signal's status instead. PIPE is among them because a run
+# with no terminal, over a connection that drops, gets that rather than HUP.
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+trap 'exit 141' PIPE
+
+# The log gets the reason a run stopped, not only what putting it back did.
+# Replaces lib.sh's die for this script and the helpers it calls.
+die() {
+  echo "ERROR: $*" >&2
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR: $*" >>"$log" 2>/dev/null
+  exit 1
+}
 
 [ "$configured" != "$previous" ] ||
   die "compose.yml still mounts $previous. Run this once the change that moves this
        node to the Debian image has reached the checkout."
 [ -f "$previous/PG_VERSION" ] || die "there is no cluster in $previous"
-[ "$(cat "$marker" 2>/dev/null)" != "$configured" ] ||
-  die "$marker says this node was already migrated into $configured. After a
-       finished migration the way back is a revert; docs/RUNBOOK.md says how."
+! postgres_migration_recorded "$configured" ||
+  die "$marker says this node was already migrated into $configured. If a step
+       after the restore failed, run deploy-platform.sh. To go back, docs/RUNBOOK.md
+       says how."
 case "$configured" in
   "$FILONE_CONTROL_DIR"/*) ;;
   *) die "compose.yml mounts $configured, outside $FILONE_CONTROL_DIR; refusing to build a cluster there" ;;
@@ -125,7 +137,7 @@ esac
 # before. The shell's values win over the env files', so this one start uses
 # them while compose.yml keeps the new ones, and the deploy-platform.sh guard
 # leaves the cluster alone until a migration finishes. Returns non-zero rather
-# than dying, for on_exit below.
+# than dying.
 start_old_cluster() {
   local image="$1"
   echo "  starting the old cluster again under $image"
@@ -235,14 +247,23 @@ fi
 
 # --- Putting the node back --------------------------------------------------
 
-# 0: nothing changed yet. 1: the apps are stopped. 2: the old cluster is stopped
-# too, so it has to come back before the apps do.
+# 0: nothing changed yet. 1 and on: the apps may be stopped and the old
+# cluster too, and --rollback puts back whichever is.
 progress=0
+# Run a step of putting the node back in a session of its own, away from the
+# terminal. The script ignores further signals by then, but the docker CLI
+# installs its own handlers (a Go program that asks for SIGINT gets it even when
+# its parent ignored it), so in the terminal's process group a second Ctrl-C
+# would stop a compose up halfway.
+detached() {
+  setsid --wait "$@" </dev/null
+}
+
 # Runs on every exit, and after a failure or an interrupt puts the node back:
 # onto the old cluster until the marker says the data is migrated, and onto the
 # new one after. The marker decides rather than which step was reached, so a
 # signal that lands just as the marker is written cannot send the apps back to
-# the old cluster.
+# the old cluster. Going back is this script's --rollback, run detached.
 #
 # A second Ctrl-C, a closed terminal or a dead pipe must not cut this short, so
 # it ignores those signals, without errexit, and sends what its steps print to
@@ -259,25 +280,22 @@ on_exit() {
     echo "$*"
   }
   say "$(date -u +%Y-%m-%dT%H:%M:%SZ) the run stopped (status $status); putting the node back. Details: $log"
-  if [ "$(cat "$marker" 2>/dev/null)" = "$configured" ]; then
+  if postgres_migration_recorded "$configured"; then
     say "the data is migrated, but finishing the deploy failed; starting Piri and"
-    say "Ingot on the new cluster. The next reconcile pass retries the deploy."
-    ( start_apps ) || say "could not start every app; start them with deploy-apps.sh"
+    say "Ingot on the new cluster. Run deploy-platform.sh, or let reconcile retry it."
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    detached bash -c '. "$1/lib.sh" && filone_init && start_apps' _ "$SCRIPT_DIR" ||
+      say "could not start every app; start them with deploy-apps.sh"
     return
   fi
-  if [ "$progress" -ge 2 ]; then
-    say "putting the old cluster back"
-    if ! start_old_cluster "$old_image"; then
-      say "could not start the old cluster, so Piri and Ingot stay stopped. Fix the"
-      say "cause, then run this script with --rollback."
-      return
-    fi
+  if [ "$progress" -lt 1 ]; then
+    rm -rf -- "$workdir"
+    return
   fi
-  if [ "$progress" -ge 1 ]; then
-    say "bringing Piri and Ingot back up"
-    ( start_apps ) || say "could not start every app; start them with deploy-apps.sh"
+  if ! detached "$SELF" --rollback; then
+    say "could not put the node back. Fix the cause, then run this script with --rollback."
+    return
   fi
-  rm -rf -- "$workdir"
   say "nothing was migrated; $previous is unchanged. Fix the cause and run this again."
 }
 trap on_exit EXIT
@@ -311,7 +329,6 @@ for name in "${databases[@]}"; do
 done
 
 echo "[3/6] Starting the new cluster"
-progress=2
 docker stop "$FILONE_POSTGRES_CONTAINER" >/dev/null || die "could not stop the old cluster"
 # A directory left by a failed run is moved aside, not deleted: nothing but this
 # script writes there, but a cluster is not something to remove unasked.

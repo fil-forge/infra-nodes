@@ -383,6 +383,22 @@ postgres_migrated_marker() {
   printf '%s' "$FILONE_STATE_DIR/postgres-migrated"
 }
 
+# Whether the marker records a migration into the given directory that still
+# stands. One stops standing when the old cluster runs again, as it does after
+# a revert: from then the old cluster takes the writes and the migrated copy
+# falls behind, so a later merge has to wait for a new migration, which moves
+# the stale copy aside, rather than start it. Postgres rewrites pg_control
+# whenever it starts, and nothing else touches the old directory after a
+# migration, so its pg_control being newer than the marker says the old
+# cluster ran since. Read off the files rather than recorded by the deploy that
+# reverts, because reverting the whole change would revert that code too.
+postgres_migration_recorded() {
+  local marker
+  marker="$(postgres_migrated_marker)"
+  [ "$(cat "$marker" 2>/dev/null)" = "$1" ] || return 1
+  [ ! "$(postgres_previous_data_dir)/global/pg_control" -nt "$marker" ]
+}
+
 # The host directory the platform project mounts as Postgres's data directory,
 # read from the resolved compose file.
 postgres_data_dir() {
@@ -434,32 +450,13 @@ require_postgres_migrated() {
     return 0
   fi
   [ -f "$previous/PG_VERSION" ] || return 0
-  [ "$(cat "$marker" 2>/dev/null)" = "$configured" ] && return 0
+  postgres_migration_recorded "$configured" && return 0
 
   die "compose.yml mounts $configured as Postgres's data directory, but this node's
        cluster is still in $previous. Starting Postgres there would hand Piri and
        Ingot empty databases. Run scripts/host/migrate-postgres-to-debian.sh, which
        moves the data across and finishes the deploy; docs/RUNBOOK.md has the
        procedure."
-}
-
-# Forget a migration once a revert has Postgres running on the old directory
-# again. From then the old cluster takes the writes and the migrated copy falls
-# behind, so a later merge has to wait for a new migration, which moves the
-# stale copy aside, rather than start it. Not before: until the old cluster
-# runs, the apps may still be on the migrated one, which holds the newest data.
-# deploy-platform.sh calls this once the platform is healthy.
-forget_reverted_postgres_migration() {
-  local marker previous running
-  marker="$(postgres_migrated_marker)"
-  [ -e "$marker" ] || return 0
-  previous="$(postgres_previous_data_dir)"
-  [ "$(postgres_data_dir)" = "$previous" ] || return 0
-  running="$(postgres_container_data_dir)" || return 0
-  [ "$running" = "$previous" ] || return 0
-
-  echo "  Postgres runs on $previous again; forgetting the migration into $(cat "$marker")"
-  rm -f -- "$marker"
 }
 
 # Refuse to start the apps on a cluster a migration left half built. The
@@ -474,7 +471,7 @@ require_postgres_settled() {
 
   [ "$running" != "$previous" ] || return 0
   [ -f "$previous/PG_VERSION" ] || return 0
-  [ "$(cat "$(postgres_migrated_marker)" 2>/dev/null)" = "$running" ] && return 0
+  postgres_migration_recorded "$running" && return 0
 
   die "$FILONE_POSTGRES_CONTAINER runs on $running, which migrate-postgres-to-debian.sh
        has not finished filling. Starting the apps would hand them a cluster without
