@@ -326,24 +326,33 @@ attempt() {
 }
 
 # print_signing_debug — run a failed S3 call once more with --debug and print
-# what the client signed and what the server answered: the canonical request,
-# the string to sign, the request headers, and the response headers and body.
-# Comparing that with the same call made from somewhere it passes shows what a
-# SignatureDoesNotMatch is about.
+# botocore's record of what the client signed and what the server answered:
+# the canonical request, the string to sign, the request headers, and the
+# response headers and body. Comparing that with the same call made from
+# somewhere it passes shows what a SignatureDoesNotMatch is about.
 #
-# None of it is secret. The Authorization header carries the access key id and
-# the signature, never the secret key, and the key expires two hours after the
-# test created it, with its tenant deleted by cleanup.
+# The log of a public repository's workflow is public, so the access key id
+# and every signature are replaced with placeholders. The SignedHeaders list,
+# the canonical request and the string to sign stay as they are. The AWS CRT
+# transfer client's own log lines are left out.
 print_signing_debug() {
   echo "    --- signing debug for: $*"
   # Each botocore debug message starts with a timestamped "- DEBUG -" line, and
   # the canonical request, the string to sign and the response body continue
   # over the lines after it, so keep a message whole from its first line on.
+  # A CRT line starts with "[LEVEL] [" and ends the message before it.
   "$@" --debug 2>&1 >/dev/null | awk '
+    /^\[[A-Z]+\] \[/ { keep = 0; next }
     / - DEBUG - / {
       keep = /CanonicalRequest:|StringToSign:|Sending http request:|Response headers:|Response body:/
     }
-    keep { print "    " $0 }
+    keep {
+      gsub(/Credential=[^\/%,; ]+/, "Credential=<access-key-id>")
+      gsub(/Signature=[0-9A-Fa-f]+/, "Signature=<signature>")
+      gsub(/<AWSAccessKeyId>[^<]*</, "<AWSAccessKeyId><access-key-id><")
+      gsub(/<SignatureProvided>[^<]*</, "<SignatureProvided><signature><")
+      print "    " $0
+    }
   ' || true
   echo "    --- end of signing debug"
 }
