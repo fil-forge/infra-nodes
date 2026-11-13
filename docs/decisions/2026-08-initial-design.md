@@ -357,6 +357,43 @@ when that project deploys, and a pin comparison is only meaningful against the s
 digests off the containers rather than out of `versions.env` is what makes the comparison mean
 anything: a pin the node never applied shows up as a mismatch instead of as agreement with itself.
 
+Health endpoints and matching digests still leave the write path unproven, so `e2e.yml` runs an
+end-to-end test: it creates a tenant through central's Hilt and a bucket on the node, uploads one
+object with PutObject and one with a multipart upload, reads both back, and deletes everything it
+created. It creates a new tenant on every run, so tenant creation is tested too.
+
+The write path runs through central as well as the node, so the test runs when either side changes:
+
+| Trigger | Nodes tested |
+| --- | --- |
+| `smoke.yml` dispatches it after a push to main, from each node's job that passed | that node |
+| infra-central dispatches it after deploying to dev or staging | the nodes of that stage |
+| daily schedule | every dev and staging node |
+| manual dispatch | the chosen stage, or one node of it |
+
+After a push, the smoke test has already waited for the node to reach the commit, and a node that
+failed it has already alerted, so only a node that passed starts the test. Both dispatches pass the
+change that started the run, and the alert names it. The daily run covers what changes without any
+deploy, such as a rotated partner key.
+
+`smoke.yml` starts the run with a dispatch rather than `e2e.yml` listening for finished smoke runs
+(`workflow_run`). That trigger fires on every smoke run, the hourly ones included, and cannot tell
+how a run started, so it would add a skipped run to the Actions list every hour. The dispatch also
+gives infra-nodes and infra-central one way to start the test, with the same inputs.
+
+It is a workflow of its own, rather than a step in `smoke.yml`, because the two run on different
+triggers and the end-to-end test holds a credential. The smoke test runs hourly. The end-to-end test
+does not, because Hilt does not yet delete a tenant's records in Sprue or its PLC entry
+([FIL-1488](https://linear.app/filecoin-foundation/issue/FIL-1488)), so every run leaves those
+behind.
+
+The test authenticates with FilOne's partner key, which can manage every tenant on that Hilt
+([FIL-1489](https://linear.app/filecoin-foundation/issue/FIL-1489)). The key lives in a GitHub
+Environment per stage that only `main` can use, so a pushed branch cannot read it and `e2e.yml`
+cannot be dispatched from a branch. The test runs on dev and staging only. Production waits for a
+credential that cannot reach customer tenants
+([FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491)).
+
 `smoke` is deliberately not a required check. It runs after the merge, so requiring it would deadlock
 every pull request.
 

@@ -1122,6 +1122,38 @@ on every pass; `apps` and `platform` move only when that project deploys. The sm
 took. The Piris it checks are the ones `compose.yml` defined at `apps`, so a merged Piri the node has
 not deployed yet is not probed. `smoke.yml` runs the same test after every merge and hourly.
 
+**Run the end-to-end test by hand.** `scripts/ci/e2e-test.sh` creates a tenant through Hilt and a
+bucket on the node's Ingot, uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart
+upload, downloads both and compares them. `--cleanup` then deletes the objects and the bucket,
+disables the tenant and deletes it. `e2e.yml` runs it after the smoke test of every push to main,
+after every infra-central deploy to dev or staging, and daily. A push tests only the node whose
+smoke test passed; a central deploy tests every node of the stage. To start that workflow on every
+node of a stage, or on one node:
+
+```sh
+gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=staging
+gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=staging -f node=staging/eu-central-3
+```
+
+A node joins the test in `NODES` in `scripts/ci/e2e-select.sh`, next to the stage whose Environment
+holds its key. Add it there in the same pull request that adds it to the matrix in `smoke.yml`:
+otherwise its first push dispatches a run for a node `e2e.yml` does not know, and that run alerts
+that it could not start.
+
+Running the script from your machine needs Hilt's partner key, the one FilOne uses, which central
+keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment
+named after the stage:
+
+```sh
+export HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text)"
+E2E_RUN_ID=manual-1 scripts/ci/e2e-test.sh dev
+E2E_RUN_ID=manual-1 scripts/ci/e2e-test.sh dev --cleanup
+```
+
+`E2E_RUN_ID` names the tenant and the bucket (`infra-nodes-e2e-dev-manual-1`), so use a new one for
+each run. The partner key can manage every tenant on that Hilt, FilOne's customers included; keep it
+out of shell history and logs.
+
 **Deploy by hand**, without waiting for the timer:
 
 ```sh
@@ -1990,7 +2022,10 @@ step 2 did not happen, or its weight is zero.
 in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, and in the
 `AWS_REGION` the client signs with.
 
-**A `filone-alerts` message arrived.** It says which of two things happened.
+**A `filone-alerts` message arrived.** The headline says what happened. From `smoke.yml`: the node
+never reached a commit, failed its smoke test, or passed it and could not start its end-to-end
+test. From `e2e.yml`: the node failed its end-to-end test, the cleanup after it failed, or the
+run could not start.
 
 When the failing commit is an image bump, the message carries a further line naming the service
 commit that produced the image and who wrote it, read from the source commit link the bump left in
@@ -2012,6 +2047,39 @@ if the revision is still nowhere on origin, the node is following another ref an
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
 ```
 
+*The dev node passed its smoke test, but its end-to-end test could not be started.* GitHub refused
+the dispatch of `e2e.yml`, and the run log has its answer. The message gives the command to start
+the test by hand.
+
+*The dev node failed its end-to-end test.* The node answers its health checks, but cannot create a
+tenant, create a bucket, store an object or serve it back. The headline names the operation that
+failed, and the run log has the error Hilt or Ingot returned. A failure creating the tenant or its
+key points at Hilt, or at the partner key: an HTTP 401 means the `HILT_PARTNER_KEY` secret no
+longer matches central's `hilt/partner-key`. Anything after that points at the node, so treat it
+like a failed smoke test and suspect the image. The entries above on `CandidateUnavailable` and
+region mismatches cover the usual Ingot causes.
+
+The second line of the message says what started the run, and that decides where to look first:
+
+- *Triggered by infra-nodes change* means `smoke.yml` started the test after that push, once the
+  node passed its smoke test. Suspect the image the commit pinned, or Hilt.
+- *Triggered by infra-central change* means infra-central deployed that commit to the stage and
+  started the test. Suspect the central change first. Every central push starts a run, and the run
+  tests the node as it stands, so a central change that touched nothing on the write path points
+  at the node instead.
+- No such line means the daily run, and a line *Started by hand* means somebody dispatched it.
+  Nothing was deployed for either, so suspect drift on the node or in central, such as a rotated
+  partner key.
+
+*The cleanup after the end-to-end test failed.* Each delete was tried four times, and the message
+names the tenant and bucket left behind. Cleanup stops at the first delete that keeps failing and
+never deletes a tenant whose bucket may still hold data, because Hilt cannot recover a deleted
+tenant's storage. Delete them by hand as below.
+
+*The end-to-end test could not start.* The run failed while choosing which nodes to test, before it
+touched any. The usual cause is a dispatch with a malformed `change_*` input, and the run log names
+the input.
+
 **A bump pull request is sitting open.** The refresh workflow rebuilds every open bump on current
 main, so a stale base is not the reason. It leaves one alone in exactly one case: main moved that
 service to a third digest while the branch sat there, which makes the digest the node should run a
@@ -2025,3 +2093,82 @@ gh workflow run bump-deployed-image.yml -f service=piri -f digest=sha256:...
 **The deadman alert fired.** The node stopped reconciling. Check
 `systemctl status filone-reconcile.timer` and the last few
 `journalctl -u filone-reconcile.service` runs; a failing pass leaves its error there.
+
+### Setting up the end-to-end test's credential
+
+The end-to-end test reads Hilt's partner key from the `HILT_PARTNER_KEY` secret of a GitHub
+Environment named after the stage, `dev` or `staging`. It is the key FilOne uses, and it can manage
+every tenant on that stage's Hilt, so the only thing keeping a pushed branch from reading it is the
+Environment's branch rule. Production gets no Environment until
+[FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491) finds a credential that cannot
+reach customer tenants.
+
+Create the Environment with its branch rule before the secret goes in, and before a node of that
+stage joins `NODES` in `scripts/ci/e2e-select.sh`: a workflow that names a missing Environment
+creates it with no rules. The commands below are for dev; repeat them with `staging`.
+
+```sh
+gh api -X PUT repos/fil-forge/infra-nodes/environments/dev --input - <<<'{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+gh api -X POST repos/fil-forge/infra-nodes/environments/dev/deployment-branch-policies -f name=main -f type=branch
+gh api repos/fil-forge/infra-nodes/environments/dev/deployment-branch-policies --jq '.branch_policies[].name'
+```
+
+The last command must print `main` and nothing else. Then copy the key from central's SSM into the
+Environment without printing it, with AWS credentials for the stage's account:
+
+```sh
+aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text | gh secret set HILT_PARTNER_KEY --env dev --repo fil-forge/infra-nodes
+```
+
+Repeat that whenever central's `hilt/partner-key` changes. Until then, every end-to-end test on
+that stage fails with HTTP 401.
+
+The workflow names the Environment with `deployment: false`, so its runs create no deployment
+records. Only `e2e.yml` names these Environments; `smoke.yml` needs no secret and can still be
+dispatched from any branch.
+
+### Cleaning up after the end-to-end test
+
+A failed cleanup leaves a tenant, and possibly a bucket, named `infra-nodes-e2e-<node>-<run id>`.
+The alert names both. Nothing else will ever delete them: Hilt cannot list tenants, so only their
+names lead back to them. The S3 key the test minted has expired by now, so mint another one.
+
+Read the partner key while your AWS credentials still point at central, then give the S3 client
+its own files, so the credentials in your environment do not override them. The values below are
+dev's; take `HILT_URL`, `REGION_LABEL` and `INGOT_HOSTNAME` from the node's `node.env`.
+
+```sh
+NAME=infra-nodes-e2e-dev-1234567890-1
+HILT_URL=https://auth.latest.dev.fil-forge.com
+HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text)"
+hilt() { curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$HILT_PARTNER_KEY") -H 'Content-Type: application/json' "$@"; }
+
+dir="$(mktemp -d)"
+unset AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+export AWS_CONFIG_FILE="$dir/config" AWS_SHARED_CREDENTIALS_FILE="$dir/credentials"
+printf '[default]\nregion = us-east-9\nendpoint_url = https://s3.us-east-9.latest.dev.filonecontent.com\ns3 =\n  addressing_style = path\n' >"$AWS_CONFIG_FILE"
+hilt -X POST "$HILT_URL/tenants/$NAME/access-keys" \
+  -d '{"name":"manual-cleanup-'"$(date +%s)"'","permissions":["s3:ListBucket","s3:DeleteObject","s3:DeleteBucket","s3:ListBucketMultipartUploads","s3:AbortMultipartUpload"]}' |
+  jq -r '"[default]\naws_access_key_id = \(.accessKeyId)\naws_secret_access_key = \(.secretAccessKey)"' >"$AWS_SHARED_CREDENTIALS_FILE"
+```
+
+If the alert names no bucket, cleanup failed while disabling or deleting the tenant, so skip to that
+step. A disabled tenant also refuses every S3 request with a 403. Otherwise empty the bucket and
+delete it. A 404 from either command means it is already gone:
+
+```sh
+aws s3 rm "s3://$NAME" --recursive
+aws s3api delete-bucket --bucket "$NAME"
+```
+
+If DeleteBucket keeps answering `BucketNotEmpty` for a bucket that lists no objects, stop here and
+leave the tenant in place: deleting it would leak the bucket's storage for good. Otherwise disable the
+tenant and delete it. Each call answers 204, and disabling a tenant that is already gone answers 404:
+
+```sh
+hilt -X POST "$HILT_URL/tenants/$NAME/status" -d '{"status":"disabled"}' -w '%{http_code}\n'
+hilt -X DELETE "$HILT_URL/tenants/$NAME" -w '%{http_code}\n'
+rm -rf "$dir"
+```
+
+Deleting the tenant also deletes every key it holds.
