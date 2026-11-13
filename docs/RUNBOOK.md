@@ -1881,9 +1881,9 @@ host script runs, and the services on other volumes keep running. It takes two s
   `/mnt/fil-one/piri-<n>`, and that is the copy the host scripts read.
 
 - **A Piri volume, or Ingot's on dev.** That container stays stopped. On staging, "Appliance
-  container is not running" fires. Once a commit touches the apps project, every reconcile pass
-  deploys the other apps, logs `WARNING: <service> cannot run` and fails, so the reconcile deadman
-  fires until the volume is back.
+  container is not running" fires. Every reconcile pass deploys the other apps, logs
+  `WARNING: <service> cannot run` and fails, which leaves `/run/fil-one/apps-deployed` unwritten, so
+  the next pass tries again and the reconcile deadman fires until the volume is back.
 - **The control volume.** Postgres, OpenBao and Caddy stay down, so the node serves nothing.
   Reconcile stops with `the control volume is not mounted` and stamps nothing, which fires the
   reconcile deadman. On dev, Alloy keeps running so the node's logs still ship: it is the one
