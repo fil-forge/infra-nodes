@@ -140,6 +140,7 @@ main() {
   echo "  Hilt:   $HILT_URL"
   echo "  Ingot:  https://$INGOT_HOSTNAME ($REGION)"
   echo "  Tenant and bucket: $NAME"
+  echo "  S3 client: $(aws --version 2>&1)"
   echo
 
   if [ "$MODE" = test ]; then
@@ -319,8 +320,32 @@ attempt() {
   if err="$("$@" 2>&1 >/dev/null)"; then
     pass "$op"
   else
+    [ "$1" != aws ] || print_signing_debug "$@"
     abort "$op — $(tail -3 <<<"$err" | tr '\n' ' ')"
   fi
+}
+
+# print_signing_debug — run a failed S3 call once more with --debug and print
+# what the client signed and what the server answered: the canonical request,
+# the string to sign, the request headers, and the response headers and body.
+# Comparing that with the same call made from somewhere it passes shows what a
+# SignatureDoesNotMatch is about.
+#
+# None of it is secret. The Authorization header carries the access key id and
+# the signature, never the secret key, and the key expires two hours after the
+# test created it, with its tenant deleted by cleanup.
+print_signing_debug() {
+  echo "    --- signing debug for: $*"
+  # Each botocore debug message starts with a timestamped "- DEBUG -" line, and
+  # the canonical request, the string to sign and the response body continue
+  # over the lines after it, so keep a message whole from its first line on.
+  "$@" --debug 2>&1 >/dev/null | awk '
+    / - DEBUG - / {
+      keep = /CanonicalRequest:|StringToSign:|Sending http request:|Response headers:|Response body:/
+    }
+    keep { print "    " $0 }
+  ' || true
+  echo "    --- end of signing debug"
 }
 
 # retry — run one cleanup operation, retrying three times ten seconds apart.
