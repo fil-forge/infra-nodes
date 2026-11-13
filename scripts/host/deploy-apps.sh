@@ -45,8 +45,19 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
        positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
 
 piri_services="$(piri_services)"
-# shellcheck disable=SC2206 # one service name per word
-piris=($piri_services)
+# A Piri whose volume is not mounted is left out of this deploy, and the rest go
+# ahead. Docker would refuse to start it anyway; the run fails at the end, so
+# the next reconcile pass tries again.
+piris=()
+unmounted_piris=()
+for service in $piri_services; do
+  if is_mounted "$(piri_data_dir "$service")"; then
+    piris+=("$service")
+  else
+    echo "WARNING: $service's volume is not mounted; leaving it stopped" >&2
+    unmounted_piris+=("$service")
+  fi
+done
 declare -A piri_changed
 for service in "${piris[@]}"; do piri_changed[$service]=0; done
 # A change every Piri sees: the base config and the env file they share.
@@ -56,6 +67,12 @@ ingot_changed=0
 # Every service but Bucket Intelligence's two, which deploy-rag.sh deploys once
 # these are deployed and recorded, so nothing about them can fail this deploy.
 core_services="$(apps_core_services)"
+for service in "${unmounted_piris[@]}"; do
+  core_services="$(grep -vxF "$service" <<<"$core_services" || true)"
+done
+
+# rag-embed's too, though deploy-rag.sh starts it: it runs after this script.
+create_volume_dirs "$FILONE_NODE_DIR/apps"
 
 # --- 1. Render --------------------------------------------------------------
 
@@ -184,7 +201,7 @@ echo "[3/5] Piri"
 piri_containers="$(piri_containers)"
 for container in $piri_containers; do
   service="${container#filone-}"
-  [[ " ${piris[*]} " == *" $service "* ]] && continue
+  grep -qxF "$service" <<<"$piri_services" && continue
   container_running "$container" || continue
   echo "  $service: gone from compose.yml; waiting for a safe window to stop it"
   "$SCRIPT_DIR/pdp-gate.sh" "$service"
@@ -215,8 +232,11 @@ for service in "${piris[@]}"; do
   else
     echo "  $service: nothing changed"
     # An existing Piri with nothing to apply. --no-recreate leaves it running,
-    # or starts it again if it was stopped.
-    compose_apps up -d --no-recreate "$service"
+    # or starts it again if it was stopped. --no-deps so a Piri before it whose
+    # volume is missing is not started as its dependency, and the health wait
+    # keeps the one-at-a-time order compose.yml's depends_on would have.
+    compose_apps up -d --no-recreate --no-deps "$service"
+    wait_healthy compose_apps 420 "$service"
   fi
 done
 
@@ -235,9 +255,10 @@ fi
 # Catch a service added to compose.yml and remove one deleted from it, without
 # recreating any of the services above: whether they restart was decided, and
 # gated, further up. Bucket Intelligence's two are left out; a container whose
-# service is gone from compose.yml is still removed.
+# service is gone from compose.yml is still removed. --no-deps keeps a Piri
+# left out above from being started as a dependency.
 # shellcheck disable=SC2086 # one service name per word
-compose_apps up -d --no-recreate --remove-orphans $core_services
+compose_apps up -d --no-recreate --no-deps --remove-orphans $core_services
 
 # --- 5. Health --------------------------------------------------------------
 
@@ -252,12 +273,20 @@ for service in "${piris[@]}"; do
 done
 config_hash_record apps-ingot "$ingot_config_hash"
 
-stamp_deploy_success apps
-touch "$FILONE_APPS_DEPLOYED_MARKER"
+# Neither the stamp nor the marker while a Piri is left out, so the next
+# reconcile pass deploys again and the reconcile deadman fires until it is back.
+if [ "${#unmounted_piris[@]}" -eq 0 ]; then
+  stamp_deploy_success apps
+  touch "$FILONE_APPS_DEPLOYED_MARKER"
+fi
 request_openbao_snapshot
-echo "=== apps deploy complete ==="
 
 # Last, and outside this deploy's success: deploy-rag.sh logs its own warning
 # and leaves a marker that makes the next reconcile pass retry it alone. It
 # exits at once on a node without the engine.
 "$SCRIPT_DIR/deploy-rag.sh" || true
+
+[ "${#unmounted_piris[@]}" -eq 0 ] ||
+  die "deployed every app but ${unmounted_piris[*]}, whose volume is not mounted.
+       Mount it and the next reconcile pass starts it."
+echo "=== apps deploy complete ==="

@@ -67,6 +67,13 @@ filone_init() {
   [ "$FILONE_NODE" = "$host_node" ] ||
     die "node.env says node '$FILONE_NODE' but this box is '$host_node'"
 
+  # Before the mkdir below, which would otherwise create the state directory on
+  # the root disk under an empty mountpoint. Only the control volume: every
+  # script needs it, while a missing data volume only stops its own services.
+  is_mounted "$FILONE_CONTROL_DIR" ||
+    die "the control volume is not mounted at $FILONE_CONTROL_DIR; refusing to run.
+       'findmnt $FILONE_CONTROL_DIR' and 'lsblk -f' show what is attached."
+
   FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
   FILONE_METRICS_DIR="$FILONE_STATE_DIR/metrics"
   FILONE_REVISIONS_DIR="$FILONE_STATE_DIR/revisions"
@@ -87,6 +94,37 @@ filone_init() {
   # When this run started. wait_healthy uses it to tell a container that
   # crash-looped just now from one that restarted at some point in the past.
   FILONE_DEPLOY_START="$(date +%s)"
+}
+
+# Whether a directory exists on a filesystem other than the root one. fstab
+# mounts the volumes nofail, so a volume that does not attach leaves an empty
+# directory on the root disk, and a service started there runs on no data: an
+# uninitialised OpenBao, a fresh Postgres, a Piri writing to the OS disk.
+is_mounted() {
+  local dev
+  dev="$(stat -c %d "$1" 2>/dev/null)" && [ "$dev" != "$(stat -c %d /)" ]
+}
+
+# Create the bind sources a compose project keeps on the control and data
+# volumes. compose.yml sets create_host_path: false on them, so Docker no longer
+# creates a missing one. Only under a mounted volume, so nothing lands on the
+# root disk. Never a Piri's data directory: bootstrap creates those, and a
+# missing one means the Piri's data is gone, which an empty directory would hide.
+create_volume_dirs() {
+  local project_dir="$1" root roots=() dirs
+  for root in "$FILONE_CONTROL_DIR" "$FILONE_DATA_DIR"; do
+    ! is_mounted "$root" || roots+=("$root/")
+  done
+  [ "${#roots[@]}" -gt 0 ] || return 0
+  dirs="$(docker compose --project-directory "$project_dir" config --no-interpolate --format json |
+    jq -r --args '
+      .services[].volumes // [] | .[]
+      | select(.type == "bind" and .target != "/data/piri") | .source as $source
+      | select(any($ARGS.positional[]; . as $root | $source | startswith($root)))
+      | $source
+    ' "${roots[@]}")" ||
+    die "could not read the bind mounts in $project_dir/compose.yml"
+  [ -z "$dirs" ] || xargs -d '\n' mkdir -p <<<"$dirs"
 }
 
 # Fail on a node.env value that is still the placeholder it was committed with.
@@ -568,7 +606,9 @@ container_running() {
 
 # Ingot first: it writes through to Piri, so it should not outlive it. Returns
 # non-zero when there was nothing to stop, so a caller can tell a node whose apps
-# it took down from one that has never deployed them.
+# it took down from one that has never deployed them. Records what it stopped in
+# FILONE_STOPPED_APPS, for start_apps.
+FILONE_STOPPED_APPS=""
 stop_apps() {
   local container stopped=1 piris
   piris="$(piri_containers)"
@@ -577,6 +617,7 @@ stop_apps() {
     if container_running "$container"; then
       echo "  stopping $container"
       docker stop "$container" >/dev/null || die "could not stop $container"
+      FILONE_STOPPED_APPS+=" $container"
       stopped=0
     fi
   done
@@ -584,16 +625,15 @@ stop_apps() {
 }
 
 # Piri first, the same order in reverse: Ingot started against a Piri that is
-# still coming up produces a burst of failures for no reason.
+# still coming up produces a burst of failures for no reason. Only what
+# stop_apps stopped: a Piri that was already down, such as one whose volume is
+# not mounted, stays down, and is deploy-apps.sh's to report.
 start_apps() {
-  local container piris
-  piris="$(piri_containers)"
-  # shellcheck disable=SC2086 # one container name per word
-  for container in $piris filone-ingot; do
-    if container_exists "$container"; then
-      echo "  starting $container"
-      docker start "$container" >/dev/null || die "could not start $container"
-    fi
+  local container
+  for container in ${FILONE_STOPPED_APPS/filone-ingot/} filone-ingot; do
+    [[ " $FILONE_STOPPED_APPS " == *" $container "* ]] || continue
+    echo "  starting $container"
+    docker start "$container" >/dev/null || die "could not start $container"
   done
 }
 

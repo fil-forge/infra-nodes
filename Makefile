@@ -11,7 +11,7 @@
 SHELL := /bin/bash
 
 .PHONY: check
-check: check-tofu check-shell check-compose
+check: check-tofu check-shell check-compose check-bind-mounts
 
 # -backend=false because validating a root does not need its state, and reaching
 # the state bucket would need credentials the CI job does not have.
@@ -69,5 +69,21 @@ check-compose:
 	      --env-file "$${node}$${project}/versions.env" \
 	      --env-file "$$secrets" \
 	      config >/dev/null; \
+	  done; \
+	done
+
+# No appliance data bind may let Docker run on an unmounted volume;
+# scripts/ci/check-bind-mounts.sh says why. --no-interpolate because the bind
+# sources are literal paths, so no env file is needed.
+.PHONY: check-bind-mounts
+check-bind-mounts:
+	@set -euo pipefail; \
+	for env in nodes/*/node.env nodes/*/*/node.env; do \
+	  [ -f "$$env" ] || continue; \
+	  node="$${env%node.env}"; \
+	  for project in platform apps; do \
+	    echo "==> $${node}$${project}"; \
+	    docker compose --project-directory "$${node}$${project}" \
+	      config --no-interpolate --format json | scripts/ci/check-bind-mounts.sh; \
 	  done; \
 	done

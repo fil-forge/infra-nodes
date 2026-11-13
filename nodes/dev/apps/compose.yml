@@ -113,7 +113,15 @@ services:
         bind:
           create_host_path: false
       - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
-      - /mnt/fil-one/piri-0:/data/piri
+      # A directory on the volume rather than its mount point, which is an
+      # empty directory on the root disk while the volume is not mounted. This
+      # path exists only on the volume, so Docker refuses to start the Piri
+      # without it, at boot included.
+      - type: bind
+        source: /mnt/fil-one/piri-0/piri-0
+        target: /data/piri
+        bind:
+          create_host_path: false
 
   piri-1:
     <<: *piri-base
@@ -138,7 +146,11 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - /mnt/fil-one/piri-1:/data/piri
+      - type: bind
+        source: /mnt/fil-one/piri-1/piri-1
+        target: /data/piri
+        bind:
+          create_host_path: false
     # The Piris start one at a time. `piri init` estimates gas for the
     # createDataSet transaction against the chain's pending state, and two
     # Piris estimating at once underestimate it: the loser's transaction
@@ -171,7 +183,11 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - /mnt/fil-one/piri-2:/data/piri
+      - type: bind
+        source: /mnt/fil-one/piri-2/piri-2
+        target: /data/piri
+        bind:
+          create_host_path: false
     depends_on:
       piri-1:
         condition: service_healthy
@@ -220,7 +236,11 @@ services:
       # that OpenBao's transit engine, so this mount is what makes a write
       # possible at all. Read-write for the same reason the OpenBao side is.
       - /run/fil-one/bao:/run/openbao
-      - /mnt/fil-one/data/ingot:/data
+      - type: bind
+        source: /mnt/fil-one/data/ingot
+        target: /data
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
       start_interval: 1s
