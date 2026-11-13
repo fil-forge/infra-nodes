@@ -34,6 +34,8 @@ if node_ships_telemetry; then
   require_configured GRAFANA_TRACES_USER 000000
 fi
 
+create_volume_dirs "$FILONE_NODE_DIR/platform"
+
 echo "[1/7] Reading secrets"
 write_openbao_env
 
@@ -83,6 +85,16 @@ render_template \
 # After the rendering, so the migration this asks for finds platform.env in
 # place, and before anything that could start Postgres.
 require_postgres_migrated
+
+# The bind sets create_host_path: false, and create_volume_dirs reads the binds
+# uninterpolated, so it cannot place this one, which versions.env names. A new
+# node's first deploy makes it here. filone_init has already refused to run on
+# an unmounted control volume, so this cannot land on the root disk.
+postgres_dir="$(postgres_data_dir)"
+case "$postgres_dir" in
+  "$FILONE_CONTROL_DIR"/*) [ -d "$postgres_dir" ] || install -d -m 0700 "$postgres_dir" ;;
+  *) die "compose.yml mounts $postgres_dir as Postgres's data directory, outside $FILONE_CONTROL_DIR" ;;
+esac
 
 echo "[3/7] Pulling images"
 # Before the gate, not after. Pulling can take minutes, and doing it inside the
@@ -170,10 +182,10 @@ if [ "$apps_stopped" -eq 1 ]; then
   # Bucket Intelligence is left out: an unhealthy engine must not fail this
   # deploy, which would leave the platform unrecorded and take the gate again
   # on every pass.
-  # Its own assignment, so a failure to read the list ends the run.
-  core_services="$(apps_core_services)"
+  # Only the ones it stopped and started again: a Piri that was already down
+  # stays down, and must not fail this deploy.
   # shellcheck disable=SC2086 # one service name per word
-  wait_healthy compose_apps 420 $core_services
+  wait_healthy compose_apps 420 ${FILONE_STOPPED_APPS//filone-/}
 else
   echo "  left running"
 fi

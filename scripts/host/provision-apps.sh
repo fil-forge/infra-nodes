@@ -45,6 +45,20 @@ done
 # publishes. The delegation's audience is the did:web, so that one leads.
 echo "  Ingot: $INGOT_DID (key: $(bao_get ingot did))"
 
+# A Piri's data directory sits one level below its volume's mount point, and no
+# deploy creates it. Here, on a new volume only: one holding anything besides
+# lost+found keeps its data at the root, from before the move into the
+# directory, and a new empty directory there would start Piri without it.
+for service in "${piris[@]}"; do
+  dir="$(piri_data_dir "$service")"
+  volume="$(dirname "$dir")"
+  [ ! -e "$dir" ] && [ "$(stat -c %m "$volume")" = "$volume" ] || continue
+  [ -z "$(find "$volume" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit)" ] ||
+    die "$volume holds data outside $dir; move it into $dir first"
+  install -d -m 0755 "$dir"
+  echo "  created $dir"
+done
+
 # --- 2. Start ---------------------------------------------------------------
 
 # True on a node where some Piri has never finished `piri init`. Mirrors the

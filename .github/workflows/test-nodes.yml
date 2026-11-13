@@ -1,0 +1,356 @@
+# Checks that the dev and staging nodes serve what main pins, and serve a
+# customer.
+#
+# For each node: wait until it has deployed the pushed commit, run the smoke
+# test (scripts/ci/smoke-test.sh), then the end-to-end test
+# (scripts/ci/e2e-test.sh), which creates a tenant through Hilt and a bucket on
+# the node's Ingot, uploads two objects, reads them back and deletes everything.
+# One message to filone-alerts covers every node that failed, because one cause
+# started the run.
+#
+# A merge queues an image rather than deploying it: the node picks it up on its
+# next reconcile pass and can spend 45 minutes in the proving gate before Piri
+# restarts. So the run that merges a bump ends long before the node runs it,
+# and the wait is what ties this run to the commit.
+#
+# The write path runs through central's Hilt as well as the node, so this runs
+# when either side changes:
+#
+# - a push to main tests every node, each once it has reached the commit;
+# - infra-central sends central-deployed after deploying, naming the stages it
+#   deployed and the change;
+# - the hourly schedule catches a node that stops answering between merges and
+#   drift on either side, such as a rotated partner key;
+# - a manual run tests the chosen stages or nodes.
+#
+# Every run leaves Hilt's records of its tenant behind in Sprue and the PLC,
+# because Hilt does not yet delete them (FIL-1488).
+name: Test nodes
+
+run-name: >-
+  ${{
+    github.event_name == 'push' && format('Test nodes after infra-nodes change: {0}', github.event.head_commit.message)
+    || github.event_name == 'repository_dispatch' && format('Test nodes after infra-central change: {0}', github.event.client_payload.change_subject)
+    || github.event_name == 'schedule' && 'Test nodes (hourly)'
+    || format('Test nodes {0} {1}', inputs.stages || 'all stages', inputs.nodes)
+  }}
+
+on:
+  push:
+    branches: [main]
+  # Sent by infra-central with the fil-forge-bot token, which can write this
+  # repository's contents. A workflow_dispatch would need the actions
+  # permission too, and GitHub would label the run as started by hand.
+  repository_dispatch:
+    types: [central-deployed]
+  workflow_dispatch:
+    inputs:
+      stages:
+        description: Stages to test, comma-separated, such as dev,staging (empty for every stage)
+        required: false
+      nodes:
+        description: Nodes to test, comma-separated, such as staging/eu-central-3 (empty for every node of the stages)
+        required: false
+  # Off the hour.
+  schedule:
+    - cron: "17 * * * *"
+
+# A newer push replaces an older push's run, and a newer central deploy an
+# older deploy's run of the same stages, because the node already runs the
+# newer change and an alert would name the wrong one. A cancelled run still
+# cleans up after its end-to-end test and posts no alert. A schedule or manual
+# run has a group of its own: it neither cancels nor is cancelled, so the
+# hourly run can never replace a push's run that is still waiting for its
+# commit.
+#
+# A dispatch's group names its sender and its stages. The stages, so a deploy
+# of dev alone cannot cancel an earlier run that also tests staging, leaving
+# staging untested. The sender, because the group is joined before the select
+# job checks who sent the dispatch: anyone else who can write this repository
+# lands in a group of their own and cannot cancel fil-forge-bot's runs.
+concurrency:
+  group: >-
+    test-nodes-${{
+      github.event_name == 'push' && 'infra-nodes'
+      || github.event_name == 'repository_dispatch' && format('infra-central-{0}-{1}', github.actor, github.event.client_payload.stages)
+      || github.run_id
+    }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # A job-level `if` cannot read the matrix, so choosing the nodes is a job of
+  # its own.
+  select:
+    name: Select nodes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      has_nodes: ${{ steps.select.outputs.has_nodes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Minted only for its slug, which the check below compares the sender
+      # against.
+      - name: Mint fil-forge-bot token
+        id: bot
+        if: github.event_name == 'repository_dispatch'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+          permission-contents: read
+
+      # client_payload is untrusted input: every field reaches the shell
+      # through env, never through ${{ }} interpolation into a script body. The
+      # alert interpolates the change into a link and a mention, so a malformed
+      # payload fails here, loudly, instead of producing a broken alert later.
+      - name: Check the dispatch
+        if: github.event_name == 'repository_dispatch'
+        env:
+          ACTOR: ${{ github.actor }}
+          APP_SLUG: ${{ steps.bot.outputs.app-slug }}
+          CHANGE_SHA: ${{ github.event.client_payload.change_sha }}
+          CHANGE_SUBJECT: ${{ github.event.client_payload.change_subject }}
+          CHANGE_AUTHOR: ${{ github.event.client_payload.change_author }}
+        run: |
+          set -euo pipefail
+          # Anyone holding a token with write access here can dispatch. This
+          # is the boundary that keeps that to infra-central's deploy workflow.
+          [ "$ACTOR" = "${APP_SLUG}[bot]" ] ||
+            { echo "::error::dispatch from '$ACTOR', expected ${APP_SLUG}[bot]"; exit 1; }
+          [[ "$CHANGE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::change_sha is not a full commit sha: $CHANGE_SHA"; exit 1; }
+          [[ "$CHANGE_AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] ||
+            { echo "::error::change_author is not a GitHub login: $CHANGE_AUTHOR"; exit 1; }
+          [ -n "$CHANGE_SUBJECT" ] ||
+            { echo "::error::change_subject is empty"; exit 1; }
+
+      # The selector rejects an unknown stage or node itself. A dispatch must
+      # name its stages: an empty list would test every stage, which no
+      # deploy does.
+      - name: Select the nodes
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          STAGES: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.stages || inputs.stages }}
+          NODES: ${{ inputs.nodes }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = repository_dispatch ] && [ -z "$STAGES" ]; then
+            echo "::error::the dispatch names no stages"
+            exit 1
+          fi
+          scripts/ci/test-nodes/select.sh "$STAGES" "$NODES"
+
+      # Without this, a run that cannot choose its nodes would end without a
+      # word: the report job needs a matrix to report on.
+      - if: failure()
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": ${{ toJSON(format('Node test could not start. Details: {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id)) }},
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(format(':warning: *Node test could not start* · <{0}/{1}/actions/runs/{2}|Details>', github.server_url, github.repository, github.run_id)) }}
+                  }
+                }
+              ]
+            }
+
+  # One job per node, so each node's tests wait only for that node, and one
+  # node that never gets the commit does not hold back another that did. Each
+  # job records how it ended, and the report job below turns those records
+  # into one alert.
+  test:
+    name: Test ${{ matrix.node }}
+    needs: select
+    # A stage whose every node sets FILONE_TESTED=false selects nothing, and a
+    # matrix with no entries fails the job.
+    if: needs.select.outputs.has_nodes == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    # HILT_PARTNER_KEY can manage every tenant on the stage's Hilt. Each
+    # Environment admits only main, so a pushed branch cannot read it, and this
+    # workflow cannot be dispatched from a branch. deployment: false, because
+    # a test is not a deployment and should not appear as one.
+    environment:
+      name: ${{ matrix.env }}
+      deployment: false
+    # Every step below has a time limit of its own, and a step that hits it
+    # fails like any other. This is the backstop for the rest of the job.
+    timeout-minutes: 110
+    steps:
+      # fetch-depth: 0 because the ancestor test needs both commits in the
+      # checkout, and the node can be several commits behind.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Only a push has a commit to wait for. Every other trigger checks the
+      # node as it stands.
+      - name: Wait for the node to reach the commit
+        id: wait
+        if: github.event_name == 'push'
+        timeout-minutes: 65
+        env:
+          COMMIT: ${{ github.sha }}
+          NODE: ${{ matrix.node }}
+        run: scripts/ci/test-nodes/wait-for-commit.sh "$NODE" "$COMMIT"
+
+      # A failed wait skips this by default: the node never got the commit, so
+      # testing it would report on the previous one.
+      #
+      # Retried, so one slow TLS handshake is not an alert. Piri restarts as
+      # part of the deploy the wait above observed, and the node's own health
+      # gate has already passed by then, so this is about the network rather
+      # than about the node still coming up.
+      - name: Run the smoke test
+        id: smoke
+        timeout-minutes: 10
+        env:
+          # Only on a push: every other trigger checks the node as it stands,
+          # against whatever revision it reports.
+          REVISION: ${{ github.event_name == 'push' && github.sha || '' }}
+          NODE: ${{ matrix.node }}
+        run: |
+          set -uo pipefail
+          args=("$NODE")
+          [ -z "$REVISION" ] || args+=(--revision "$REVISION")
+          passed=false
+          for attempt in 1 2 3 4 5; do
+            echo "::group::$NODE attempt $attempt"
+            if scripts/ci/smoke-test.sh "${args[@]}"; then
+              echo "::endgroup::"
+              passed=true
+              break
+            fi
+            echo "::endgroup::"
+            [ "$attempt" -eq 5 ] || sleep 30
+          done
+          "$passed" || { echo "::error::$NODE did not pass: 5 attempts over 2 minutes"; exit 1; }
+
+      # Runs only on a node that passed its smoke test: a node that does not
+      # answer has already failed, and a write would fail for the same reason.
+      #
+      # Not retried: a retry would hide an upload path that fails some of the
+      # time. Each run creates its own tenant, so the next run starts clean.
+      - name: Run the end-to-end test
+        id: e2e
+        timeout-minutes: 10
+        env:
+          HILT_PARTNER_KEY: ${{ secrets.HILT_PARTNER_KEY }}
+          NODE: ${{ matrix.node }}
+        run: scripts/ci/e2e-test.sh "$NODE"
+
+      # Runs after a failed test too, since a failure halfway leaves the tenant
+      # and bucket behind, and after a cancelled run, since a newer push or
+      # deploy can cancel this one in the middle of the test. The script
+      # deletes only what the test recorded creating, so it is safe after a
+      # test that never got going.
+      - name: Clean up after the end-to-end test
+        id: cleanup
+        if: always() && steps.e2e.outcome != 'skipped'
+        timeout-minutes: 15
+        env:
+          HILT_PARTNER_KEY: ${{ secrets.HILT_PARTNER_KEY }}
+          NODE: ${{ matrix.node }}
+        run: scripts/ci/e2e-test.sh "$NODE" --cleanup
+
+      - name: Record the result
+        if: always()
+        env:
+          NODE: ${{ matrix.node }}
+          WAITED: ${{ github.event_name == 'push' }}
+          WAIT_OUTCOME: ${{ steps.wait.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          E2E_OUTCOME: ${{ steps.e2e.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          E2E_FAILED_OP: ${{ steps.e2e.outputs.failed_op }}
+          LEFTOVER_TENANT: ${{ steps.cleanup.outputs.leftover_tenant }}
+          LEFTOVER_BUCKET: ${{ steps.cleanup.outputs.leftover_bucket }}
+          RESULT: ${{ runner.temp }}/test-nodes-result/${{ strategy.job-index }}.json
+        run: |
+          mkdir -p "$(dirname "$RESULT")"
+          scripts/ci/test-nodes/result.sh "$RESULT"
+
+      # overwrite, so re-running a failed job replaces its earlier result.
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-nodes-result-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/test-nodes-result/
+          overwrite: true
+          retention-days: 7
+
+  # One alert for the whole run. It reads the test jobs' result rather than
+  # failure(), because a job that hits its time limit ends cancelled, and that
+  # is a failure to report. A run that was itself cancelled reports nothing: a
+  # newer change replaced it, and its own run will report.
+  report:
+    name: Report failures
+    needs: [select, test]
+    if: >-
+      always() && !cancelled() && needs.select.result == 'success'
+      && (needs.test.result == 'failure' || needs.test.result == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A job that ended before uploading has no artifact, and if none did,
+      # there is nothing to download. The report names such a node as having
+      # ended without a result.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: test-nodes-result-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/test-nodes-results
+
+      # For an image bump, the service commit that produced the image.
+      # Best-effort: the script prints nothing on any failure, and the alert
+      # falls back to the infra-nodes commit alone.
+      - name: Find the service commit
+        id: source
+        if: github.event_name == 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          line=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq .commit.message |
+            scripts/ci/test-nodes/service-commit-line.sh)
+          echo "line=$line" >> "$GITHUB_OUTPUT"
+
+      - name: Write the alert
+        env:
+          MATRIX: ${{ needs.select.outputs.matrix }}
+          TRIGGER: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && 'change' || github.event_name == 'schedule' && 'schedule' || 'manual' }}
+          ACTOR: ${{ github.actor }}
+          CHANGE_REPO: ${{ github.event_name == 'push' && 'infra-nodes' || 'infra-central' }}
+          CHANGE_SHA: ${{ github.event_name == 'push' && github.sha || github.event.client_payload.change_sha }}
+          CHANGE_SUBJECT: ${{ github.event_name == 'push' && github.event.head_commit.message || github.event.client_payload.change_subject }}
+          CHANGE_AUTHOR: ${{ github.event_name == 'push' && github.actor || github.event.client_payload.change_author }}
+          SERVICE_LINE: ${{ steps.source.outputs.line }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUNBOOK: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/RUNBOOK.md#cleaning-up-after-the-end-to-end-test
+        run: scripts/ci/test-nodes/report.sh "$RUNNER_TEMP/test-nodes-results" "$RUNNER_TEMP/slack-payload.json"
+
+      - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload-file-path: ${{ runner.temp }}/slack-payload.json

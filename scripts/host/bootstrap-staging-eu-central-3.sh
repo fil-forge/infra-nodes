@@ -22,6 +22,19 @@ FILONE_SUBNET=172.18.0.0/16
 [ -r "$SNIPPET" ] || { echo "ERROR: staging Caddy snippet is missing: $SNIPPET" >&2; exit 1; }
 [ -r "$CADDYFILE" ] || { echo "ERROR: host Caddyfile is missing: $CADDYFILE" >&2; exit 1; }
 command -v docker >/dev/null || { echo "ERROR: docker is not installed" >&2; exit 1; }
+# This host brings its own Docker, so it is the one place an old Compose can
+# appear. deploy-apps.sh runs `pull --policy missing`, and 2.40 is the oldest
+# Compose verified to have it. The version reads like 2.40.3+ds1-0ubuntu1 or
+# 5.7.0; only the major and minor are compared.
+compose_version="$(docker compose version --short 2>/dev/null)" ||
+  { echo "ERROR: the docker compose plugin is not installed" >&2; exit 1; }
+[[ "$compose_version" =~ ^v?([0-9]+)\.([0-9]+) ]] ||
+  { echo "ERROR: cannot read the Compose version from '$compose_version'" >&2; exit 1; }
+if [ "${BASH_REMATCH[1]}" -lt 2 ] ||
+  { [ "${BASH_REMATCH[1]}" -eq 2 ] && [ "${BASH_REMATCH[2]}" -lt 40 ]; }; then
+  echo "ERROR: Docker Compose $compose_version is installed; FilOne needs 2.40 or later" >&2
+  exit 1
+fi
 command -v ufw >/dev/null || { echo "ERROR: ufw is not installed" >&2; exit 1; }
 
 install -d -m 0755 \

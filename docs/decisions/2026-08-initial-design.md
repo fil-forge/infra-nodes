@@ -345,7 +345,7 @@ own history says where each image came from.
 
 A merge queues the image rather than deploying it. The node picks it up within five minutes and can
 then spend 45 minutes in the proving gate before Piri restarts, so the run that merges a bump ends
-well before the node runs it. That is the gap `smoke.yml` closes: it waits for the node to report a
+well before the node runs it. That is the gap `test-nodes.yml` closes: it waits for the node to report a
 commit at or past the merged one, then compares the digests the containers report against the pins at
 the revision the node deployed apps from, and posts to `filone-alerts` when either half fails.
 Without it a merged image that crash-loops would sit unnoticed until somebody looked.
@@ -357,7 +357,54 @@ when that project deploys, and a pin comparison is only meaningful against the s
 digests off the containers rather than out of `versions.env` is what makes the comparison mean
 anything: a pin the node never applied shows up as a mismatch instead of as agreement with itself.
 
-`smoke` is deliberately not a required check. It runs after the merge, so requiring it would deadlock
+Health endpoints and matching digests still leave the write path unproven, so the same workflow
+then runs an end-to-end test: it creates a tenant through central's Hilt and a bucket on the node,
+uploads one object with PutObject and one with a multipart upload, reads both back, and deletes
+everything it created. It creates a new tenant on every run, so tenant creation is tested too. A
+node runs it only after passing the smoke test, since a node that does not answer fails both for
+the same reason.
+
+The write path runs through central as well as the node, so the workflow runs when either side
+changes:
+
+| Trigger | Nodes tested |
+| --- | --- |
+| push to main | every node, each once it has reached the commit |
+| infra-central sends `central-deployed` after deploying to dev or staging | the nodes of the stages it deployed |
+| hourly schedule | every dev and staging node |
+| manual dispatch | the chosen stages or nodes |
+
+One run tests every node its cause reaches, and posts one alert naming every node that failed,
+because one push or one deploy is one cause. Each node is a job of its own, so a node that never
+reaches the commit does not hold back the others, and a final job collects each node's result into
+the alert. The cost is that a node failing early is reported only once the slowest node finishes,
+which after a push can take the hour the wait allows.
+
+infra-central starts its run with a `repository_dispatch` rather than a `workflow_dispatch`. The
+fil-forge-bot token it uses already writes this repository's contents, which is what a
+`repository_dispatch` needs, while a `workflow_dispatch` would also need the actions permission
+on every repository the app reaches. GitHub also labels a `workflow_dispatch` run as started by
+hand, which hides what really started it. The run checks that the dispatch came from fil-forge-bot.
+
+A newer push cancels an older push's run, and a newer central deploy an older deploy's run of the
+same stages: the node already runs the newer change, so the older run would test one thing and name
+another in its alert. A deploy of other stages, or a dispatch from anyone but fil-forge-bot, cancels
+nothing.
+A cancelled run still runs the cleanup after its end-to-end test and posts nothing. Scheduled and
+manual runs are never cancelled, so the hourly run cannot replace a push's run that is still waiting
+for its commit.
+
+Every run leaves behind the tenant's records in Sprue and its PLC entry, because Hilt does not yet
+delete them ([FIL-1488](https://linear.app/filecoin-foundation/issue/FIL-1488)). The hourly run makes
+that 24 sets a day, accepted in exchange for running both tests on one schedule.
+
+The test authenticates with FilOne's partner key, which can manage every tenant on that Hilt
+([FIL-1489](https://linear.app/filecoin-foundation/issue/FIL-1489)). The key lives in a GitHub
+Environment per stage that only `main` can use, so a pushed branch cannot read it and the workflow
+cannot run from a branch. The test runs on dev and staging only. Production waits for a credential
+that cannot reach customer tenants ([FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491)).
+
+`Test nodes` is deliberately not a required check. It runs after the merge, so requiring it would deadlock
 every pull request.
 
 ## Per-node directories, not shared templates

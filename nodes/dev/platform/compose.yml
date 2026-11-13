@@ -41,7 +41,14 @@ services:
       - VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}
     volumes:
       - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
-      - /mnt/fil-one/control/openbao:/openbao/file
+      # create_host_path: false so a start fails when the volume is not mounted,
+      # including Docker's own restart at boot, instead of running on an empty
+      # directory on the root disk.
+      - type: bind
+        source: /mnt/fil-one/control/openbao
+        target: /openbao/file
+        bind:
+          create_host_path: false
       # Where the unix listener in bao.hcl puts its socket. Ingot mounts the
       # same host directory and dials the socket for every object key it wraps
       # or unwraps.
@@ -82,7 +89,11 @@ services:
       # point, the order the cluster had under the Alpine image's musl.
       - POSTGRES_INITDB_ARGS=--locale=C.UTF-8 --encoding=UTF8
     volumes:
-      - ${POSTGRES_DATA_DIR}:/var/lib/postgresql/data
+      - type: bind
+        source: ${POSTGRES_DATA_DIR}
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
     healthcheck:
       # -h 127.0.0.1 forces a TCP check. On a fresh data directory the image
       # runs a temporary bootstrap server on the unix socket only while initdb
@@ -157,12 +168,25 @@ services:
       # Issued certificates and ACME account keys. On the control volume so a
       # replaced instance serves the same certificates instead of re-issuing and
       # spending Let's Encrypt rate limit.
-      - /mnt/fil-one/control/caddy/data:/data
-      - /mnt/fil-one/control/caddy/config:/config
+      - type: bind
+        source: /mnt/fil-one/control/caddy/data
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/fil-one/control/caddy/config
+        target: /config
+        bind:
+          create_host_path: false
       # The node's status document, served at
       # /.well-known/filone-node-status.json. Read-only, and the Caddyfile's
       # exact path matcher exposes the one file rather than the directory.
-      - /mnt/fil-one/control/state:/srv/filone/.well-known:ro
+      - type: bind
+        source: /mnt/fil-one/control/state
+        target: /srv/filone/.well-known
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:2019/config/"]
       start_interval: 2s
@@ -209,8 +233,17 @@ services:
       - /var/log/journal:/var/log/journal:ro
       - /etc/machine-id:/etc/machine-id:ro
       # Where deploy scripts stamp deploy_last_success_timestamp.
-      - /mnt/fil-one/control/state/metrics:/metrics:ro
-      - /mnt/fil-one/control/alloy:/var/lib/alloy/data
+      - type: bind
+        source: /mnt/fil-one/control/state/metrics
+        target: /metrics
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/fil-one/control/alloy
+        target: /var/lib/alloy/data
+        bind:
+          create_host_path: false
       # The host's own filesystems, processes and devices, for the node
       # exporter. rslave so a volume mounted on the host after this container
       # started still shows up here; without it the appliance's EBS mounts would
