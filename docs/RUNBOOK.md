@@ -898,7 +898,15 @@ scripts/host/provision-platform.sh
 It asks for the unseal-token wrapping token, exchanges it at central for the unseal token,
 initialises OpenBao, and prints **one recovery key and one root token**.
 Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
-neither, the only way back into this OpenBao is to rebuild the node and re-onboard it.
+neither, the only way back into this OpenBao is to rebuild the node and re-onboard it. Then store
+the second copy at central, from infra-central:
+
+```sh
+make store-appliance-root-credentials STAGE=<stage> REGION=<region>
+```
+
+It asks for both values without echoing them. Reading them back from central is break-glass; see
+[Reading them back](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md#reading-them-back).
 
 It then asks for the root token back twice, to create the host token and the KV mount and then the
 region key Ingot encrypts objects under. The host token is what every later deploy, reconcile pass
@@ -1213,7 +1221,9 @@ docker exec -it filone-platform-postgres-1 psql -U admin -d admin \
 The per-service roles have no such problem: `postgres-init` runs `ALTER ROLE` on every deploy, so
 rotating those is a write to OpenBao and a deploy.
 
-**Rotate Ingot's region-key token.** Run `provision-regionkey.sh` and then `deploy-apps.sh`. The old
+**Rotate Ingot's region-key token.** Run `provision-regionkey.sh` and then `deploy-apps.sh`. It
+asks for the root token, which is in 1Password; if that copy is lost, read the one at central
+([Reading them back](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md#reading-them-back)). The old
 token is left valid until it lapses; revoke it at `bao token revoke -accessor <accessor>` if it was
 taken rather than merely aged.
 
@@ -1298,7 +1308,8 @@ the token's 72-hour period:
 scripts/host/provision-host-token.sh
 ```
 
-It asks for the root token from 1Password, writes the policy, puts the new token in
+It asks for the root token from 1Password, or from central when that copy is lost
+([Reading them back](https://github.com/fil-forge/infra-central/blob/main/docs/appliance-onboarding.md#reading-them-back)), writes the policy, puts the new token in
 `/etc/fil-one/bao-token` before revoking the old one, and deletes `filone-deploy`.
 
 On a node that already holds its backup key and predates snapshots, run the two in this order:
@@ -1306,9 +1317,10 @@ On a node that already holds its backup key and predates snapshots, run the two 
 first snapshot and enables the timer; run first, it stops at the snapshot that the old token
 cannot take.
 
-**Rotate the root token after a leak.**
-[Rotate the root token of an appliance's OpenBao](runbook/rotate-openbao-root-token.md) mints a
-replacement, revokes the leaked token and covers the snapshots that still hold it.
+**Replace the root token after a leak or a loss.**
+[Replace the root token of an appliance's OpenBao](runbook/replace-openbao-root-token.md) mints a
+replacement for a leaked token, revokes it and covers the snapshots that still hold it, or
+regenerates a lost one from the recovery key. Both update central's copy too.
 
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
@@ -1324,6 +1336,9 @@ back sealed, and every deploy on it fails at the first step.
 # at central
 bao token revoke -accessor <accessor>
 ```
+
+Retiring the region for good is infra-central's "Retiring a region": that apply also deletes
+central's copy of the node's root token and recovery key. Delete the 1Password entry yourself.
 
 **Read the logs.** Everything ships to Grafana Cloud, labelled with the node and its region. On the
 box:
@@ -1409,7 +1424,8 @@ the end of this section.
 
 **1. Rebuild.** Attach a fresh control volume (or replace the instance and let cloud-init mount
 one), then run `provision-platform.sh`. It initialises an empty OpenBao and generates new
-identities. The transit key at central is per-node, not per-identity, so it stays. The unseal token
+identities. The new OpenBao prints a new root token and recovery key: replace the 1Password entry,
+and run `make store-appliance-root-credentials` in infra-central again to replace central's copy. The transit key at central is per-node, not per-identity, so it stays. The unseal token
 lives on the root volume and survives unless the instance was replaced too; if it was, ask central
 for a new wrapping token. The backup key lived in the old OpenBao and is gone with it, so on a node
 that takes backups ask central to run the mint with `MINT_ARGS=--reissue-backup-key` too: a plain
