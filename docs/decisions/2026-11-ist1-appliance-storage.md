@@ -22,25 +22,27 @@ Ubuntu's ZFS package scrubs the pool on the second Sunday of each month and trim
 
 The whole pool is encrypted with ZFS native encryption (`aes-256-gcm`), set on the pool's root
 dataset so that everything created on the pool inherits it. The key is 64 hex characters in
-`/etc/zfs/keys/data.key` on the OS disk, readable by root only, and a copy is kept in the team
-password manager. The pool unlocks unattended at boot, which the node's timers and restart policies
-need.
+`/etc/zfs/keys/data.key` on the OS disk, readable by root only. A copy is kept in the team password
+manager, because without the key the pool's data cannot be read and a failed OS disk would take the
+only copy with it. The key loads unattended at boot, so the node comes back after a reboot with nobody at
+the console.
 
-This protects the data on drives that leave the machine, for example on a return or at disposal,
-which is the protection EBS encryption gives the EC2 nodes. It does not protect against someone who
-has the whole machine or root on it, since the key sits beside the drives. Without the key the pool
-cannot be read, so the password manager's copy is what makes a failed OS disk recoverable.
+This protects the data on the NVMe drives when they leave the machine without the OS disk, for
+example on a drive return. It does not protect against someone who has the OS disk, the whole
+machine or root on it, because the OS disk holds the key and the node's tokens unencrypted.
 
 ## Unlocking at boot
 
-Ubuntu 24.04 ships `zfs-load-key.service` masked, so nothing loads a key file at boot on its own. A
-unit of the host's own, `zfs-load-key-data.service`, loads the key before `zfs-mount.service` mounts
+Ubuntu 26.04, with ZFS 2.4, ships `zfs-load-key.service` masked, so nothing loads a key file at boot on its own. A
+local unit, `zfs-load-key-data.service`, loads the key before `zfs-mount.service` mounts
 the pool.
 
-Docker must not start the containers before the pool is mounted. If it did, each bind mount would
-land in the empty directory under `/mnt/data` on the OS disk, and Postgres, for one, would create a
-new, empty cluster there. A drop-in for `docker.service` makes Docker wait for `zfs-mount.service`
-and refuse to start while any dataset on the pool is unmounted.
+Docker must not start the containers before the pool is mounted. If it did, Docker would bind each
+container to an empty directory under `/mnt/data` on the OS disk, creating any that is missing, and
+Postgres would initialise a new, empty cluster there. A drop-in for `docker.service` makes Docker
+wait for `zfs-mount.service` and refuse to start while the pool is missing or any dataset on it is
+unmounted. Once the pool is fixed, `systemctl reset-failed docker.service docker.socket` clears the
+failed starts so Docker can start again.
 
 ## Setting it up
 
@@ -82,11 +84,11 @@ The Docker drop-in, `/etc/systemd/system/docker.service.d/10-zfs-mounted.conf`:
 
 ```ini
 [Unit]
-Requires=zfs-mount.service
+Wants=zfs-mount.service
 After=zfs-mount.service
 
 [Service]
-ExecStartPre=/bin/sh -c '! zfs get -H -r -t filesystem -o value mounted data | grep -vqx yes'
+ExecStartPre=/bin/sh -c 'zfs list -H -o name data >/dev/null && ! zfs get -H -r -t filesystem -o value mounted data | grep -vqx yes'
 ```
 
 ```sh
@@ -94,10 +96,14 @@ systemctl daemon-reload
 systemctl enable zfs-load-key-data.service
 ```
 
-Then reboot and check, before anything writes to the pool:
+Before anything writes to the pool, check that the key loads from the file. Exporting and
+re-importing the pool leaves it as it is at boot, locked and unmounted:
 
 ```sh
-zpool status data
-zfs get -r -t filesystem keystatus,mounted data
-systemctl status zfs-load-key-data.service --no-pager
+zpool export data
+zpool import data
+systemctl restart zfs-load-key-data.service zfs-mount.service
+zfs get -r -t filesystem keystatus,mounted data   # available, yes
 ```
+
+A reboot at a quiet moment confirms the boot order.
