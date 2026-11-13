@@ -53,9 +53,25 @@ second: bind /mnt/any/data may create its source; set create_host_path: false" \
 expect "passes an exempt service whose bind may create its source" "" \
   "{\"services\": {\"any\": {\"x-filone-bind-check\": \"exempt: any reason\", \"volumes\": [$creating]}}}"
 
-expect "passes a service with no bind mounts" "" \
-  '{"services": {"any": {"volumes": [{"type": "volume", "source": "any-volume", "target": "/v"},
-     {"type": "tmpfs", "target": "/t"}]}}}'
+expect "passes a tmpfs mount" "" \
+  '{"services": {"any": {"volumes": [{"type": "tmpfs", "target": "/t"}]}}}'
+
+# A named volume Docker mounts from a block device refuses to start without it,
+# the same as a missing bind source.
+expect "passes a volume mount whose volume names a device" "" \
+  '{"services": {"any": {"volumes": [{"type": "volume", "source": "any-data", "target": "/data"}]}},
+    "volumes": {"any-data": {"driver": "local", "driver_opts": {"type": "ext4", "device": "/dev/disk/by-label/any"}}}}'
+
+# Without a device it is Docker-managed storage on the root disk.
+expect "reports a volume mount whose volume names no device" \
+  "any: volume any-data names no device; a named volume must name the block device it mounts" \
+  '{"services": {"any": {"volumes": [{"type": "volume", "source": "any-data", "target": "/data"}]}},
+    "volumes": {"any-data": {"driver": "local"}}}'
+
+expect "passes an exempt service whose volume names no device" "" \
+  '{"services": {"any": {"x-filone-bind-check": "exempt: any reason",
+     "volumes": [{"type": "volume", "source": "any-data", "target": "/data"}]}},
+    "volumes": {"any-data": {"driver": "local"}}}'
 
 expect "passes a service with no volumes at all" "" \
   '{"services": {"any": {"image": "any"}}}'

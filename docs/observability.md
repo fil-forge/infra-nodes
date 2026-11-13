@@ -385,7 +385,7 @@ control volume, fails without a stamp, which fires the reconcile deadman. The ho
 path is missing:
 
 ```logql
-{unit="filone-reconcile.service"} |= "is not on a mounted volume"
+{unit="filone-reconcile.service"} |= "volume is not mounted"
 ```
 
 [A volume is not mounted](RUNBOOK.md#a-volume-is-not-mounted) has the recovery.

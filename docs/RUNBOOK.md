@@ -1347,36 +1347,6 @@ before the copy, Ingot fails to start on the missing directory rather than start
 `/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, remove the old
 copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
-**Move each Piri's data down a level on dev.** A one-off for the change that made every bind sit
-below its volume's mount point, so Docker refuses to start a service whose volume is missing. Each
-dev Piri bound its volume's mount point, `/mnt/fil-one/piri-<n>`, and now binds
-`/mnt/fil-one/piri-<n>/data`. The contents move; the containers see the same `/data/piri` either
-way. Staging is unaffected, and so is a node built after the change, where reconcile creates the
-directory before the first deploy.
-
-Run this before merging the change, with reconcile stopped so a pass cannot start a Piri mid-move.
-Moving within one filesystem is a rename, so it does not copy the blobs:
-
-```sh
-sudo systemctl stop filone-reconcile.timer
-while [ "$(systemctl show -P ActiveState filone-reconcile.service)" = activating ]; do sleep 10; done
-for n in 0 1 2; do
-  sudo docker stop "filone-piri-$n"
-  sudo install -d -m 0755 "/mnt/fil-one/piri-$n/data"
-  sudo find "/mnt/fil-one/piri-$n" -mindepth 1 -maxdepth 1 \
-    ! -name data ! -name lost+found -exec mv -t "/mnt/fil-one/piri-$n/data" {} +
-done
-sudo systemctl start filone-reconcile.timer
-```
-
-The Piris stay down until the merged change reaches the node and `deploy-apps.sh` recreates them
-against the new path. Once it has, check that each one mounts the new directory and is healthy:
-
-```sh
-sudo docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' filone-piri-0
-scripts/ci/smoke-test.sh dev
-```
-
 ## Re-onboarding after identity loss
 
 On a node that takes backups, first
@@ -1860,12 +1830,20 @@ gives up on a batch, and its blobs wait until it is freed.
 
 ### A volume is not mounted
 
-Every bind in the compose files sets `create_host_path: false`, and every service keeps its data in a
-directory below the volume's mount point rather than at the mount point itself. While a volume is
-missing, that directory does not exist, so Docker refuses to start the service instead of creating
-an empty directory on the root disk and mounting that. It makes the same check at boot, where no
-host script runs. `docker inspect <container>` shows `bind source path does not exist: <path>`. The
-services on other volumes keep running.
+A service whose volume is missing refuses to start rather than coming up on an empty directory on
+the root disk. Docker enforces that on every start, including the ones it makes at boot, where no
+host script runs, and the services on other volumes keep running. It takes two shapes:
+
+- **Binds.** Every bind sets `create_host_path: false`, so Docker refuses rather than create a
+  missing source. These paths sit below their volume's mount point — the control volume's
+  subdirectories on dev, everything under `/mnt/data/fil-one` on staging — so they are gone while
+  the volume is. `docker inspect <container>` shows `bind source path does not exist: <path>`.
+- **Dev's Piri volumes.** Each is a named volume Docker mounts from the block device itself, found
+  by the filesystem label cloud-init gave it (`filone-piri-<n>`). A bind would have to name the
+  volume's own mount point, which is an ordinary directory on the root disk whenever the volume is
+  not attached. Without the device, `docker start` reports `failed to start containers` and the
+  daemon log names it. The host mounts the same filesystem through `/etc/fstab` at
+  `/mnt/fil-one/piri-<n>`, and that is the copy the host scripts read.
 
 - **A Piri volume, or Ingot's on dev.** That container stays stopped. On staging, "Appliance
   container is not running" fires. Once a commit touches the apps project, every reconcile pass
@@ -1885,7 +1863,9 @@ To recover:
    `lsblk` and `findmnt /mnt/fil-one/<name>`. On staging, follow
    [Before changing the node](runbook/recover-expired-unseal-token.md#before-changing-the-node)
    to check the pool.
-2. Mount it. On dev, `mount /mnt/fil-one/<name>` finds the volume by the UUID in `/etc/fstab`.
+2. Mount it. On dev, `mount /mnt/fil-one/<name>` finds the volume by the UUID in `/etc/fstab`. A
+   Piri also needs `/dev/disk/by-label/filone-piri-<n>`, which is there once the volume is
+   attached; `lsblk -o NAME,LABEL` says which label each disk carries.
 3. Check that the volume holds the data it should, with `findmnt <path>` and a look at its
    contents. A blank filesystem mounted in the right place looks the same to Docker as the real
    one; the next reconcile pass creates the directories the services bind and they start empty.

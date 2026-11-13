@@ -26,14 +26,20 @@ set -euo pipefail
 [ $# -eq 0 ] || { echo "usage: $0 < compose.json" >&2; exit 2; }
 
 problems="$(jq -r '
-  (.services // {}) | to_entries[]
+  (.volumes // {}) as $volumes
+  | (.services // {}) | to_entries[]
   | .key as $service
   | .value
   | select(has("x-filone-bind-check") | not)
   | (.volumes // [])[]
-  | select(.type == "bind")
-  | select(.bind.create_host_path != false)
-  | "\($service): bind \(.source) may create its source; set create_host_path: false"
+  | if .type == "bind" then
+      select(.bind.create_host_path != false)
+      | "\($service): bind \(.source) may create its source; set create_host_path: false"
+    elif .type == "volume" then
+      select($volumes[.source].driver_opts.device == null)
+      | "\($service): volume \(.source) names no device; a named volume must name the block device it mounts"
+    else empty
+    end
 ')"
 
 [ -z "$problems" ] || { printf '%s\n' "$problems"; exit 1; }

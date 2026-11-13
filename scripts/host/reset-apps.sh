@@ -43,10 +43,11 @@ app_databases() {
 # The host directory a container mounts its data from, resolved and checked
 # before anything is deleted in it. Only the data roots of the two layouts pass:
 # /mnt/fil-one on the cloud nodes, and /mnt/data/fil-one and /var/lib/fil-one
-# (Ingot) on staging, named for the app it belongs to. The control volume is
-# under the first root and holds Postgres and OpenBao, so it is refused by name.
+# (Ingot) on staging, with an app's own name as the last component. The control
+# volume is under the first root and holds Postgres and OpenBao, so it is
+# refused by name.
 checked_data_dir() {
-  local container="$1" source_dir="$2" resolved app
+  local container="$1" source_dir="$2" resolved
   resolved="$(readlink -f -- "$source_dir")" ||
     die "$container mounts $source_dir, which does not resolve"
   if [ -z "$resolved" ] || [ "$resolved" = / ]; then
@@ -60,11 +61,7 @@ checked_data_dir() {
     /mnt/fil-one/* | /mnt/data/fil-one/* | /var/lib/fil-one/*) ;;
     *) die "$container mounts $resolved, outside /mnt/fil-one, /mnt/data/fil-one and /var/lib/fil-one; refusing to empty it" ;;
   esac
-  # The last component names the app, as on staging and for Ingot, or is the
-  # `data` directory inside the app's own volume, as each Piri has on dev.
-  app="$(basename "$resolved")"
-  [ "$app" != data ] || app="$(basename "$(dirname "$resolved")")"
-  [[ "$app" =~ ^(piri(-[0-9]+)?|ingot)$ ]] ||
+  [[ "$(basename "$resolved")" =~ ^(piri(-[0-9]+)?|ingot)$ ]] ||
     die "$container mounts $resolved, which is not named for an app; refusing to empty it"
 
   printf '%s' "$resolved"
@@ -121,15 +118,13 @@ while read -r container; do
   else
     destination=/data/piri
   fi
-  source_dir="$(docker inspect \
-    -f "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Source}}{{end}}{{end}}" \
-    "$container")" || die "could not inspect $container"
+  source_dir="$(container_data_dir "$container" "$destination")"
   [ -n "$source_dir" ] || die "$container has nothing mounted at $destination"
   # Without its volume, the directory is an empty one on the root disk, and the
   # databases would be dropped for a reset that empties nothing.
-  unavailable="$(container_unavailable_bind_sources "$container")"
+  unavailable="$(container_unavailable_mount_sources "$container")"
   [ -z "$unavailable" ] ||
-    die "$container's data is not on a mounted volume (${unavailable//$'\n'/, }); mount it before resetting"
+    die "$container's volume is not mounted (${unavailable//$'\n'/, }); mount it before resetting"
   data_dirs[$container]="$(checked_data_dir "$container" "$source_dir")"
 done <<<"$app_containers"
 
