@@ -378,13 +378,14 @@ deploy_last_success_timestamp{project=~"apps|platform"}
 
 ### Unmounted volumes
 
-A service whose volume is not mounted stays stopped. On staging, "Appliance container is not
-running" fires for it. A deploy that skipped it, or a reconcile pass stopped by a missing control
-volume, fails without a stamp, which fires the reconcile deadman. The host scripts log which volume
-is missing:
+A service whose volume is not mounted stays stopped: its bind source is below the mount point, so it
+is gone with the volume and Docker refuses to start the service. On staging, "Appliance container is
+not running" fires for it. A deploy that skipped it, or a reconcile pass stopped by a missing
+control volume, fails without a stamp, which fires the reconcile deadman. The host scripts log which
+path is missing:
 
 ```logql
-{unit="filone-reconcile.service"} |= "is not mounted"
+{unit="filone-reconcile.service"} |= "is not on a mounted volume"
 ```
 
 [A volume is not mounted](RUNBOOK.md#a-volume-is-not-mounted) has the recovery.

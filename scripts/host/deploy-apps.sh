@@ -64,23 +64,23 @@ core_services="$(apps_core_services)"
 # The rest deploy as usual, and the run fails at the end, so the next reconcile
 # pass tries again and the volume's absence is not recorded as a good deploy.
 # shellcheck disable=SC2086 # one service name per word
-mounted_core_services="$(mounted_services apps $core_services)"
-unmounted_services="$(grep -vxF -f <(printf '%s\n' "$mounted_core_services") <<<"$core_services" || true)"
-is_mounted() {
-  grep -qxF "$1" <<<"$mounted_core_services"
+startable_core_services="$(startable_services apps $core_services)"
+unusable_services="$(grep -vxF -f <(printf '%s\n' "$startable_core_services") <<<"$core_services" || true)"
+is_startable() {
+  grep -qxF "$1" <<<"$startable_core_services"
 }
 
 # Stop a service whose volume is not mounted, if it is running anyway: a
 # container created before the markers existed, or one started before its volume
 # went missing. Not behind the proving gate: without its volume a Piri cannot
 # prove the data on it, and each minute it runs puts more on the root disk.
-stop_unmounted() {
+stop_unusable() {
   local service="$1" container="filone-$1"
   if container_running "$container"; then
-    echo "  $service: volume not mounted; stopping it"
+    echo "  $service: its volume is not mounted; stopping it"
     docker stop "$container" >/dev/null || die "could not stop $container"
   else
-    echo "  $service: volume not mounted; left stopped"
+    echo "  $service: its volume is not mounted; left stopped"
   fi
 }
 
@@ -196,8 +196,8 @@ for container in $piri_containers; do
 done
 
 for service in "${piris[@]}"; do
-  if ! is_mounted "$service"; then
-    stop_unmounted "$service"
+  if ! is_startable "$service"; then
+    stop_unusable "$service"
   elif [ "${piri_changed[$service]}" -eq 1 ]; then
     echo "  $service: something changed; waiting for a safe restart window"
     "$SCRIPT_DIR/pdp-gate.sh" "$service"
@@ -233,8 +233,8 @@ done
 # After the Piris: Ingot writes through to them, and starting against a Piri that is
 # still coming up produces a burst of failures for no reason.
 echo "[4/5] Ingot"
-if ! is_mounted ingot; then
-  stop_unmounted ingot
+if ! is_startable ingot; then
+  stop_unusable ingot
 elif [ "$ingot_changed" -eq 1 ]; then
   compose_apps up -d --force-recreate ingot
 else
@@ -248,9 +248,9 @@ fi
 # service is gone from compose.yml is still removed. So is a service whose
 # volume is not mounted, and --no-deps keeps compose from starting it as
 # another's dependency.
-if [ -n "$mounted_core_services" ]; then
+if [ -n "$startable_core_services" ]; then
   # shellcheck disable=SC2086 # one service name per word
-  compose_apps up -d --no-recreate --no-deps --remove-orphans $mounted_core_services
+  compose_apps up -d --no-recreate --no-deps --remove-orphans $startable_core_services
 fi
 
 # --- 5. Health --------------------------------------------------------------
@@ -258,22 +258,22 @@ fi
 echo "[5/5] Health"
 # Given no service, wait_healthy waits for the whole project, the stopped ones
 # included.
-if [ -n "$mounted_core_services" ]; then
+if [ -n "$startable_core_services" ]; then
   # shellcheck disable=SC2086 # one service name per word
-  wait_healthy compose_apps 420 $mounted_core_services
+  wait_healthy compose_apps 420 $startable_core_services
 fi
 
 # Only now, after the deploy is known good. Recording the hashes earlier would
 # make a failed deploy look like an up-to-date one on the next pass.
 for service in "${piris[@]}"; do
-  is_mounted "$service" || continue
+  is_startable "$service" || continue
   config_hash_record "apps-$service" "${piri_config_hash[$service]}"
 done
-if is_mounted ingot; then
+if is_startable ingot; then
   config_hash_record apps-ingot "$ingot_config_hash"
 fi
 
-if [ -z "$unmounted_services" ]; then
+if [ -z "$unusable_services" ]; then
   stamp_deploy_success apps
   echo "=== apps deploy complete ==="
 fi
@@ -285,6 +285,6 @@ request_openbao_snapshot
 # exits at once on a node without the engine.
 "$SCRIPT_DIR/deploy-rag.sh" || true
 
-[ -z "$unmounted_services" ] ||
-  die "deployed every app but ${unmounted_services//$'\n'/, }, whose volume is not mounted.
+[ -z "$unusable_services" ] ||
+  die "deployed every app but ${unusable_services//$'\n'/, }, whose volume is not mounted.
        Mount it and the next reconcile pass deploys it. docs/RUNBOOK.md has the steps."

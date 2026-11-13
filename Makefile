@@ -11,7 +11,7 @@
 SHELL := /bin/bash
 
 .PHONY: check
-check: check-tofu check-shell check-compose check-volumes
+check: check-tofu check-shell check-compose check-binds
 
 # -backend=false because validating a root does not need its state, and reaching
 # the state bucket would need credentials the CI job does not have.
@@ -72,26 +72,26 @@ check-compose:
 	  done; \
 	done
 
-# A service bound to a volume must refuse to start when that volume is not
-# mounted. Docker restarts containers at boot without running any host script,
-# so the compose files have to carry the guard themselves.
-# scripts/ci/check-volume-guards.sh says what it checks. Its tests run first, so
-# a check that has stopped catching anything fails here instead of passing.
+# A service whose bind source is missing must refuse to start rather than have
+# Docker create an empty directory and mount that. Docker restarts containers at
+# boot without running any host script, so the compose files have to carry that
+# themselves. scripts/ci/check-bind-mounts.sh says what it checks. Its tests run
+# first, so a check that has stopped catching anything fails here instead of
+# passing.
 #
-# --no-interpolate because the paths are literal, so this needs none of the env
-# files check-compose fakes.
-.PHONY: check-volumes
-check-volumes:
-	scripts/ci/test-check-volume-guards.sh
+# --no-interpolate because only the mount options are read, so this needs none
+# of the env files check-compose fakes.
+.PHONY: check-binds
+check-binds:
+	scripts/ci/test-check-bind-mounts.sh
 	@set -euo pipefail; \
 	for env in nodes/*/node.env nodes/*/*/node.env; do \
 	  [ -f "$$env" ] || continue; \
 	  node="$${env%node.env}"; \
-	  volumes="$$(. "$$env" && echo "$${FILONE_VOLUMES:?$$env sets no FILONE_VOLUMES}")"; \
 	  for project in platform apps; do \
 	    echo "==> $${node}$${project}"; \
 	    docker compose --project-directory "$${node}$${project}" \
 	      config --no-interpolate --format json | \
-	      scripts/ci/check-volume-guards.sh "$$volumes"; \
+	      scripts/ci/check-bind-mounts.sh; \
 	  done; \
 	done

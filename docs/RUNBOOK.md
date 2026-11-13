@@ -1347,6 +1347,36 @@ before the copy, Ingot fails to start on the missing directory rather than start
 `/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, remove the old
 copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
+**Move each Piri's data down a level on dev.** A one-off for the change that made every bind sit
+below its volume's mount point, so Docker refuses to start a service whose volume is missing. Each
+dev Piri bound its volume's mount point, `/mnt/fil-one/piri-<n>`, and now binds
+`/mnt/fil-one/piri-<n>/data`. The contents move; the containers see the same `/data/piri` either
+way. Staging is unaffected, and so is a node built after the change, where reconcile creates the
+directory before the first deploy.
+
+Run this before merging the change, with reconcile stopped so a pass cannot start a Piri mid-move.
+Moving within one filesystem is a rename, so it does not copy the blobs:
+
+```sh
+sudo systemctl stop filone-reconcile.timer
+while [ "$(systemctl show -P ActiveState filone-reconcile.service)" = activating ]; do sleep 10; done
+for n in 0 1 2; do
+  sudo docker stop "filone-piri-$n"
+  sudo install -d -m 0755 "/mnt/fil-one/piri-$n/data"
+  sudo find "/mnt/fil-one/piri-$n" -mindepth 1 -maxdepth 1 \
+    ! -name data ! -name lost+found -exec mv -t "/mnt/fil-one/piri-$n/data" {} +
+done
+sudo systemctl start filone-reconcile.timer
+```
+
+The Piris stay down until the merged change reaches the node and `deploy-apps.sh` recreates them
+against the new path. Once it has, check that each one mounts the new directory and is healthy:
+
+```sh
+sudo docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' filone-piri-0
+scripts/ci/smoke-test.sh dev
+```
+
 ## Re-onboarding after identity loss
 
 On a node that takes backups, first
@@ -1830,21 +1860,24 @@ gives up on a batch, and its blobs wait until it is freed.
 
 ### A volume is not mounted
 
-Every appliance volume has a marker file at its root, `.filone-volume-<name>`. Dev has five:
-`control`, `data` and `piri-0` to `piri-2` under `/mnt/fil-one`. Staging has two, `control` and
-`data` under `/mnt/data/fil-one`. Each service with data on a volume also mounts that volume's
-marker. While the volume is missing, Docker refuses to start the service, at boot too, so the service
-can't come up on an empty directory on the root disk. `docker inspect <container>` shows `failed to
-fulfil mount request: open <path>/.filone-volume-<name>: no such file or directory`. The services
-on other volumes keep running.
+Every bind in the compose files sets `create_host_path: false`, and every service keeps its data in a
+directory below the volume's mount point rather than at the mount point itself. While a volume is
+missing, that directory does not exist, so Docker refuses to start the service instead of creating
+an empty directory on the root disk and mounting that. It makes the same check at boot, where no
+host script runs. `docker inspect <container>` shows `bind source path does not exist: <path>`. The
+services on other volumes keep running.
 
 - **A Piri volume, or Ingot's on dev.** That container stays stopped. On staging, "Appliance
   container is not running" fires. Once a commit touches the apps project, every reconcile pass
-  deploys the other apps, logs `WARNING: <service>'s volume is not mounted` and fails, so the
-  reconcile deadman fires until the volume is back.
+  deploys the other apps, logs `WARNING: <service> cannot run` and fails, so the reconcile deadman
+  fires until the volume is back.
 - **The control volume.** Postgres, OpenBao and Caddy stay down, so the node serves nothing.
   Reconcile stops with `the control volume is not mounted` and stamps nothing, which fires the
-  reconcile deadman. On dev, Alloy keeps running so the node's logs still ship.
+  reconcile deadman. On dev, Alloy keeps running so the node's logs still ship: it is the one
+  service exempt from the check, because it carries the telemetry that reports this.
+
+Every reconcile pass also stops a service it finds running on a volume that is not mounted, which
+covers a container Docker started on a directory an earlier pass left on the root disk.
 
 To recover:
 
@@ -1853,17 +1886,17 @@ To recover:
    [Before changing the node](runbook/recover-expired-unseal-token.md#before-changing-the-node)
    to check the pool.
 2. Mount it. On dev, `mount /mnt/fil-one/<name>` finds the volume by the UUID in `/etc/fstab`.
-3. Check that `<path>/.filone-volume-<name>` is there. If it isn't, the filesystem you mounted is not
-   the one the node was using: stop and find the right one. Reconcile writes the marker on any
-   filesystem mounted at a volume's path, so mount only the volume that belongs there.
+3. Check that the volume holds the data it should, with `findmnt <path>` and a look at its
+   contents. A blank filesystem mounted in the right place looks the same to Docker as the real
+   one; the next reconcile pass creates the directories the services bind and they start empty.
 4. Start what stayed down. Docker doesn't retry a start it refused at boot. For a Piri or Ingot,
    run `scripts/host/deploy-apps.sh`. For the control volume, run `scripts/host/deploy-platform.sh`
    and then `scripts/host/deploy-apps.sh`.
 
 ### The node rebooted
 
-If a container fails with a `.filone-volume-` mount error instead, its volume didn't mount: see
-[A volume is not mounted](#a-volume-is-not-mounted).
+If a container fails with `bind source path does not exist` on a path under `/mnt` instead, its
+volume didn't mount: see [A volume is not mounted](#a-volume-is-not-mounted).
 
 The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
 keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts the containers

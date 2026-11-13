@@ -51,9 +51,9 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
 
 # The model cache is on the data volume. Missing, the run fails like any other,
 # and the next pass retries it.
-missing="$(missing_volume_markers apps rag-embed)"
-[ -z "$missing" ] ||
-  die "rag-embed's volume is not mounted (missing ${missing//$'\n'/, }); leaving Bucket Intelligence stopped"
+unavailable="$(unavailable_bind_sources apps rag-embed)"
+[ -z "$unavailable" ] ||
+  die "rag-embed's data is not on a mounted volume (${unavailable//$'\n'/, }); leaving Bucket Intelligence stopped"
 
 # compose_apps reads apps.env, which deploy-apps.sh renders into the tmpfs. A
 # reboot empties it, and only an apps deploy renders it again.

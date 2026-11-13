@@ -1,20 +1,5 @@
 name: filone-apps
 
-# Each volume's marker, written at the volume's root when the volume is
-# prepared. A service with data on a volume binds its marker too: when the
-# volume is not mounted the marker is missing, and Docker refuses to start the
-# container, at boot as well, where no host script runs. Its data binds set
-# create_host_path: false for the same reason, so Docker never makes the path on
-# the root disk instead. `make check-volumes` holds every service to this.
-x-volume-markers:
-  data: &data-volume
-    type: bind
-    source: /mnt/data/fil-one/data/.filone-volume-data
-    target: /run/filone-volume/data
-    read_only: true
-    bind:
-      create_host_path: false
-
 # What every Piri shares. Compose ignores a top-level key only when it starts
 # with `x-`, which marks it as an extension field; the rest of the name is free.
 # Each service below merges this in with `<<: *piri-base` and adds what is its
@@ -107,13 +92,18 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
+      - &piri-entrypoint
+        type: bind
+        source: ./config/piri/entrypoint.sh
+        target: /entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: /mnt/data/fil-one/data/piri-0
         target: /data/piri
         bind:
           create_host_path: false
-      - *data-volume
 
   piri-1:
     <<: *piri-base
@@ -144,7 +134,6 @@ services:
         target: /data/piri
         bind:
           create_host_path: false
-      - *data-volume
     # The Piris start one at a time. `piri init` estimates gas for the
     # createDataSet transaction against the chain's pending state, and two
     # Piris estimating at once underestimate it: the loser's transaction
@@ -183,7 +172,6 @@ services:
         target: /data/piri
         bind:
           create_host_path: false
-      - *data-volume
     depends_on:
       piri-1:
         condition: service_healthy
@@ -224,7 +212,11 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - /run/fil-one/bao:/run/openbao
+      - type: bind
+        source: /run/fil-one/bao
+        target: /run/openbao
+        bind:
+          create_host_path: false
       # On the host's root filesystem, which is SSD, rather than the ZFS pool
       # the Piris use: every body Ingot takes in lands here first. A missing
       # directory fails the start rather than leaving an empty one in place of
@@ -271,7 +263,6 @@ services:
         target: /data
         bind:
           create_host_path: false
-      - *data-volume
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
       start_interval: 2s

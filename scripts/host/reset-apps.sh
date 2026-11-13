@@ -43,10 +43,10 @@ app_databases() {
 # The host directory a container mounts its data from, resolved and checked
 # before anything is deleted in it. Only the data roots of the two layouts pass:
 # /mnt/fil-one on the cloud nodes, and /mnt/data/fil-one and /var/lib/fil-one
-# (Ingot) on staging, with an app's own name as the last component. The control volume is under the first root and
-# holds Postgres and OpenBao, so it is refused by name.
+# (Ingot) on staging, named for the app it belongs to. The control volume is
+# under the first root and holds Postgres and OpenBao, so it is refused by name.
 checked_data_dir() {
-  local container="$1" source_dir="$2" resolved
+  local container="$1" source_dir="$2" resolved app
   resolved="$(readlink -f -- "$source_dir")" ||
     die "$container mounts $source_dir, which does not resolve"
   if [ -z "$resolved" ] || [ "$resolved" = / ]; then
@@ -60,7 +60,11 @@ checked_data_dir() {
     /mnt/fil-one/* | /mnt/data/fil-one/* | /var/lib/fil-one/*) ;;
     *) die "$container mounts $resolved, outside /mnt/fil-one, /mnt/data/fil-one and /var/lib/fil-one; refusing to empty it" ;;
   esac
-  [[ "$(basename "$resolved")" =~ ^(piri(-[0-9]+)?|ingot)$ ]] ||
+  # The last component names the app, as on staging and for Ingot, or is the
+  # `data` directory inside the app's own volume, as each Piri has on dev.
+  app="$(basename "$resolved")"
+  [ "$app" != data ] || app="$(basename "$(dirname "$resolved")")"
+  [[ "$app" =~ ^(piri(-[0-9]+)?|ingot)$ ]] ||
     die "$container mounts $resolved, which is not named for an app; refusing to empty it"
 
   printf '%s' "$resolved"
@@ -123,9 +127,9 @@ while read -r container; do
   [ -n "$source_dir" ] || die "$container has nothing mounted at $destination"
   # Without its volume, the directory is an empty one on the root disk, and the
   # databases would be dropped for a reset that empties nothing.
-  missing="$(container_missing_volume_markers "$container")"
-  [ -z "$missing" ] ||
-    die "$container's volume is not mounted (missing ${missing//$'\n'/, }); mount it before resetting"
+  unavailable="$(container_unavailable_bind_sources "$container")"
+  [ -z "$unavailable" ] ||
+    die "$container's data is not on a mounted volume (${unavailable//$'\n'/, }); mount it before resetting"
   data_dirs[$container]="$(checked_data_dir "$container" "$source_dir")"
 done <<<"$app_containers"
 
@@ -194,13 +198,12 @@ databases="$(app_databases)" || die "could not list the databases in $POSTGRES_C
 printf '  %s\n' $databases
 
 echo "[4/4] Emptying the data directories"
-# The directory itself stays. On dev each Piri's is an EBS mountpoint, and
-# lost+found belongs to its filesystem, as does the volume's marker: without it
-# the Piri could not start again. -xdev keeps the find from following a mount
-# someone put further down.
+# The directory itself stays: a Piri that came back to a missing one would be
+# refused by Docker rather than started. lost+found belongs to the filesystem.
+# -xdev keeps the find from following a mount someone put further down.
 while read -r container; do
   data_dir="${data_dirs[$container]}"
-  find "$data_dir" -xdev -mindepth 1 -maxdepth 1 ! -name lost+found ! -name '.filone-volume-*' \
+  find "$data_dir" -xdev -mindepth 1 -maxdepth 1 ! -name lost+found \
     -exec rm -rf --one-file-system -- {} + ||
     die "could not empty $data_dir"
   echo "  emptied $data_dir"

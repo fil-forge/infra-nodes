@@ -31,7 +31,7 @@ echo "=== deploy platform ($FILONE_NODE) ==="
 # Before anything starts: OpenBao and Postgres on a missing control volume would
 # come up on an empty directory, and Postgres would initialise a new cluster.
 # Ones Docker already restarted that way, from before the markers, are stopped.
-stop_unmounted_services platform
+stop_unusable_services platform
 require_control_volume
 
 if node_ships_telemetry; then
@@ -178,7 +178,7 @@ if [ "$apps_stopped" -eq 1 ]; then
   # run.
   core_services="$(apps_core_services)"
   # shellcheck disable=SC2086 # one service name per word
-  core_services="$(mounted_services apps $core_services 2>/dev/null)"
+  core_services="$(startable_services apps $core_services 2>/dev/null)"
   # Given no service, wait_healthy waits for the whole project, the stopped
   # ones included.
   if [ -n "$core_services" ]; then
