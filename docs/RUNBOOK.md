@@ -2060,7 +2060,9 @@ like a failed smoke test and suspect the image. The entries above on `CandidateU
 region mismatches cover the usual Ingot causes.
 
 A failed S3 operation runs once more with `aws --debug`, and the log prints what the client signed
-(the canonical request, the string to sign and the request headers) and what Ingot answered. For a
+(the canonical request, the string to sign and the request headers) and what Ingot answered. The
+log is public, so it shows `<access-key-id>` and `<signature>` in place of the key ID and the
+signatures, and it leaves out the AWS CRT transfer client's own log lines. For a
 `SignatureDoesNotMatch`, run the same operation by hand with `--debug` from a machine where it
 passes and compare the two canonical requests. The log's header line names the AWS CLI version.
 
