@@ -2,17 +2,17 @@
 # Choose the nodes Test nodes runs on, as a GitHub Actions matrix.
 #
 # Usage:
-#   scripts/ci/test-nodes-select.sh [<stages> [<nodes>]]
+#   scripts/ci/test-nodes/select.sh [<stages> [<nodes>]]
 #
 # Both arguments are comma-separated lists, because a workflow_dispatch input
 # cannot be an array. An empty list means every stage, or every node of the
 # chosen stages:
 #
-#   scripts/ci/test-nodes-select.sh                       every node
-#   scripts/ci/test-nodes-select.sh dev                   every dev node
-#   scripts/ci/test-nodes-select.sh dev,staging           every dev and staging node
-#   scripts/ci/test-nodes-select.sh "" staging/eu-central-3
-#   scripts/ci/test-nodes-select.sh staging staging/eu-central-3
+#   scripts/ci/test-nodes/select.sh                       every node
+#   scripts/ci/test-nodes/select.sh dev                   every dev node
+#   scripts/ci/test-nodes/select.sh dev,staging           every dev and staging node
+#   scripts/ci/test-nodes/select.sh "" staging/eu-central-3
+#   scripts/ci/test-nodes/select.sh staging staging/eu-central-3
 #
 # An unknown stage or node, or a node outside the chosen stages, fails loudly
 # rather than passing with nothing tested.
@@ -32,7 +32,7 @@ NODES='[
   {"node": "staging/eu-central-3", "env": "staging"}
 ]'
 
-usage="usage: scripts/ci/test-nodes-select.sh [<stages> [<nodes>]]"
+usage="usage: scripts/ci/test-nodes/select.sh [<stages> [<nodes>]]"
 [ $# -le 2 ] || { echo "$usage" >&2; exit 2; }
 
 matrix=$(jq -nc --arg stages "${1-}" --arg nodes "${2-}" --argjson table "$NODES" '
@@ -48,7 +48,7 @@ matrix=$(jq -nc --arg stages "${1-}" --arg nodes "${2-}" --argjson table "$NODES
   | if ($unknown_stages | length) > 0 then
       error("unknown stage \($unknown_stages | join(", ")); the stages are \($known_stages | join(", "))")
     elif ($unknown_nodes | length) > 0 then
-      error("unknown node \($unknown_nodes | join(", ")); the nodes are listed in NODES in scripts/ci/test-nodes-select.sh")
+      error("unknown node \($unknown_nodes | join(", ")); the nodes are listed in NODES in scripts/ci/test-nodes/select.sh")
     else . end
   | [$table[] | select(($wanted_stages | length) == 0 or (.env | IN($wanted_stages[])))] as $in_stages
   | ($wanted_nodes - ($in_stages | map(.node))) as $outside

@@ -2,7 +2,7 @@
 # Record how one node's Test nodes job ended, for the report job to collect.
 #
 # Usage:
-#   scripts/ci/test-nodes-result.sh <file>
+#   scripts/ci/test-nodes/result.sh <file>
 #
 # Everything comes from the environment, as test-nodes.yml passes it:
 #
@@ -32,7 +32,7 @@ set -euo pipefail
 
 main() {
   local file="${1-}"
-  [ -n "$file" ] || { echo "usage: scripts/ci/test-nodes-result.sh <file>" >&2; exit 2; }
+  [ -n "$file" ] || { echo "usage: scripts/ci/test-nodes/result.sh <file>" >&2; exit 2; }
 
   local failed_step="" outcome="success"
   if [ "$WAITED" = true ]; then

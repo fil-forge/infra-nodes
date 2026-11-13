@@ -1141,7 +1141,7 @@ Leave both empty to test every node. Only `main` can run the workflow, because t
 reads its key from a GitHub Environment that admits `main` alone. To smoke-test a branch, run
 `scripts/ci/smoke-test.sh` from your machine as above.
 
-A node joins the tests in `NODES` in `scripts/ci/test-nodes-select.sh`, next to the stage whose
+A node joins the tests in `NODES` in `scripts/ci/test-nodes/select.sh`, next to the stage whose
 Environment holds its key.
 
 Running `scripts/ci/e2e-test.sh` from your machine needs Hilt's partner key, the one FilOne uses, which central
@@ -2124,7 +2124,7 @@ Environment's branch rule. Production gets no Environment until
 reach customer tenants.
 
 Create the Environment with its branch rule before the secret goes in, and before a node of that
-stage joins `NODES` in `scripts/ci/test-nodes-select.sh`: a workflow that names a missing Environment
+stage joins `NODES` in `scripts/ci/test-nodes/select.sh`: a workflow that names a missing Environment
 creates it with no rules. The commands below are for dev; repeat them with `staging`.
 
 ```sh

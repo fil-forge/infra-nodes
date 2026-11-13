@@ -4,9 +4,9 @@
 # first.
 #
 # Usage:
-#   scripts/ci/test-nodes-report.sh <results dir> <payload file>
+#   scripts/ci/test-nodes/report.sh <results dir> <payload file>
 #
-# <results dir> holds the JSON each node's job wrote with test-nodes-result.sh.
+# <results dir> holds the JSON each node's job wrote with result.sh.
 # It may be empty or missing: a node whose job died before writing its result
 # is reported as having ended without one.
 #
@@ -32,7 +32,7 @@ set -euo pipefail
 main() {
   local results_dir="${1-}" payload_file="${2-}"
   [ -n "$results_dir" ] && [ -n "$payload_file" ] ||
-    { echo "usage: scripts/ci/test-nodes-report.sh <results dir> <payload file>" >&2; exit 2; }
+    { echo "usage: scripts/ci/test-nodes/report.sh <results dir> <payload file>" >&2; exit 2; }
 
   local results='[]'
   if [ -d "$results_dir" ] && compgen -G "$results_dir/*.json" >/dev/null; then

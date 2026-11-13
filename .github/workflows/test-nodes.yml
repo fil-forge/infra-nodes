@@ -131,7 +131,7 @@ jobs:
             echo "::error::the dispatch names no stages"
             exit 1
           fi
-          scripts/ci/test-nodes-select.sh "$STAGES" "$NODES"
+          scripts/ci/test-nodes/select.sh "$STAGES" "$NODES"
 
       # Without this, a run that cannot choose its nodes would end without a
       # word: the report job needs a matrix to report on.
@@ -192,45 +192,7 @@ jobs:
         env:
           COMMIT: ${{ github.sha }}
           NODE: ${{ matrix.node }}
-        run: |
-          set -euo pipefail
-          # Every Piri hostname serves the document. piri-0 is the one a node
-          # running one Piri per storage volume always has; a node with a
-          # single Piri still names its hostname in PIRI_HOSTNAME.
-          suffix=$(sed -nE 's/^PIRI_HOSTNAME_SUFFIX=(.*)$/\1/p' "nodes/$NODE/node.env" | tail -1)
-          if [ -n "$suffix" ]; then
-            host="piri-0.$suffix"
-          else
-            host=$(sed -nE 's/^PIRI_HOSTNAME=(.*)$/\1/p' "nodes/$NODE/node.env" | tail -1)
-          fi
-          [ -n "$host" ] || { echo "::error::no PIRI_HOSTNAME_SUFFIX or PIRI_HOSTNAME in nodes/$NODE/node.env"; exit 1; }
-          url="https://$host/.well-known/filone-node-status.json"
-          deadline=$(( $(date +%s) + 60 * 60 ))
-          echo "waiting for $NODE at $url to report ${COMMIT:0:7} or a descendant"
-          while :; do
-            # reconcile, not apps: it is stamped on every pass, so a commit
-            # that deployed neither project still advances it. apps would sit
-            # still and this would wait out the full hour on a docs merge.
-            reported=$(curl --silent --max-time 10 --fail "$url" 2>/dev/null \
-              | jq -r '.projects.reconcile.revision // empty' 2>/dev/null || true)
-
-            if [ -z "$reported" ]; then
-              echo "  no revision reported yet"
-            elif ! git cat-file -e "$reported^{commit}" 2>/dev/null; then
-              echo "  reports $reported, which is not in this checkout"
-            elif git merge-base --is-ancestor "$COMMIT" "$reported"; then
-              echo "  the node is on ${reported:0:7}"
-              break
-            else
-              echo "  still on ${reported:0:7}"
-            fi
-
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::$NODE did not reach ${COMMIT:0:7} within 60 minutes"
-              exit 1
-            fi
-            sleep 60
-          done
+        run: scripts/ci/test-nodes/wait-for-commit.sh "$NODE" "$COMMIT"
 
       # A failed wait skips this by default: the node never got the commit, so
       # testing it would report on the previous one.
@@ -306,7 +268,7 @@ jobs:
           RESULT: ${{ runner.temp }}/test-nodes-result/${{ strategy.job-index }}.json
         run: |
           mkdir -p "$(dirname "$RESULT")"
-          scripts/ci/test-nodes-result.sh "$RESULT"
+          scripts/ci/test-nodes/result.sh "$RESULT"
 
       # overwrite, so re-running a failed job replaces its earlier result.
       - if: always()
@@ -354,7 +316,7 @@ jobs:
         run: |
           set -uo pipefail
           line=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq .commit.message |
-            scripts/ci/service-commit-line.sh)
+            scripts/ci/test-nodes/service-commit-line.sh)
           echo "line=$line" >> "$GITHUB_OUTPUT"
 
       - name: Write the alert
@@ -369,7 +331,7 @@ jobs:
           SERVICE_LINE: ${{ steps.source.outputs.line }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUNBOOK: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/RUNBOOK.md#cleaning-up-after-the-end-to-end-test
-        run: scripts/ci/test-nodes-report.sh "$RUNNER_TEMP/test-nodes-results" "$RUNNER_TEMP/slack-payload.json"
+        run: scripts/ci/test-nodes/report.sh "$RUNNER_TEMP/test-nodes-results" "$RUNNER_TEMP/slack-payload.json"
 
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:
