@@ -144,8 +144,9 @@ jobs:
       # a daily run of its own. A dispatch with GITHUB_TOKEN starts a run, unlike
       # most events that token triggers.
       #
-      # The stage is the first part of the node's path. Dispatch covers every
-      # node of the stage, which is the same thing while each stage has one.
+      # The stage is the first part of the node's path. node narrows the run
+      # to this node: another node of the stage may not have reached the
+      # commit, and it starts its own run when it does.
       - name: Start the end-to-end test
         id: dispatch
         if: github.event_name == 'push'
@@ -158,9 +159,9 @@ jobs:
           set -euo pipefail
           stage=${NODE%%/*}
           gh workflow run e2e.yml --repo "$GITHUB_REPOSITORY" --ref main \
-            -f "stage=$stage" -f change_repo=infra-nodes -f "change_sha=$COMMIT" \
+            -f "stage=$stage" -f "node=$NODE" -f change_repo=infra-nodes -f "change_sha=$COMMIT" \
             -f "change_subject=$(git log -1 --format=%s)" -f "change_author=$ACTOR"
-          echo "started the end-to-end test of $stage"
+          echo "started the end-to-end test of $NODE"
 
       # Each failure needs a different response, so the message says which one
       # happened: the node never reached the commit, it reached it and failed the
@@ -184,7 +185,7 @@ jobs:
             echo "next=The node has this commit and is not serving it. Suspect the image it pinned." >> "$GITHUB_OUTPUT"
           else
             echo "headline=The $NODE node passed its smoke test, but its end-to-end test could not be started" >> "$GITHUB_OUTPUT"
-            echo "next=The run log has the error from GitHub. Start the test by hand: gh workflow run e2e.yml --ref main -f stage=${NODE%%/*}" >> "$GITHUB_OUTPUT"
+            echo "next=The run log has the error from GitHub. Start the test by hand: gh workflow run e2e.yml --ref main -f stage=${NODE%%/*} -f node=$NODE" >> "$GITHUB_OUTPUT"
           fi
 
       # For a bump, the service commit that produced the image. Best-effort: the

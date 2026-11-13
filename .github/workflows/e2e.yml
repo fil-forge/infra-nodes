@@ -27,6 +27,12 @@ on:
         type: choice
         options: [all, dev, staging]
         default: all
+      # smoke.yml sets this, so a push tests only the node that passed its
+      # smoke test. infra-central leaves it empty, because a central deploy
+      # reaches every node of the stage.
+      node:
+        description: Node to test, such as staging/eu-central-3 (empty for every node of the stage)
+        required: false
       # The rest describe the change whose deploy started the run. Leave them
       # as they are when starting a run by hand.
       change_repo:
@@ -95,7 +101,8 @@ jobs:
         id: select
         env:
           STAGE: ${{ inputs.stage || 'all' }}
-        run: scripts/ci/e2e-select.sh "$STAGE"
+          NODE: ${{ inputs.node }}
+        run: scripts/ci/e2e-select.sh "$STAGE" "$NODE"
 
       # Without this, a run that cannot choose its nodes would end without a
       # word: the alert below lives in the test job, which never starts.

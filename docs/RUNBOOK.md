@@ -1125,11 +1125,19 @@ not deployed yet is not probed. `smoke.yml` runs the same test after every merge
 bucket on the node's Ingot, uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart
 upload, downloads both and compares them. `--cleanup` then deletes the objects and the bucket,
 disables the tenant and deletes it. `e2e.yml` runs it after the smoke test of every push to main,
-after every infra-central deploy to dev or staging, and daily. To start that workflow on one stage:
+after every infra-central deploy to dev or staging, and daily. A push tests only the node whose
+smoke test passed; a central deploy tests every node of the stage. To start that workflow on every
+node of a stage, or on one node:
 
 ```sh
-gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=dev
+gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=staging
+gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=staging -f node=staging/eu-central-3
 ```
+
+A node joins the test in `NODES` in `scripts/ci/e2e-select.sh`, next to the stage whose Environment
+holds its key. Add it there in the same pull request that adds it to the matrix in `smoke.yml`:
+otherwise its first push dispatches a run for a node `e2e.yml` does not know, and that run alerts
+that it could not start.
 
 Running the script from your machine needs Hilt's partner key, the one FilOne uses, which central
 keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment

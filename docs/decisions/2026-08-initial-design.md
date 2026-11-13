@@ -366,10 +366,10 @@ The write path runs through central as well as the node, so the test runs when e
 
 | Trigger | Nodes tested |
 | --- | --- |
-| `smoke.yml` dispatches it after a push to main, from each node's job that passed | that node's stage |
+| `smoke.yml` dispatches it after a push to main, from each node's job that passed | that node |
 | infra-central dispatches it after deploying to dev or staging | the nodes of that stage |
-| daily schedule | dev and staging |
-| manual dispatch | the chosen stage |
+| daily schedule | every dev and staging node |
+| manual dispatch | the chosen stage, or one node of it |
 
 After a push, the smoke test has already waited for the node to reach the commit, and a node that
 failed it has already alerted, so only a node that passed starts the test. Both dispatches pass the
