@@ -8,7 +8,7 @@
 # than checking the actor and the subject prefix.
 #
 # Usage:
-#   git log -1 --format=%B | scripts/ci/service-commit-line.sh
+#   git log -1 --format=%B | scripts/ci/test-nodes/service-commit-line.sh
 #
 # Prints the line, or nothing when the message is not a bump or the lookup
 # fails. A rename, a deleted repository or a rate limit must not swallow the
