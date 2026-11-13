@@ -174,9 +174,10 @@ run_cleanup() {
     [ -f "$AWS_SHARED_CREDENTIALS_FILE" ] ||
       abort "delete the bucket — the test recorded a bucket but left no S3 key to delete it with"
     if bucket_exists; then
-      retry "delete small.bin" aws s3api delete-object --bucket "$NAME" --key small.bin
-      retry "delete large.bin" aws s3api delete-object --bucket "$NAME" --key large.bin
-      retry "delete the bucket" aws s3api delete-bucket --bucket "$NAME"
+      abort_multipart_uploads
+      retry "delete small.bin" s3_delete aws s3api delete-object --bucket "$NAME" --key small.bin
+      retry "delete large.bin" s3_delete aws s3api delete-object --bucket "$NAME" --key large.bin
+      retry "delete the bucket" s3_delete aws s3api delete-bucket --bucket "$NAME"
     else
       pass "delete the bucket — it does not exist"
     fi
@@ -188,7 +189,9 @@ run_cleanup() {
     # Hilt deletes only a disabled tenant, and refuses S3 requests from one,
     # which is why the bucket goes first.
     retry "disable the tenant" hilt_expect POST "/tenants/$NAME/status" '{"status":"disabled"}' 204 404
-    retry "delete the tenant" hilt_expect DELETE "/tenants/$NAME" "" 204
+    # 404 too, because a retry after a delete whose response was lost finds
+    # the tenant already gone.
+    retry "delete the tenant" hilt_expect DELETE "/tenants/$NAME" "" 204 404
     rm -f "$TENANT_MARKER"
     output leftover_tenant ""
   fi
@@ -222,7 +225,8 @@ create_access_key() {
     permissions: [
       "s3:CreateBucket", "s3:DeleteBucket", "s3:ListBucket",
       "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
-      "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"
+      "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts",
+      "s3:ListBucketMultipartUploads"
     ]
   }')"
 
@@ -333,6 +337,39 @@ retry() {
     [ "$n" -eq 4 ] || sleep 10
   done
   abort "$op — failed 4 times"
+}
+
+# s3_delete — run an S3 delete, counting a bucket that is already gone as
+# deleted. A delete whose response was lost has succeeded, and its retry finds
+# nothing. For retry, which reads only the exit code and stderr.
+s3_delete() {
+  local err
+  if err="$("$@" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  if grep -qE '\(404\)|Not Found|NoSuchBucket' <<<"$err"; then
+    return 0
+  fi
+  printf '%s\n' "$err" >&2
+  return 1
+}
+
+# abort_multipart_uploads — a multipart upload cut off by a timeout leaves its
+# parts behind, and they keep the bucket from being deleted. If the uploads
+# cannot be listed, cleanup goes on: the bucket delete then fails and says why.
+abort_multipart_uploads() {
+  local uploads key upload_id
+  if ! uploads="$(aws s3api list-multipart-uploads --bucket "$NAME" \
+    --query 'Uploads[].[Key,UploadId]' --output text 2>&1)"; then
+    echo "    could not list multipart uploads: $(tail -1 <<<"$uploads")"
+    return 0
+  fi
+  # The text output of an empty list is "None".
+  while IFS=$'\t' read -r key upload_id; do
+    [ -n "$upload_id" ] || continue
+    retry "abort the unfinished upload of $key" s3_delete \
+      aws s3api abort-multipart-upload --bucket "$NAME" --key "$key" --upload-id "$upload_id"
+  done <<<"$uploads"
 }
 
 bucket_exists() {

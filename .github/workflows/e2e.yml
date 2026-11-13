@@ -68,14 +68,22 @@ jobs:
 
       # The alert interpolates these into a link and a mention, so a malformed
       # dispatch fails here, loudly, instead of producing a broken alert later.
+      # Either all four describe a change or none does: a dispatch that sets
+      # the change but forgets change_repo would otherwise pass as a manual run.
       - name: Check the dispatch inputs
-        if: github.event_name == 'workflow_dispatch' && inputs.change_repo != 'none'
+        if: github.event_name == 'workflow_dispatch'
         env:
+          CHANGE_REPO: ${{ inputs.change_repo }}
           CHANGE_SHA: ${{ inputs.change_sha }}
           CHANGE_SUBJECT: ${{ inputs.change_subject }}
           CHANGE_AUTHOR: ${{ inputs.change_author }}
         run: |
           set -euo pipefail
+          if [ "$CHANGE_REPO" = none ]; then
+            [ -z "$CHANGE_SHA$CHANGE_SUBJECT$CHANGE_AUTHOR" ] ||
+              { echo "::error::change_sha, change_subject or change_author is set, but change_repo is none"; exit 1; }
+            exit 0
+          fi
           [[ "$CHANGE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
             { echo "::error::change_sha is not a full commit sha: $CHANGE_SHA"; exit 1; }
           [[ "$CHANGE_AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] ||
