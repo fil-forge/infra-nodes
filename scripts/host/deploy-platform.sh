@@ -82,6 +82,20 @@ render_template \
   "$FILONE_NODE_DIR/platform/templates/platform.env.tpl" \
   "$FILONE_SECRETS_DIR/platform.env" || true
 
+# After the rendering, so the migration this asks for finds platform.env in
+# place, and before anything that could start Postgres.
+require_postgres_migrated
+
+# The bind sets create_host_path: false, and create_volume_dirs reads the binds
+# uninterpolated, so it cannot place this one, which versions.env names. A new
+# node's first deploy makes it here. filone_init has already refused to run on
+# an unmounted control volume, so this cannot land on the root disk.
+postgres_dir="$(postgres_data_dir)"
+case "$postgres_dir" in
+  "$FILONE_CONTROL_DIR"/*) [ -d "$postgres_dir" ] || install -d -m 0700 "$postgres_dir" ;;
+  *) die "compose.yml mounts $postgres_dir as Postgres's data directory, outside $FILONE_CONTROL_DIR" ;;
+esac
+
 echo "[3/7] Pulling images"
 # Before the gate, not after. Pulling can take minutes, and doing it inside the
 # safe window would spend the window on a download.

@@ -405,6 +405,174 @@ compose_apps() {
     "$@"
 }
 
+# --- Postgres ----------------------------------------------------------------
+
+# SC2034: migrate-postgres-to-debian.sh uses this after sourcing the library.
+# shellcheck disable=SC2034
+FILONE_POSTGRES_CONTAINER=filone-platform-postgres-1
+
+# Where a node kept its cluster while it ran the Alpine Postgres image. That
+# cluster was initialised with en_US.utf8, which musl sorts in byte order and
+# glibc sorts by language, so the Debian image opening it would read every text
+# index out of order and miss rows without an error. Nor would Postgres notice:
+# musl reports no collation version to compare. migrate-postgres-to-debian.sh
+# moves the data into a new cluster in a directory of its own instead.
+postgres_previous_data_dir() {
+  printf '%s' "$FILONE_CONTROL_DIR/postgres"
+}
+
+# Written by migrate-postgres-to-debian.sh once the new cluster holds every
+# database, with the directory it migrated into.
+postgres_migrated_marker() {
+  printf '%s' "$FILONE_STATE_DIR/postgres-migrated"
+}
+
+# Whether the marker records a migration into the given directory that still
+# stands. One stops standing when the old cluster runs again, as it does after
+# a revert: from then the old cluster takes the writes and the migrated copy
+# falls behind, so a later merge has to wait for a new migration, which moves
+# the stale copy aside, rather than start it. Postgres rewrites pg_control
+# whenever it starts, and nothing else touches the old directory after a
+# migration, so its pg_control being newer than the marker says the old
+# cluster ran since. Read off the files rather than recorded by the deploy that
+# reverts, because reverting the whole change would revert that code too.
+postgres_migration_recorded() {
+  local marker
+  marker="$(postgres_migrated_marker)"
+  [ "$(cat "$marker" 2>/dev/null)" = "$1" ] || return 1
+  [ ! "$(postgres_previous_data_dir)/global/pg_control" -nt "$marker" ]
+}
+
+# Where a migration keeps its dumps and the old image it may need to go back
+# to, from the moment it starts changing things until it finishes or is rolled
+# back.
+postgres_migration_workdir() {
+  printf '%s' "$FILONE_CONTROL_DIR/postgres-migration"
+}
+
+# Whether the marker names this directory but the old cluster has run since, so
+# the record no longer stands: a revert put the apps back on the old cluster, or
+# a server was started on the old directory by hand. A migration that starts
+# after a revert removes the lapsed record first, so a run of it killed partway
+# reads as a run to roll back rather than as either of these.
+postgres_record_lapsed() {
+  [ "$(cat "$(postgres_migrated_marker)" 2>/dev/null)" = "$1" ] && ! postgres_migration_recorded "$1"
+}
+
+# The refusal both guards give when the record has lapsed, worded for where
+# Postgres runs now. On the old directory, the apps went back to it and it holds
+# the newest data. On the migrated one, with no migration in progress, a server
+# was started on the old directory beside it, and if nothing wrote to that the
+# record can be restored. Anything else needs a person.
+die_postgres_record_lapsed() {
+  local dir="$1" previous marker running
+  previous="$(postgres_previous_data_dir)"
+  marker="$(postgres_migrated_marker)"
+  running="$(postgres_container_data_dir 2>/dev/null)" || running=""
+
+  if [ "$running" = "$previous" ]; then
+    die "the migration into $dir is on record, but Postgres is on the old cluster in
+       $previous again, as after a revert. That cluster holds the newest data, so
+       the record no longer counts. With $FILONE_POSTGRES_CONTAINER running, run
+       migrate-postgres-to-debian.sh to move it across; it moves the stale copy in
+       $dir aside."
+  fi
+  if [ "$running" = "$dir" ] && [ ! -e "$(postgres_migration_workdir)/old-image" ]; then
+    die "the migration into $dir is on record, but a server has run on the old
+       cluster in $previous since, so the record no longer counts. Postgres is on
+       $dir. If that server was started only to look, nothing wrote to it, and it
+       has stopped, touch $marker to restore the record."
+  fi
+  local seen="no $FILONE_POSTGRES_CONTAINER container"
+  [ -z "$running" ] ||
+    seen="$FILONE_POSTGRES_CONTAINER on $running, and $(postgres_migration_workdir) left behind"
+  die "the migration into $dir is on record, but the old cluster in $previous has run
+       since, so the record no longer counts, and this guard found $seen.
+       docs/RUNBOOK.md has what to do."
+}
+
+# The host directory the platform project mounts as Postgres's data directory,
+# read from the resolved compose file.
+postgres_data_dir() {
+  compose_platform config --format json | python3 -c '
+import json, sys
+
+service = json.load(sys.stdin)["services"]["postgres"]
+for volume in service.get("volumes") or []:
+    if volume.get("target") == "/var/lib/postgresql/data":
+        print(volume["source"])
+        break
+else:
+    sys.exit("the postgres service mounts nothing at /var/lib/postgresql/data")
+'
+}
+
+# The host directory the running Postgres container has as its data directory,
+# read off the container rather than compose.yml, which may already name
+# another.
+postgres_container_data_dir() {
+  docker inspect \
+    -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' \
+    "$FILONE_POSTGRES_CONTAINER"
+}
+
+# Refuse to start Postgres on a data directory that the node's cluster has not
+# been migrated into. Without this, the merge that moves a node to the Debian
+# image would start an empty cluster under Piri and Ingot on the next reconcile
+# pass, and postgres-init would hand them empty databases.
+#
+# Passes on a node that never had a cluster in the old directory, since a new
+# node initialises the configured one itself; on one whose checkout still mounts
+# the old directory, because its image has not moved or the move was reverted;
+# and on one migrate-postgres-to-debian.sh has finished.
+require_postgres_migrated() {
+  local configured previous marker
+  configured="$(postgres_data_dir)" ||
+    die "could not read Postgres's data directory from $FILONE_NODE_DIR/platform/compose.yml"
+  previous="$(postgres_previous_data_dir)"
+  marker="$(postgres_migrated_marker)"
+
+  if [ "$configured" = "$previous" ]; then
+    # A revert after a migration. With the old cluster gone, Postgres would
+    # initialise an empty one in its place.
+    [ ! -e "$marker" ] || [ -f "$previous/PG_VERSION" ] ||
+      die "compose.yml mounts $previous again, but the cluster there was removed after
+       the migration into $(cat "$marker"). Starting Postgres would hand Piri and
+       Ingot empty databases. Undo the revert."
+    return 0
+  fi
+  [ -f "$previous/PG_VERSION" ] || return 0
+  postgres_migration_recorded "$configured" && return 0
+  ! postgres_record_lapsed "$configured" || die_postgres_record_lapsed "$configured"
+
+  die "compose.yml mounts $configured as Postgres's data directory, but this node's
+       cluster is still in $previous. Starting Postgres there would hand Piri and
+       Ingot empty databases. Run scripts/host/migrate-postgres-to-debian.sh, which
+       moves the data across and finishes the deploy; docs/RUNBOOK.md has the
+       procedure."
+}
+
+# Refuse to start the apps on a cluster a migration left half built. The
+# migration stops them before it starts the new cluster, and starts them again
+# once that cluster holds every database or the old one is back. A run killed
+# in between leaves the new cluster running without the apps' data.
+require_postgres_settled() {
+  local running previous
+  container_exists "$FILONE_POSTGRES_CONTAINER" || return 0
+  running="$(postgres_container_data_dir)" || die "could not inspect $FILONE_POSTGRES_CONTAINER"
+  previous="$(postgres_previous_data_dir)"
+
+  [ "$running" != "$previous" ] || return 0
+  [ -f "$previous/PG_VERSION" ] || return 0
+  postgres_migration_recorded "$running" && return 0
+  ! postgres_record_lapsed "$running" || die_postgres_record_lapsed "$running"
+
+  die "$FILONE_POSTGRES_CONTAINER runs on $running, which migrate-postgres-to-debian.sh
+       has not finished filling. Starting the apps would hand them a cluster without
+       their data. Run migrate-postgres-to-debian.sh --rollback to start the old
+       cluster and the apps, or run the migration again."
+}
+
 # --- Change detection --------------------------------------------------------
 
 # Set a flag variable when a check reports "changed" by exit status, which

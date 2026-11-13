@@ -1394,6 +1394,83 @@ before the copy, Ingot fails to start on the missing directory rather than start
 `/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, remove the old
 copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
+**Move Postgres to the Debian image.** A one-off per node, for the change that moves Postgres from
+`postgres:16-alpine` to `postgres:16-bookworm`. The new image cannot open the old cluster safely
+([the decision record](decisions/2026-11-postgres-on-debian.md) says why), so the cluster moves by a
+dump and restore into `postgres-glibc`, beside `postgres` in the control directory. Once the change
+reaches a node, `deploy-platform.sh` refuses to run there until the move is done. Each reconcile
+pass then stops at that point without changing anything, and the apps deploy, image bumps
+included, waits behind it. On staging, "Appliance has stopped reconciling" fires about 25 minutes
+later (15 minutes stale, then 10 pending); dev has no such alert. So run the move as soon as the
+merge has reached the checkout, inside `tmux` or `screen` so a dropped session does not cut it
+short:
+
+```sh
+sudo scripts/host/migrate-postgres-to-debian.sh
+```
+
+It prints each database's size and asks you to type `migrate-<stage>`; `--yes` skips the question.
+It pulls the new image, waits for the proving gate and stops Piri and Ingot. Then it dumps every
+database into `postgres-migration` on the control volume, starts the new cluster with locale
+`C.UTF-8`, runs `postgres-init`, restores each dump in one transaction, and compares every table's
+exact row count. Last it runs `deploy-platform.sh` and starts the apps. They are down from the gate
+to the end, which takes as long as reading every database twice and writing it once; a Piri whose
+challenge window opens meanwhile misses that proof. The reconcile stamp waits on the script too, so
+a move that takes longer than 25 minutes on staging fires the alert above while it runs.
+
+If a step fails, or the run is interrupted (Ctrl-C, `kill`, a hangup), the script puts the node
+back: the old cluster under its old image, if it had stopped, and the apps on it. The guard stays in
+place. What it does goes to `state/migrate-postgres.log` in the control directory, and a second
+Ctrl-C or a closed window does not cut it short. A `kill` sent to the script's own process takes
+effect when the step it is in finishes, which during the proving gate can take most of an hour.
+Fix the cause and run it again; it moves the half-built `postgres-glibc` aside to
+`postgres-glibc.failed-<time>`, which you remove once you no longer need it. A failure after the
+restore, in the platform deploy or the apps' start, leaves the data migrated: the apps start on the
+new cluster, and the next reconcile pass, or `deploy-platform.sh` by hand, finishes the deploy.
+
+A run killed outright, by `kill -9` or a reboot, cannot put anything back. Killed before step 3 it
+leaves the apps stopped; from step 3 on it also leaves the old cluster stopped and the half-built
+one running, and `deploy-apps.sh` refuses to start the apps on that. Either way, put the old cluster
+back with the apps on it, and then run the move again:
+
+```sh
+sudo scripts/host/migrate-postgres-to-debian.sh --rollback
+```
+
+Afterwards `docker inspect -f '{{.Config.Image}}' filone-platform-postgres-1` shows
+`postgres:16-bookworm`, and the smoke test passes. Keep the old `postgres` directory for a few days
+as the way back; then, if you keep the move, remove it (`sudo rm -rf /mnt/fil-one/control/postgres`
+on dev, `sudo rm -rf /mnt/data/fil-one/control/postgres` on staging). Until then, do not start a
+Postgres server on it, not even to look. Any start rewrites its `pg_control`, which is how the node
+tells that the old cluster has run again, and the migration then stops counting: every platform and
+apps deploy refuses. To look at the old data, copy the directory and start a throwaway server on the
+copy, under the image it was written with and outside the platform project, so no app reaches it.
+Compare its size (`du -sh`) with the free space (`df -h`) of where you copy it, and copy it nowhere
+an app needs the room: dev's root volume is small and holds the images, and the data volume holds
+Ingot's spool. With `COPY` set to that place, on dev (on staging the old directory is
+`/mnt/data/fil-one/control/postgres`):
+
+```sh
+sudo cp -a /mnt/fil-one/control/postgres "$COPY"
+sudo docker run --rm -d --name postgres-look -v "$COPY":/var/lib/postgresql/data postgres:16-alpine
+sudo docker exec -it postgres-look psql -U admin -d admin
+sudo docker stop postgres-look && sudo rm -rf "$COPY"
+```
+
+If a server did run on the old directory itself, with nothing writing to it, the guards say so and
+name the marker: once that server has stopped, `sudo touch` the marker to restore the record. If
+instead a guard says it found no Postgres container, or `postgres-migration` left behind, the node's
+state needs a person: find which cluster the apps last wrote to (the old one if a revert ran, the
+new one otherwise), make sure Postgres runs on it, and go on from the case above that matches.
+
+To go back, revert the node's `platform/versions.env` and `platform/compose.yml`, not the whole
+change, which would also remove the guards. The next deploy starts the old image on the old
+directory, with the data as it was when the move began, so everything written since is lost. Once
+the old cluster has run, the migration stops counting, so merging the move again later waits for a
+fresh migration, which carries the old cluster's newer data across and moves the stale copy aside.
+After the old directory is removed there is no way back but a restore, and the guard refuses a
+revert of those two files rather than starting an empty cluster.
+
 ## Re-onboarding after identity loss
 
 On a node that takes backups, first
