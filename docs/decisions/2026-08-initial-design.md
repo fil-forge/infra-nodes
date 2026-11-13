@@ -386,8 +386,10 @@ fil-forge-bot token it uses already writes this repository's contents, which is 
 on every repository the app reaches. GitHub also labels a `workflow_dispatch` run as started by
 hand, which hides what really started it. The run checks that the dispatch came from fil-forge-bot.
 
-A newer push cancels an older push's run, and a newer central deploy an older deploy's run: the node
-already runs the newer change, so the older run would test one thing and name another in its alert.
+A newer push cancels an older push's run, and a newer central deploy an older deploy's run of the
+same stages: the node already runs the newer change, so the older run would test one thing and name
+another in its alert. A deploy of other stages, or a dispatch from anyone but fil-forge-bot, cancels
+nothing.
 A cancelled run still runs the cleanup after its end-to-end test and posts nothing. Scheduled and
 manual runs are never cancelled, so the hourly run cannot replace a push's run that is still waiting
 for its commit.

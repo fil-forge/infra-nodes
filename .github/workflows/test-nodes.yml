@@ -56,13 +56,25 @@ on:
     - cron: "17 * * * *"
 
 # A newer push replaces an older push's run, and a newer central deploy an
-# older deploy's run, because the node already runs the newer change and an
-# alert would name the wrong one. A cancelled run still cleans up after its
-# end-to-end test and posts no alert. A schedule or manual run has a group of
-# its own: it neither cancels nor is cancelled, so the hourly run can never
-# replace a push's run that is still waiting for its commit.
+# older deploy's run of the same stages, because the node already runs the
+# newer change and an alert would name the wrong one. A cancelled run still
+# cleans up after its end-to-end test and posts no alert. A schedule or manual
+# run has a group of its own: it neither cancels nor is cancelled, so the
+# hourly run can never replace a push's run that is still waiting for its
+# commit.
+#
+# A dispatch's group names its sender and its stages. The stages, so a deploy
+# of dev alone cannot cancel an earlier run that also tests staging, leaving
+# staging untested. The sender, because the group is joined before the select
+# job checks who sent the dispatch: anyone else who can write this repository
+# lands in a group of their own and cannot cancel fil-forge-bot's runs.
 concurrency:
-  group: test-nodes-${{ github.event_name == 'push' && 'infra-nodes' || github.event_name == 'repository_dispatch' && 'infra-central' || github.run_id }}
+  group: >-
+    test-nodes-${{
+      github.event_name == 'push' && 'infra-nodes'
+      || github.event_name == 'repository_dispatch' && format('infra-central-{0}-{1}', github.actor, github.event.client_payload.stages)
+      || github.run_id
+    }}
   cancel-in-progress: true
 
 permissions:
