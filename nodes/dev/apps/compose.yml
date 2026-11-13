@@ -112,16 +112,23 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - &piri-entrypoint
-        type: bind
-        source: ./config/piri/entrypoint.sh
-        target: /entrypoint.sh
+      - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
+      - type: bind
+        source: /mnt/fil-one/piri-0
+        target: /data/piri
+        bind:
+          create_host_path: false
+      # The volume root above is an empty directory on the root disk while the
+      # volume is not mounted, so it exists either way. lost+found exists only
+      # on the ext4 filesystem itself, so binding it is what makes Docker refuse
+      # to start this Piri without its volume, at boot included. reset-apps.sh
+      # keeps it.
+      - type: bind
+        source: /mnt/fil-one/piri-0/lost+found
+        target: /volume-guard
         read_only: true
         bind:
           create_host_path: false
-      - type: volume
-        source: piri-0-data
-        target: /data/piri
 
   piri-1:
     <<: *piri-base
@@ -146,9 +153,17 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - type: volume
-        source: piri-1-data
+      - type: bind
+        source: /mnt/fil-one/piri-1
         target: /data/piri
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/fil-one/piri-1/lost+found
+        target: /volume-guard
+        read_only: true
+        bind:
+          create_host_path: false
     # The Piris start one at a time. `piri init` estimates gas for the
     # createDataSet transaction against the chain's pending state, and two
     # Piris estimating at once underestimate it: the loser's transaction
@@ -181,9 +196,17 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - type: volume
-        source: piri-2-data
+      - type: bind
+        source: /mnt/fil-one/piri-2
         target: /data/piri
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/fil-one/piri-2/lost+found
+        target: /volume-guard
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       piri-1:
         condition: service_healthy
@@ -231,11 +254,7 @@ services:
       # Every object's content-encryption key is wrapped under the region KEK in
       # that OpenBao's transit engine, so this mount is what makes a write
       # possible at all. Read-write for the same reason the OpenBao side is.
-      - type: bind
-        source: /run/fil-one/bao
-        target: /run/openbao
-        bind:
-          create_host_path: false
+      - /run/fil-one/bao:/run/openbao
       - type: bind
         source: /mnt/fil-one/data/ingot
         target: /data
@@ -250,36 +269,6 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks: [filone]
-
-# Each Piri's own EBS volume, mounted by Docker from the block device rather
-# than bound from the host's mount point at /mnt/fil-one/piri-<n>. That mount
-# point is an ordinary directory on the root disk whenever the volume is not
-# attached, so a bind of it would start Piri on an empty directory and send new
-# blobs to the root disk; naming the device makes Docker refuse to start
-# instead, at boot as well, where no host script runs.
-#
-# By filesystem label, which cloud-init gives the volume when it formats it: the
-# kernel names NVMe devices in attach order, so no device path is stable.
-#
-# The host mounts the same filesystem itself, through /etc/fstab, and that is
-# the copy the host scripts read. Mounting it twice is one superblock shared by
-# both mount points, not two views that can drift.
-volumes:
-  piri-0-data:
-    driver: local
-    driver_opts:
-      type: ext4
-      device: /dev/disk/by-label/filone-piri-0
-  piri-1-data:
-    driver: local
-    driver_opts:
-      type: ext4
-      device: /dev/disk/by-label/filone-piri-1
-  piri-2-data:
-    driver: local
-    driver_opts:
-      type: ext4
-      device: /dev/disk/by-label/filone-piri-2
 
 networks:
   filone:

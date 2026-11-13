@@ -67,15 +67,18 @@ filone_init() {
   [ "$FILONE_NODE" = "$host_node" ] ||
     die "node.env says node '$FILONE_NODE' but this box is '$host_node'"
 
+  # Before the mkdir below, which would otherwise create the state directory on
+  # the root disk under an empty mountpoint. Only the control volume: every
+  # script needs it, while a missing data volume only stops its own services.
+  is_mounted "$FILONE_CONTROL_DIR" ||
+    die "the control volume is not mounted at $FILONE_CONTROL_DIR; refusing to run.
+       'findmnt $FILONE_CONTROL_DIR' and 'lsblk -f' show what is attached."
+
   FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
   FILONE_METRICS_DIR="$FILONE_STATE_DIR/metrics"
   FILONE_REVISIONS_DIR="$FILONE_STATE_DIR/revisions"
 
-  # Not on a missing control volume, where it would make the state directory
-  # on the root disk. The scripts that need it call require_control_volume.
-  if control_volume_mounted; then
-    mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
-  fi
+  mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
   install -d -m 0700 -o root -g root "$FILONE_SECRETS_DIR"
   # cloud-init creates this too, so on a fresh node it is already there. Here as
   # well, so a node provisioned before the socket existed gets the directory on
@@ -91,6 +94,37 @@ filone_init() {
   # When this run started. wait_healthy uses it to tell a container that
   # crash-looped just now from one that restarted at some point in the past.
   FILONE_DEPLOY_START="$(date +%s)"
+}
+
+# Whether a directory exists on a filesystem other than the root one. fstab
+# mounts the volumes nofail, so a volume that does not attach leaves an empty
+# directory on the root disk, and a service started there runs on no data: an
+# uninitialised OpenBao, a fresh Postgres, a Piri writing to the OS disk.
+is_mounted() {
+  local dev
+  dev="$(stat -c %d "$1" 2>/dev/null)" && [ "$dev" != "$(stat -c %d /)" ]
+}
+
+# Create the bind sources a compose project keeps on the control and data
+# volumes. compose.yml sets create_host_path: false on them, so Docker no longer
+# creates a missing one. Only under a mounted volume, so nothing lands on the
+# root disk. Never a Piri's data directory: bootstrap creates those, and a
+# missing one means the Piri's data is gone, which an empty directory would hide.
+create_volume_dirs() {
+  local project_dir="$1" root roots=() dirs
+  for root in "$FILONE_CONTROL_DIR" "$FILONE_DATA_DIR"; do
+    ! is_mounted "$root" || roots+=("$root/")
+  done
+  [ "${#roots[@]}" -gt 0 ] || return 0
+  dirs="$(docker compose --project-directory "$project_dir" config --no-interpolate --format json |
+    jq -r --args '
+      .services[].volumes // [] | .[]
+      | select(.type == "bind" and .target != "/data/piri") | .source as $source
+      | select(any($ARGS.positional[]; . as $root | $source | startswith($root)))
+      | $source
+    ' "${roots[@]}")" ||
+    die "could not read the bind mounts in $project_dir/compose.yml"
+  [ -z "$dirs" ] || xargs -d '\n' mkdir -p <<<"$dirs"
 }
 
 # Fail on a node.env value that is still the placeholder it was committed with.
@@ -244,255 +278,6 @@ take_deploy_lock() {
   export FILONE_DEPLOY_LOCK_HELD=1
 }
 
-# --- Volumes ---------------------------------------------------------------
-
-# Every bind in the compose files sets create_host_path: false, so Docker
-# refuses to start a service whose bind source is missing instead of creating an
-# empty directory on the root disk and mounting that. It makes that check on
-# every start, including the ones it makes at boot, where none of these scripts
-# run.
-#
-# What Docker cannot tell is a mount point from an ordinary directory, so a
-# directory an earlier pass left behind under an unmounted volume would look to
-# it like data. The helpers below answer that: a bind source counts only when it
-# is on a filesystem of its own.
-
-# Where this node keeps the data a volume holds: the control directory, the data
-# directory and each Piri's. The Piri paths are read from the apps compose file,
-# which is the one statement of them, so nothing here is a second list to keep
-# in step.
-filone_data_roots() {
-  local service dir
-  printf '%s\n%s\n' "$FILONE_CONTROL_DIR" "$FILONE_DATA_DIR"
-  for service in $(piri_services); do
-    # Quietly: a Piri whose volume is not mounted has no directory to list, and
-    # that is what the callers are about to report.
-    dir="$(piri_host_data_dir "$service")"
-    [ -n "$dir" ] || continue
-    printf '%s\n' "$dir"
-  done
-}
-
-# Whether the filesystem that holds a path is one of its own rather than the
-# root filesystem. A path that does not exist yet is answered by its nearest
-# existing parent, which is the filesystem it would be created on.
-is_on_own_filesystem() {
-  local path="$1" filesystem
-  while [ ! -e "$path" ] && [ "$path" != / ]; do path="$(dirname "$path")"; done
-  filesystem="$(findmnt -n -o TARGET --target "$path")" || return 1
-  [ "$filesystem" != / ]
-}
-
-control_volume_mounted() {
-  is_on_own_filesystem "$FILONE_CONTROL_DIR"
-}
-
-# For a script that writes deployment state or starts the platform. Without the
-# control volume, Postgres would initialise an empty cluster and the deploy
-# state would land on the root disk.
-require_control_volume() {
-  control_volume_mounted ||
-    die "the control volume is not mounted at $FILONE_CONTROL_DIR.
-       Postgres, OpenBao and the deploy state live there, so nothing is deployed.
-       Mount the volume, then run this again. docs/RUNBOOK.md has the steps."
-}
-
-# The bind sources of a service that hold volume data and are not there: either
-# missing, or an empty directory left on the root disk where the volume should
-# be. Read from the compose file, so a service with no container yet is covered.
-#
-# Only the paths under the data roots. A rendered secret that a reboot emptied
-# is missing too, and that is the deploy's business rather than the volume's.
-#
-# A service the compose file exempts from the bind check reports nothing: it is
-# one that has to run whether or not its volume is there, as Alloy does, since
-# it ships the telemetry on-call reads to find the volume missing.
-#
-# Usage: unavailable_mount_sources <platform|apps> <service>
-unavailable_mount_sources() {
-  local project="$1" service="$2" kind path
-  while IFS=$'\t' read -r kind path; do
-    case "$kind" in
-      bind) is_available_data_path "$path" || printf '%s\n' "$path" ;;
-      # What Docker itself looks for when it mounts the volume.
-      device) [ -e "$path" ] || printf '%s\n' "$path" ;;
-    esac
-  done < <(jq -r --arg service "$service" \
-    '(.volumes // {}) as $volumes
-     | .services[$service] | select(has("x-filone-bind-check") | not)
-     | .volumes // [] | .[]
-     | if .type == "bind" then "bind\t" + .source
-       elif .type == "volume" and $volumes[.source].driver_opts.device != null
-         then "device\t" + $volumes[.source].driver_opts.device
-       else empty end' \
-    <<<"$(compose_config_json "$project")")
-}
-
-# Whether a path that holds volume data is there: on its volume rather than
-# missing, and not an empty directory left on the root disk where the volume
-# should be. A path outside the data roots is nothing to do with a volume, so it
-# is available as far as this is concerned: a rendered secret that a reboot
-# emptied is the deploy's business.
-is_available_data_path() {
-  local path="$1" root
-  while read -r root; do
-    [ "$path" = "$root" ] || [[ "$path" == "$root"/* ]] || continue
-    [ -e "$path" ] && is_on_own_filesystem "$path"
-    return
-  done < <(filone_data_roots)
-  # Under no data root, so no volume holds it.
-  return 0
-}
-
-# The services given that can run, one per line. Each one left out is named on
-# stderr with the paths it is waiting for.
-#
-# Usage: startable_services <platform|apps> <service>...
-startable_services() {
-  local project="$1" service unavailable
-  shift
-  for service in "$@"; do
-    unavailable="$(unavailable_mount_sources "$project" "$service")"
-    if [ -z "$unavailable" ]; then
-      printf '%s\n' "$service"
-    else
-      echo "WARNING: $service cannot run: its volume is not mounted (${unavailable//$'\n'/, }); leaving it stopped" >&2
-    fi
-  done
-}
-
-# Stop the running containers of every service in a project that cannot run.
-# Docker refuses to start one whose bind source is missing, but a container
-# created before those binds, or one that was running when the volume went, has
-# to be stopped here. Found by the labels compose puts on its containers, so
-# this works when the env files compose would need are gone after a reboot. Not
-# behind the proving gate: a Piri without its volume cannot prove the data on
-# it, and every minute it runs puts more on the root disk.
-#
-# Usage: stop_unusable_services <platform|apps>
-stop_unusable_services() {
-  local project="$1" services service unavailable ids
-  [ -f "$FILONE_NODE_DIR/$project/compose.yml" ] || return 0
-  services="$(docker compose --project-directory "$FILONE_NODE_DIR/$project" -p "filone-$project" \
-    config --no-interpolate --services)" ||
-    die "could not read the services in nodes/$FILONE_NODE/$project/compose.yml"
-  for service in $services; do
-    unavailable="$(unavailable_mount_sources "$project" "$service")"
-    [ -n "$unavailable" ] || continue
-    ids="$(docker ps -q \
-      --filter "label=com.docker.compose.project=filone-$project" \
-      --filter "label=com.docker.compose.service=$service")" ||
-      die "could not list $service's containers"
-    [ -n "$ids" ] || continue
-    echo "WARNING: stopping $service: its volume is not mounted (${unavailable//$'\n'/, })" >&2
-    # shellcheck disable=SC2086 # one container id per word
-    docker stop $ids >/dev/null || die "could not stop $service"
-  done
-}
-
-# The same for an existing Piri or Ingot container (filone-<service>), read from
-# the binds it was created with as well as from the compose file: a container
-# created before this guard holds paths the compose file no longer names. Its
-# volume mounts are left to the compose file, which is where the device a
-# volume stands for is named.
-container_unavailable_mount_sources() {
-  local container="$1" source mounts
-  mounts="$(docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{println .Source}}{{end}}{{end}}' \
-    "$container")" || die "could not inspect $container"
-  {
-    while read -r source; do
-      [ -n "$source" ] || continue
-      is_available_data_path "$source" || printf '%s\n' "$source"
-    done <<<"$mounts"
-    unavailable_mount_sources apps "${container#filone-}"
-  } | sort -u
-}
-
-# The host directory behind a container's mount at a destination: the bind
-# source, or for a volume Docker mounts from a block device, the host's own
-# mount of that device. Read from the container, which is what was deployed,
-# rather than from a checkout that may already be ahead of it.
-container_data_dir() {
-  local container="$1" destination="$2" kind name source
-  read -r kind name source < <(docker inspect \
-    -f "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Type}} {{.Name}} {{.Source}}{{end}}{{end}}" \
-    "$container") || die "could not inspect $container"
-  case "$kind" in
-    bind) printf '%s' "$source" ;;
-    volume)
-      source="$(docker volume inspect -f '{{index .Options "device"}}' "$name" 2>/dev/null)"
-      [ -n "$source" ] ||
-        die "$container mounts the volume $name at $destination, which names no device"
-      device_host_mount "$source"
-      ;;
-    *) die "$container has nothing mounted at $destination" ;;
-  esac
-}
-
-# Create the directories the compose files bind from a volume. The binds set
-# create_host_path: false, so Docker no longer makes them, and a new service or
-# a new node would otherwise fail to start. Only under a data root, so a
-# rendered secret's path is never made into a directory, and only where that
-# path is on a filesystem of its own, so nothing lands on the root disk.
-create_bind_sources() {
-  local project source root roots
-  roots="$(filone_data_roots)"
-  for project in platform apps; do
-    [ -f "$FILONE_NODE_DIR/$project/compose.yml" ] || continue
-    while read -r source; do
-      [ -n "$source" ] && [ ! -e "$source" ] || continue
-      while read -r root; do
-        [ "$source" = "$root" ] || [[ "$source" == "$root"/* ]] || continue
-        if is_on_own_filesystem "$source"; then
-          mkdir -p "$source"
-          echo "  created $source"
-        fi
-        break
-      done <<<"$roots"
-    done < <(jq -r '.services[].volumes // [] | .[] | select(.type == "bind") | .source' \
-      <<<"$(compose_config_json "$project")")
-  done
-}
-
-# Have Docker wait for the volumes' mounts at boot. They are mounted with
-# nofail, so a missing volume does not drop the box into emergency mode where
-# SSM cannot reach it, but nofail also leaves them unordered against Docker. A
-# volume that is still mounting when Docker restarts its containers would then
-# count as missing, and Docker does not retry. After= orders without requiring:
-# a mount that fails still lets Docker start, and the services on that volume
-# stay down on their own.
-#
-# Only mounts listed in /etc/fstab, which are the ones systemd mounts at boot. A
-# ZFS dataset is mounted by zfs-mount.service before local-fs.target, which
-# Docker already starts after.
-FILONE_DOCKER_DROPIN=/etc/systemd/system/docker.service.d/filone-volume-mounts.conf
-sync_docker_mount_order() {
-  local root filesystem units="" content
-  while read -r root; do
-    [ -d "$root" ] || continue
-    filesystem="$(findmnt -n -o TARGET --target "$root")"
-    [ "$filesystem" != / ] || continue
-    findmnt --fstab -n "$filesystem" >/dev/null || continue
-    case " $units " in *" $(systemd-escape --path --suffix=mount "$filesystem") "*) continue ;; esac
-    units+=" $(systemd-escape --path --suffix=mount "$filesystem")"
-  done < <(filone_data_roots)
-
-  if [ -z "$units" ]; then
-    [ -e "$FILONE_DOCKER_DROPIN" ] || return 0
-    rm -f "$FILONE_DOCKER_DROPIN"
-  else
-    content="# Written by infra-nodes' sync_docker_mount_order. Docker waits for the
-# appliance volumes to mount, or to fail, before it restarts any container.
-[Unit]
-After=${units# }"
-    [ "$(cat "$FILONE_DOCKER_DROPIN" 2>/dev/null)" != "$content" ] || return 0
-    install -d -m 0755 "$(dirname "$FILONE_DOCKER_DROPIN")"
-    printf '%s\n' "$content" >"$FILONE_DOCKER_DROPIN"
-  fi
-  echo "  updated $FILONE_DOCKER_DROPIN"
-  systemctl daemon-reload
-}
-
 # --- OpenBao ---------------------------------------------------------------
 
 # shellcheck source=lib/openbao.sh
@@ -595,24 +380,6 @@ sys.stdout.write(binascii.hexlify(record.encode()).decode())
 }
 
 # --- Compose ---------------------------------------------------------------
-
-# A project's fully resolved definition as JSON, without interpolation, so it
-# answers before any env file has been rendered. The callers read mounts and
-# service names from it, neither of which an env file supplies.
-# Cached per run: the helpers below read it once per service, and a node that
-# waits on a proving window runs for the best part of an hour. The checkout
-# cannot change under a run, which takes the deploy lock before reading it.
-compose_config_json() {
-  local project="$1" definition
-  local cache="FILONE_COMPOSE_JSON_${project//-/_}"
-  if [ -z "${!cache:-}" ]; then
-    definition="$(docker compose --project-directory "$FILONE_NODE_DIR/$project" -p "filone-$project" \
-      config --no-interpolate --format json)" ||
-      die "could not read nodes/$FILONE_NODE/$project/compose.yml"
-    printf -v "$cache" '%s' "$definition"
-  fi
-  printf '%s' "${!cache}"
-}
 
 # The seal token is in an env file of its own because of the order things come
 # up in: OpenBao needs it before OpenBao can answer, and everything in
@@ -793,55 +560,23 @@ piri_public_url() {
   fi
 }
 
-# The host directory a Piri service keeps its data in. It differs per node, so
-# it is read from compose.yml: a directory on the shared data disk on staging,
-# which the service binds, and on dev the host's own mount of the volume Docker
-# mounts from its block device.
+# The host directory a Piri service mounts at /data/piri, read from compose.yml
+# because it differs per node: an EBS volume per Piri on dev, a directory on the
+# shared data disk on staging.
 piri_data_dir() {
-  local service="$1" dir
-  dir="$(piri_host_data_dir "$service")"
-  [ -n "$dir" ] ||
-    die "$service's data directory is not mounted on this host.
-       Its volume should be mounted by /etc/fstab; docs/RUNBOOK.md has the steps."
+  local service="$1" definition dir
+  definition="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
+    config --no-interpolate --format json)" ||
+    die "could not read nodes/$FILONE_NODE/apps/compose.yml"
+  dir="$(python3 -c '
+import json, sys
+service = json.load(sys.stdin)["services"][sys.argv[1]]
+for volume in service.get("volumes") or []:
+    if isinstance(volume, dict) and volume.get("target") == "/data/piri":
+        print(volume["source"])
+' "$service" <<<"$definition")" || die "could not read $service's volumes from compose.yml"
+  [ -n "$dir" ] || die "$service in nodes/$FILONE_NODE/apps/compose.yml mounts nothing at /data/piri"
   printf '%s' "$dir"
-}
-
-# The same, empty rather than fatal when the volume is not mounted, for the
-# callers that are deciding whether it is.
-piri_host_data_dir() {
-  local service="$1" mount device
-  mount="$(jq -r --arg service "$service" \
-    '.services[$service].volumes // [] | map(select(.target == "/data/piri"))[0]
-     | if . == null then "" elif .type == "bind" then "bind\t" + .source
-       else "volume\t" + .source end' <<<"$(compose_config_json apps)")"
-  case "$mount" in
-    bind*) printf '%s' "${mount#*$'\t'}" ;;
-    volume*)
-      device="$(volume_device "${mount#*$'\t'}")"
-      [ -n "$device" ] ||
-        die "the volume $service mounts at /data/piri names no device; 'make check-binds' refuses that"
-      device_host_mount "$device"
-      ;;
-    *) die "$service in nodes/$FILONE_NODE/apps/compose.yml mounts nothing at /data/piri" ;;
-  esac
-}
-
-# The block device a named volume mounts, empty for one Docker would keep on the
-# root disk. `make check-binds` refuses that, so it is empty only on a node
-# whose compose file has not been checked.
-volume_device() {
-  jq -r --arg volume "$1" '.volumes[$volume].driver_opts.device // ""' \
-    <<<"$(compose_config_json apps)"
-}
-
-# Where the host itself mounts a device, which is the copy the host scripts
-# read. Docker mounts the same filesystem again under /var/lib/docker for the
-# container, and that mount is not this one.
-device_host_mount() {
-  local device="$1" resolved
-  resolved="$(readlink -f "$device" 2>/dev/null || printf '%s' "$device")"
-  findmnt -n -o TARGET --source "$resolved" 2>/dev/null |
-    grep -v '^/var/lib/docker/' | head -n1
 }
 
 # The Piri containers on this box, in index order. Read from Docker rather than
@@ -871,7 +606,9 @@ container_running() {
 
 # Ingot first: it writes through to Piri, so it should not outlive it. Returns
 # non-zero when there was nothing to stop, so a caller can tell a node whose apps
-# it took down from one that has never deployed them.
+# it took down from one that has never deployed them. Records what it stopped in
+# FILONE_STOPPED_APPS, for start_apps.
+FILONE_STOPPED_APPS=""
 stop_apps() {
   local container stopped=1 piris
   piris="$(piri_containers)"
@@ -880,6 +617,7 @@ stop_apps() {
     if container_running "$container"; then
       echo "  stopping $container"
       docker stop "$container" >/dev/null || die "could not stop $container"
+      FILONE_STOPPED_APPS+=" $container"
       stopped=0
     fi
   done
@@ -887,19 +625,13 @@ stop_apps() {
 }
 
 # Piri first, the same order in reverse: Ingot started against a Piri that is
-# still coming up produces a burst of failures for no reason. A container whose
-# volume is not mounted is left stopped, since Docker would refuse to start it.
+# still coming up produces a burst of failures for no reason. Only what
+# stop_apps stopped: a Piri that was already down, such as one whose volume is
+# not mounted, stays down, and is deploy-apps.sh's to report.
 start_apps() {
-  local container piris unavailable
-  piris="$(piri_containers)"
-  # shellcheck disable=SC2086 # one container name per word
-  for container in $piris filone-ingot; do
-    container_exists "$container" || continue
-    unavailable="$(container_unavailable_mount_sources "$container")"
-    if [ -n "$unavailable" ]; then
-      echo "WARNING: $container cannot run: its volume is not mounted (${unavailable//$'\n'/, }); leaving it stopped" >&2
-      continue
-    fi
+  local container
+  for container in ${FILONE_STOPPED_APPS/filone-ingot/} filone-ingot; do
+    [[ " $FILONE_STOPPED_APPS " == *" $container "* ]] || continue
     echo "  starting $container"
     docker start "$container" >/dev/null || die "could not start $container"
   done

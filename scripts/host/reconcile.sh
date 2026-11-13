@@ -86,26 +86,6 @@ fi
 
 # --- 3. Work out what changed ----------------------------------------------
 
-# Create what the compose files bind from a mounted volume, and order Docker
-# after those mounts. Each pass, so a node that predates either gets them
-# without a manual step.
-create_bind_sources
-sync_docker_mount_order
-
-# And stop anything running on a volume that is not mounted, such as a container
-# Docker restarted at boot on a directory an earlier pass left behind. Before
-# the check below, which ends the pass when the control volume is the one
-# missing.
-stop_unusable_services platform
-stop_unusable_services apps
-
-# The revisions compared below, and every deploy, live on the control volume.
-# Without it there is nothing to compare against and nothing safe to deploy. The
-# token renewals further down go through the local OpenBao, which is on the
-# same volume, so stopping here loses none of them. The pass is not stamped, so
-# the reconcile deadman alert fires.
-require_control_volume
-
 # Per project, against the revision that project was last deployed from rather
 # than against the checkout's previous HEAD. A deploy that failed leaves its
 # revision unrecorded, so the next pass sees the same work still to do; diffing

@@ -32,8 +32,6 @@ take_deploy_lock
 
 echo "=== deploy apps ($FILONE_NODE) ==="
 
-require_control_volume
-
 bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
 
 [ "$PAYER_ADDRESS" != "0x0000000000000000000000000000000000000000" ] ||
@@ -47,8 +45,19 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
        positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
 
 piri_services="$(piri_services)"
-# shellcheck disable=SC2206 # one service name per word
-piris=($piri_services)
+# A Piri whose volume is not mounted is left out of this deploy, and the rest go
+# ahead. Docker would refuse to start it anyway; the run fails at the end, so
+# the next reconcile pass tries again.
+piris=()
+unmounted_piris=()
+for service in $piri_services; do
+  if is_mounted "$(piri_data_dir "$service")"; then
+    piris+=("$service")
+  else
+    echo "WARNING: $service's volume is not mounted; leaving it stopped" >&2
+    unmounted_piris+=("$service")
+  fi
+done
 declare -A piri_changed
 for service in "${piris[@]}"; do piri_changed[$service]=0; done
 # A change every Piri sees: the base config and the env file they share.
@@ -58,31 +67,12 @@ ingot_changed=0
 # Every service but Bucket Intelligence's two, which deploy-rag.sh deploys once
 # these are deployed and recorded, so nothing about them can fail this deploy.
 core_services="$(apps_core_services)"
+for service in "${unmounted_piris[@]}"; do
+  core_services="$(grep -vxF "$service" <<<"$core_services" || true)"
+done
 
-# A service whose volume is not mounted is left stopped: started, it would run
-# on an empty directory on the root disk, and Docker refuses to start it anyway.
-# The rest deploy as usual, and the run fails at the end, so the next reconcile
-# pass tries again and the volume's absence is not recorded as a good deploy.
-# shellcheck disable=SC2086 # one service name per word
-startable_core_services="$(startable_services apps $core_services)"
-unusable_services="$(grep -vxF -f <(printf '%s\n' "$startable_core_services") <<<"$core_services" || true)"
-is_startable() {
-  grep -qxF "$1" <<<"$startable_core_services"
-}
-
-# Stop a service whose volume is not mounted, if it is running anyway: a
-# container created before the markers existed, or one started before its volume
-# went missing. Not behind the proving gate: without its volume a Piri cannot
-# prove the data on it, and each minute it runs puts more on the root disk.
-stop_unusable() {
-  local service="$1" container="filone-$1"
-  if container_running "$container"; then
-    echo "  $service: its volume is not mounted; stopping it"
-    docker stop "$container" >/dev/null || die "could not stop $container"
-  else
-    echo "  $service: its volume is not mounted; left stopped"
-  fi
-}
+# rag-embed's too, though deploy-rag.sh starts it: it runs after this script.
+create_volume_dirs "$FILONE_NODE_DIR/apps"
 
 # --- 1. Render --------------------------------------------------------------
 
@@ -211,7 +201,7 @@ echo "[3/5] Piri"
 piri_containers="$(piri_containers)"
 for container in $piri_containers; do
   service="${container#filone-}"
-  [[ " ${piris[*]} " == *" $service "* ]] && continue
+  grep -qxF "$service" <<<"$piri_services" && continue
   container_running "$container" || continue
   echo "  $service: gone from compose.yml; waiting for a safe window to stop it"
   "$SCRIPT_DIR/pdp-gate.sh" "$service"
@@ -219,9 +209,7 @@ for container in $piri_containers; do
 done
 
 for service in "${piris[@]}"; do
-  if ! is_startable "$service"; then
-    stop_unusable "$service"
-  elif [ "${piri_changed[$service]}" -eq 1 ]; then
+  if [ "${piri_changed[$service]}" -eq 1 ]; then
     echo "  $service: something changed; waiting for a safe restart window"
     "$SCRIPT_DIR/pdp-gate.sh" "$service"
     # --force-recreate because most of what changes here is the *content* of a
@@ -244,10 +232,11 @@ for service in "${piris[@]}"; do
   else
     echo "  $service: nothing changed"
     # An existing Piri with nothing to apply. --no-recreate leaves it running,
-    # or starts it again if it was stopped. --no-deps for the reason above, and
-    # so a Piri before it whose volume is missing is not started as its
-    # dependency.
+    # or starts it again if it was stopped. --no-deps so a Piri before it whose
+    # volume is missing is not started as its dependency, and the health wait
+    # keeps the one-at-a-time order compose.yml's depends_on would have.
     compose_apps up -d --no-recreate --no-deps "$service"
+    wait_healthy compose_apps 420 "$service"
   fi
 done
 
@@ -256,9 +245,7 @@ done
 # After the Piris: Ingot writes through to them, and starting against a Piri that is
 # still coming up produces a burst of failures for no reason.
 echo "[4/5] Ingot"
-if ! is_startable ingot; then
-  stop_unusable ingot
-elif [ "$ingot_changed" -eq 1 ]; then
+if [ "$ingot_changed" -eq 1 ]; then
   compose_apps up -d --force-recreate ingot
 else
   echo "  nothing changed"
@@ -268,40 +255,30 @@ fi
 # Catch a service added to compose.yml and remove one deleted from it, without
 # recreating any of the services above: whether they restart was decided, and
 # gated, further up. Bucket Intelligence's two are left out; a container whose
-# service is gone from compose.yml is still removed. So is a service whose
-# volume is not mounted, and --no-deps keeps compose from starting it as
-# another's dependency.
-if [ -n "$startable_core_services" ]; then
-  # shellcheck disable=SC2086 # one service name per word
-  compose_apps up -d --no-recreate --no-deps --remove-orphans $startable_core_services
-fi
+# service is gone from compose.yml is still removed. --no-deps keeps a Piri
+# left out above from being started as a dependency.
+# shellcheck disable=SC2086 # one service name per word
+compose_apps up -d --no-recreate --no-deps --remove-orphans $core_services
 
 # --- 5. Health --------------------------------------------------------------
 
 echo "[5/5] Health"
-# Given no service, wait_healthy waits for the whole project, the stopped ones
-# included.
-if [ -n "$startable_core_services" ]; then
-  # shellcheck disable=SC2086 # one service name per word
-  wait_healthy compose_apps 420 $startable_core_services
-fi
+# shellcheck disable=SC2086 # one service name per word
+wait_healthy compose_apps 420 $core_services
 
 # Only now, after the deploy is known good. Recording the hashes earlier would
 # make a failed deploy look like an up-to-date one on the next pass.
 for service in "${piris[@]}"; do
-  is_startable "$service" || continue
   config_hash_record "apps-$service" "${piri_config_hash[$service]}"
 done
-if is_startable ingot; then
-  config_hash_record apps-ingot "$ingot_config_hash"
-fi
+config_hash_record apps-ingot "$ingot_config_hash"
 
-if [ -z "$unusable_services" ]; then
+# Neither the stamp nor the marker while a Piri is left out, so the next
+# reconcile pass deploys again and the reconcile deadman fires until it is back.
+if [ "${#unmounted_piris[@]}" -eq 0 ]; then
   stamp_deploy_success apps
   touch "$FILONE_APPS_DEPLOYED_MARKER"
-  echo "=== apps deploy complete ==="
 fi
-# Whether or not every app deployed: what this run wrote to OpenBao is snapshotted.
 request_openbao_snapshot
 
 # Last, and outside this deploy's success: deploy-rag.sh logs its own warning
@@ -309,6 +286,7 @@ request_openbao_snapshot
 # exits at once on a node without the engine.
 "$SCRIPT_DIR/deploy-rag.sh" || true
 
-[ -z "$unusable_services" ] ||
-  die "deployed every app but ${unusable_services//$'\n'/, }, whose volume is not mounted.
-       Mount it and the next reconcile pass deploys it. docs/RUNBOOK.md has the steps."
+[ "${#unmounted_piris[@]}" -eq 0 ] ||
+  die "deployed every app but ${unmounted_piris[*]}, whose volume is not mounted.
+       Mount it and the next reconcile pass starts it."
+echo "=== apps deploy complete ==="

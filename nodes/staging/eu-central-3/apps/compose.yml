@@ -92,13 +92,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - &piri-entrypoint
-        type: bind
-        source: ./config/piri/entrypoint.sh
-        target: /entrypoint.sh
-        read_only: true
-        bind:
-          create_host_path: false
+      - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
       - type: bind
         source: /mnt/data/fil-one/data/piri-0
         target: /data/piri
@@ -212,11 +206,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - type: bind
-        source: /run/fil-one/bao
-        target: /run/openbao
-        bind:
-          create_host_path: false
+      - /run/fil-one/bao:/run/openbao
       # On the host's root filesystem, which is SSD, rather than the ZFS pool
       # the Piris use: every body Ingot takes in lands here first. A missing
       # directory fails the start rather than leaving an empty one in place of
@@ -258,6 +248,8 @@ services:
     # The model downloads from Hugging Face on the first start and is cached
     # here, so a restart does not fetch it again.
     volumes:
+      # No tmpfs file stops Docker restarting it at boot, so
+      # create_host_path: false is what keeps it off an unmounted volume.
       - type: bind
         source: /mnt/data/fil-one/data/rag-embed
         target: /data

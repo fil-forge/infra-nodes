@@ -1875,56 +1875,7 @@ gives up on a batch, and its blobs wait until it is freed.
    2 again: `AddRoots transaction confirmed successfully` should appear. If AddRoots fails again,
    go back to step 3. The alert clears when the oldest waiting blob is under 10 minutes old again.
 
-### A volume is not mounted
-
-A service whose volume is missing refuses to start rather than coming up on an empty directory on
-the root disk. Docker enforces that on every start, including the ones it makes at boot, where no
-host script runs, and the services on other volumes keep running. It takes two shapes:
-
-- **Binds.** Every bind sets `create_host_path: false`, so Docker refuses rather than create a
-  missing source. These paths sit below their volume's mount point — the control volume's
-  subdirectories on dev, everything under `/mnt/data/fil-one` on staging — so they are gone while
-  the volume is. `docker inspect <container>` shows `bind source path does not exist: <path>`.
-- **Dev's Piri volumes.** Each is a named volume Docker mounts from the block device itself, found
-  by the filesystem label cloud-init gave it (`filone-piri-<n>`). A bind would have to name the
-  volume's own mount point, which is an ordinary directory on the root disk whenever the volume is
-  not attached. Without the device, `docker start` reports `failed to start containers` and the
-  daemon log names it. The host mounts the same filesystem through `/etc/fstab` at
-  `/mnt/fil-one/piri-<n>`, and that is the copy the host scripts read.
-
-- **A Piri volume, or Ingot's on dev.** That container stays stopped. On staging, "Appliance
-  container is not running" fires. Every reconcile pass deploys the other apps, logs
-  `WARNING: <service> cannot run` and fails, which leaves `/run/fil-one/apps-deployed` unwritten, so
-  the next pass tries again and the reconcile deadman fires until the volume is back.
-- **The control volume.** Postgres, OpenBao and Caddy stay down, so the node serves nothing.
-  Reconcile stops with `the control volume is not mounted` and stamps nothing, which fires the
-  reconcile deadman. On dev, Alloy keeps running so the node's logs still ship: it is the one
-  service exempt from the check, because it carries the telemetry that reports this.
-
-Every reconcile pass also stops a service it finds running on a volume that is not mounted, which
-covers a container Docker started on a directory an earlier pass left on the root disk.
-
-To recover:
-
-1. Find out why the volume is missing. On dev, check that the EBS volume is attached, then
-   `lsblk` and `findmnt /mnt/fil-one/<name>`. On staging, follow
-   [Before changing the node](runbook/recover-expired-unseal-token.md#before-changing-the-node)
-   to check the pool.
-2. Mount it. On dev, `mount /mnt/fil-one/<name>` finds the volume by the UUID in `/etc/fstab`. A
-   Piri also needs `/dev/disk/by-label/filone-piri-<n>`, which is there once the volume is
-   attached; `lsblk -o NAME,LABEL` says which label each disk carries.
-3. Check that the volume holds the data it should, with `findmnt <path>` and a look at its
-   contents. A blank filesystem mounted in the right place looks the same to Docker as the real
-   one; the next reconcile pass creates the directories the services bind and they start empty.
-4. Start what stayed down. Docker doesn't retry a start it refused at boot. For a Piri or Ingot,
-   run `scripts/host/deploy-apps.sh`. For the control volume, run `scripts/host/deploy-platform.sh`
-   and then `scripts/host/deploy-apps.sh`.
-
 ### The node rebooted
-
-If a container fails with `bind source path does not exist` on a path under `/mnt` instead, or a dev
-Piri fails to start at all, its volume didn't mount: see
-[A volume is not mounted](#a-volume-is-not-mounted).
 
 The first reconcile pass after boot brings the Piris and Ingot back, about a minute after boot plus
 up to 30 seconds of jitter. Their keys and rendered configs live on a tmpfs that a reboot empties,
@@ -1950,6 +1901,12 @@ scripts/host/deploy-apps.sh
 Platform comes back by itself: OpenBao carries its seal token in its environment and unseals against
 central without any file from the tmpfs. A host that was off for longer than the seal token's 72-hour
 period needs [Recover an expired unseal token](runbook/recover-expired-unseal-token.md) first.
+
+If a volume did not mount, nothing starts on it. Docker refuses every container whose data lives
+there (`bind source path does not exist` in `docker start` output). Without the control volume,
+every host script stops with `the control volume is not mounted`. Without a Piri's volume, the apps
+deploy leaves that Piri stopped, deploys the rest and fails, so reconcile retries every pass. Mount
+the volume; for the control volume, then run `scripts/host/deploy-platform.sh`.
 
 Reconcile starts the apps on every boot, including in the middle of a manual recovery where you
 stopped them on purpose. Before rebooting during one, disable the timer, so it stays off across the

@@ -23,13 +23,6 @@ filone_init
 
 echo "=== provision platform ($FILONE_NODE) ==="
 
-# OpenBao's storage is on the control volume. Initialised on an empty directory,
-# it would be a new store with none of the node's keys. The directories come
-# first, as on a new node nothing has created them yet.
-create_bind_sources
-sync_docker_mount_order
-require_control_volume
-
 # --- 1. The seal token ------------------------------------------------------
 
 # Minting waits on the apply that allocated this node's Elastic IP, because the

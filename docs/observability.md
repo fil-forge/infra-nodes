@@ -376,20 +376,6 @@ When each project last deployed, per node:
 deploy_last_success_timestamp{project=~"apps|platform"}
 ```
 
-### Unmounted volumes
-
-A service whose volume is not mounted stays stopped: its bind source is below the mount point, so it
-is gone with the volume and Docker refuses to start the service. On staging, "Appliance container is
-not running" fires for it. A deploy that skipped it, or a reconcile pass stopped by a missing
-control volume, fails without a stamp, which fires the reconcile deadman. The host scripts log which
-path is missing:
-
-```logql
-{unit="filone-reconcile.service"} |= "volume is not mounted"
-```
-
-[A volume is not mounted](RUNBOOK.md#a-volume-is-not-mounted) has the recovery.
-
 ### The OpenBao snapshot stamp
 
 `openbao_snapshot_last_success_timestamp` is the Unix time of the last OpenBao raft snapshot that

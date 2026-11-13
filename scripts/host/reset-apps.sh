@@ -43,9 +43,8 @@ app_databases() {
 # The host directory a container mounts its data from, resolved and checked
 # before anything is deleted in it. Only the data roots of the two layouts pass:
 # /mnt/fil-one on the cloud nodes, and /mnt/data/fil-one and /var/lib/fil-one
-# (Ingot) on staging, with an app's own name as the last component. The control
-# volume is under the first root and holds Postgres and OpenBao, so it is
-# refused by name.
+# (Ingot) on staging, with an app's own name as the last component. The control volume is under the first root and
+# holds Postgres and OpenBao, so it is refused by name.
 checked_data_dir() {
   local container="$1" source_dir="$2" resolved
   resolved="$(readlink -f -- "$source_dir")" ||
@@ -78,7 +77,6 @@ while [ "$#" -gt 0 ]; do
 done
 
 filone_init
-require_control_volume
 
 case "$STAGE" in
   dev | staging) ;;
@@ -118,13 +116,10 @@ while read -r container; do
   else
     destination=/data/piri
   fi
-  source_dir="$(container_data_dir "$container" "$destination")"
+  source_dir="$(docker inspect \
+    -f "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Source}}{{end}}{{end}}" \
+    "$container")" || die "could not inspect $container"
   [ -n "$source_dir" ] || die "$container has nothing mounted at $destination"
-  # Without its volume, the directory is an empty one on the root disk, and the
-  # databases would be dropped for a reset that empties nothing.
-  unavailable="$(container_unavailable_mount_sources "$container")"
-  [ -z "$unavailable" ] ||
-    die "$container's volume is not mounted (${unavailable//$'\n'/, }); mount it before resetting"
   data_dirs[$container]="$(checked_data_dir "$container" "$source_dir")"
 done <<<"$app_containers"
 
@@ -193,9 +188,9 @@ databases="$(app_databases)" || die "could not list the databases in $POSTGRES_C
 printf '  %s\n' $databases
 
 echo "[4/4] Emptying the data directories"
-# The directory itself stays: a Piri that came back to a missing one would be
-# refused by Docker rather than started. lost+found belongs to the filesystem.
-# -xdev keeps the find from following a mount someone put further down.
+# The directory itself stays. On dev each Piri's is an EBS mountpoint, and
+# lost+found belongs to its filesystem. -xdev keeps the find from following a
+# mount someone put further down.
 while read -r container; do
   data_dir="${data_dirs[$container]}"
   find "$data_dir" -xdev -mindepth 1 -maxdepth 1 ! -name lost+found \

@@ -1,45 +1,26 @@
 #!/usr/bin/env bash
-# Check that no bind mount in a compose project can create its own source.
-#
-# Docker's default is to create a missing bind source as an empty directory and
-# mount that. On an appliance it is that directory which does the damage: a
-# service whose volume is not mounted then starts on an empty directory on the
-# root disk instead of refusing to start. Piri writes new blobs there, Postgres
-# initialises a new cluster, and a service that expects a file gets a directory.
-#
-# `create_host_path: false` makes Docker refuse instead, on every start,
-# including the starts it makes at boot where no host script runs. The rule here
-# is the whole of it: every bind in every service sets it. That covers the
-# volume-backed paths, the rendered secrets and the committed config files
-# alike, so there is no per-node list to keep in step.
-#
-# A service that has to start even when a bind source is missing says so with
-# `x-filone-bind-check: "exempt: <reason>"` and is skipped.
+# Fail on a bind mount of appliance data that Docker would create when missing.
 #
 # Usage:
-#   docker compose config --no-interpolate --format json |
-#     scripts/ci/check-bind-mounts.sh
+#   docker compose ... config --format json | scripts/ci/check-bind-mounts.sh
 #
-# Prints one line per offending bind and exits 1 if there is any.
+# Data lives under /mnt (the control, data and Piri volumes) and /var/lib/fil-one.
+# Each bind from there needs create_host_path: false, so that when the volume
+# did not mount, Docker refuses to start the container, at boot included,
+# instead of creating an empty directory on the root disk and running on it.
 set -euo pipefail
 
-[ $# -eq 0 ] || { echo "usage: $0 < compose.json" >&2; exit 2; }
-
-problems="$(jq -r '
-  (.volumes // {}) as $volumes
-  | (.services // {}) | to_entries[]
-  | .key as $service
-  | .value
-  | select(has("x-filone-bind-check") | not)
-  | (.volumes // [])[]
-  | if .type == "bind" then
-      select(.bind.create_host_path != false)
-      | "\($service): bind \(.source) may create its source; set create_host_path: false"
-    elif .type == "volume" then
-      select($volumes[.source].driver_opts.device == null)
-      | "\($service): volume \(.source) names no device; a named volume must name the block device it mounts"
-    else empty
-    end
+bad="$(jq -r '
+  .services | to_entries[] | .key as $service
+  | .value.volumes // [] | .[]
+  | select(.type == "bind")
+  | select(.source | startswith("/mnt/") or startswith("/var/lib/fil-one/"))
+  | select(.bind.create_host_path != false)
+  | "\($service): \(.source)"
 ')"
 
-[ -z "$problems" ] || { printf '%s\n' "$problems"; exit 1; }
+[ -z "$bad" ] && exit 0
+while read -r line; do
+  echo "  $line needs the long syntax with bind: create_host_path: false" >&2
+done <<<"$bad"
+exit 1

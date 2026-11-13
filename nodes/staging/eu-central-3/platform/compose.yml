@@ -8,22 +8,16 @@ services:
     command: ["server", "-config=/etc/openbao/bao.hcl"]
     environment: ["VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}"]
     volumes:
-      - type: bind
-        source: ./config/openbao/bao.hcl
-        target: /etc/openbao/bao.hcl
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
+      # create_host_path: false so a start fails when the volume is not mounted,
+      # including Docker's own restart at boot, instead of running on an empty
+      # directory on the root disk.
       - type: bind
         source: /mnt/data/fil-one/control/openbao
         target: /openbao/file
         bind:
           create_host_path: false
-      - type: bind
-        source: /run/fil-one/bao
-        target: /openbao/logs
-        bind:
-          create_host_path: false
+      - /run/fil-one/bao:/openbao/logs
     healthcheck:
       test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null"]
       start_interval: 2s
