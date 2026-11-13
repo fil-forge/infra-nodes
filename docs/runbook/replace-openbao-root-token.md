@@ -1,16 +1,20 @@
-# Rotate the root token of an appliance's OpenBao
+# Replace the root token of an appliance's OpenBao
 
-Use this procedure when the root token of a node's own OpenBao has leaked: it was pasted into a
-chat, a log, a ticket or a shell history. The token never expires and administers every secret the
-node holds, for whoever can reach OpenBao's API. That is root on the host, through `docker exec`,
-and code running in the Ingot container, which runs as root and mounts OpenBao's unix socket from
+The root token of a node's own OpenBao never expires and administers every secret the node holds,
+for whoever can reach OpenBao's API. That is root on the host, through `docker exec`, and code
+running in the Ingot container, which runs as root and mounts OpenBao's unix socket from
 `/run/fil-one/bao`.
 
-The rotation mints a replacement under the leaked token, stores it in 1Password, revokes the leaked
-one and takes a snapshot. The node keeps serving throughout. Nothing on the node uses the root
-token: deploys, reconcile passes and snapshots run as the host token in `/etc/fil-one/bao-token`,
-and Ingot holds a region-key token of its own. Both are orphans, so revoking the root token leaves
-them alone; step 2 checks that on the live tokens.
+- **It leaked**: it was pasted into a chat, a log, a ticket or a shell history. Follow steps 1 to 6
+  below.
+- **It is lost**: no valid root token exists. Follow
+  [Regenerate a lost root token](#regenerate-a-lost-root-token).
+
+The rotation after a leak mints a replacement under the leaked token, stores it in 1Password,
+revokes the leaked one and takes a snapshot. The node keeps serving throughout. Nothing on the node
+uses the root token: deploys, reconcile passes and snapshots run as the host token in
+`/etc/fil-one/bao-token`, and Ingot holds a region-key token of its own. Both are orphans, so
+revoking the root token leaves them alone; step 2 checks that on the live tokens.
 
 Every snapshot taken before the rotation still holds the leaked token, and the backup bucket keeps
 each one for 35 days.
@@ -27,11 +31,9 @@ for 1Password and for a later restore.
   `us-east-2`; [Restore the appliance's OpenBao from a snapshot](restore-openbao-from-snapshot.md#this-nodes-values)
   says where to find another node's.
 
-`bao operator generate-root` with the recovery key also produces a root token, and is the way back
-when no valid root token exists. This procedure does not use it: it brings the recovery key, which
-has not leaked, out of 1Password and onto the node, and gains nothing while the leaked token still
-works. Read `bao operator generate-root -h` on the node before using it, because its defaults
-changed across OpenBao 2.x.
+The rotation does not use `bao operator generate-root`: it would bring the recovery key, which has
+not leaked, out of 1Password and onto the node, and gains nothing while the leaked token still
+works.
 
 ## 1. Open a root Bash shell on the node
 
@@ -181,7 +183,7 @@ s3://<bucket>/<region>/openbao/ from <start> up to, not including,
   container is thrown away, so nothing needs revoking afterwards.
 - A restore from such a snapshot brings this token back. Give it to
   provision-platform.sh, then rotate again with
-  docs/runbook/rotate-openbao-root-token.md, which revokes it a second time.
+  docs/runbook/replace-openbao-root-token.md, which revokes it a second time.
 
 Delete this item once the oldest key under s3://<bucket>/<region>/openbao/
 is <timestamp>.snap or later, on or after <date + 36 days>.
@@ -322,3 +324,46 @@ asks for the root token once or twice; give it that token. Once the node checks 
 with this procedure: it mints a new token, revokes the restored one a second time and takes a
 snapshot. Keep the item of the token that was current before the restore, with its range ending at
 the restore, until those snapshots expire as well.
+
+## Regenerate a lost root token
+
+When no valid root token exists, the recovery key authorises a new one. OpenBao serves root
+generation only to an authenticated caller, so the commands run as the host token, whose policy
+allows the attempt and still needs the recovery key to finish it. A node provisioned before that
+grant needs `provision-host-token.sh` first, which itself takes the root token: run it on every
+such node while the root token is still at hand.
+
+Open a root Bash shell on the node as in [step 1](#1-open-a-root-bash-shell-on-the-node), outside
+any recorded session, and define `gen`:
+
+```sh
+. scripts/host/lib.sh
+gen() { BAO_TOKEN="$(cat /etc/fil-one/bao-token)" bao_in filone-openbao operator generate-root "$@"; }
+```
+
+```sh
+gen -generate-otp
+```
+
+```sh
+gen -init -otp=<otp>
+```
+
+```sh
+read -rsp "recovery key (1Password): " recovery_key; echo
+printf '%s' "$recovery_key" | gen -nonce=<nonce> -
+unset recovery_key
+```
+
+```sh
+gen -decode=<encoded token> -otp=<otp>
+```
+
+The first prints a one-time password. The second starts the attempt with it and prints a nonce. The
+third hands the recovery key to OpenBao on stdin and prints the encoded token. The fourth decodes
+that into the new root token. `gen -cancel` abandons an attempt. The flow was checked on OpenBao 2.6;
+on another version read `gen -h` first, because its defaults changed across 2.x.
+
+Then update both copies: the 1Password entry, and central's by running
+`make store-appliance-root-credentials` in infra-central again with the new root token and the same
+recovery key. A copy left stale is found only at the restore that needs it.

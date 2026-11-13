@@ -102,7 +102,7 @@ case "$token_status" in
   0) die "the restored store rejects that root token. It takes the root token that
        was valid when the snapshot was taken. A snapshot older than a rotation of
        the root token takes the earlier one, which 1Password keeps in an item of
-       its own; docs/runbook/rotate-openbao-root-token.md says which." ;;
+       its own; docs/runbook/replace-openbao-root-token.md says which." ;;
   *) die "could not ask the restored store about the root token; 'docker logs $VERIFY_CONTAINER'
        may say why, until this script exits and removes it." ;;
 esac

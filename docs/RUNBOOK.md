@@ -1272,49 +1272,10 @@ On a node that already holds its backup key and predates snapshots, run the two 
 first snapshot and enables the timer; run first, it stops at the snapshot that the old token
 cannot take.
 
-**Rotate the root token after a leak.**
-[Rotate the root token of an appliance's OpenBao](runbook/rotate-openbao-root-token.md) mints a
-replacement, revokes the leaked token and covers the snapshots that still hold it. Its step 4 also
-replaces central's copy.
-
-**Regenerate a lost root token.** When no valid root token exists, the recovery key authorises a
-new one. OpenBao serves root generation only to an authenticated caller, so the commands run as the
-host token, whose policy allows the attempt and still needs the recovery key to finish it. A node
-provisioned before that grant needs `provision-host-token.sh` first, which itself takes the root
-token: run it on every such node while the root token is still at hand.
-
-In a root Bash shell in the checkout, outside any recorded session:
-
-```sh
-. scripts/host/lib.sh
-gen() { BAO_TOKEN="$(cat /etc/fil-one/bao-token)" bao_in filone-openbao operator generate-root "$@"; }
-```
-
-```sh
-gen -generate-otp
-```
-
-```sh
-gen -init -otp=<otp>
-```
-
-```sh
-read -rsp "recovery key (1Password): " recovery_key; echo
-printf '%s' "$recovery_key" | gen -nonce=<nonce> -
-unset recovery_key
-```
-
-```sh
-gen -decode=<encoded token> -otp=<otp>
-```
-
-The first prints a one-time password. The second starts the attempt with it and prints a nonce. The
-third hands the recovery key to OpenBao on stdin and prints the encoded token. The fourth decodes
-that into the new root token. `gen -cancel` abandons an attempt.
-
-Then update both copies: the 1Password entry, and central's by running
-`make store-appliance-root-credentials` in infra-central again with the new root token and the same
-recovery key. A copy left stale is found only at the restore that needs it.
+**Replace the root token after a leak or a loss.**
+[Replace the root token of an appliance's OpenBao](runbook/replace-openbao-root-token.md) mints a
+replacement for a leaked token, revokes it and covers the snapshots that still hold it, or
+regenerates a lost one from the recovery key. Both update central's copy too.
 
 **Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
 `keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
