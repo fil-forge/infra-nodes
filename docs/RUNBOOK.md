@@ -2059,6 +2059,11 @@ longer matches central's `hilt/partner-key`. Anything after that points at the n
 like a failed smoke test and suspect the image. The entries above on `CandidateUnavailable` and
 region mismatches cover the usual Ingot causes.
 
+A failed S3 operation runs once more with `aws --debug`, and the log prints what the client signed
+(the canonical request, the string to sign and the request headers) and what Ingot answered. For a
+`SignatureDoesNotMatch`, run the same operation by hand with `--debug` from a machine where it
+passes and compare the two canonical requests. The log's header line names the AWS CLI version.
+
 The second line of the message says what started the run, and that decides where to look first:
 
 - *Triggered by infra-nodes change* means `smoke.yml` started the test after that push, once the
