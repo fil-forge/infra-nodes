@@ -1120,27 +1120,31 @@ The document carries a revision per stamp. `reconcile` is the commit the node ha
 on every pass; `apps` and `platform` move only when that project deploys. The smoke test waits on
 `reconcile` and compares the running digests against the pins at `apps`, which is what proves a bump
 took. The Piris it checks are the ones `compose.yml` defined at `apps`, so a merged Piri the node has
-not deployed yet is not probed. `smoke.yml` runs the same test after every merge and hourly.
+not deployed yet is not probed. `test-nodes.yml` runs the same test after every merge, after every
+infra-central deploy, and hourly.
 
 **Run the end-to-end test by hand.** `scripts/ci/e2e-test.sh` creates a tenant through Hilt and a
 bucket on the node's Ingot, uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart
 upload, downloads both and compares them. `--cleanup` then deletes the objects and the bucket,
-disables the tenant and deletes it. `e2e.yml` runs it after the smoke test of every push to main,
-after every infra-central deploy to dev or staging, and daily. A push tests only the node whose
-smoke test passed; a central deploy tests every node of the stage. To start that workflow on every
-node of a stage, or on one node:
+disables the tenant and deletes it. `test-nodes.yml` runs it right after the smoke test, on every
+node that passed. A push to main tests every node once it has reached the commit, an infra-central
+deploy tests every node of the stages it deployed, and the hourly run tests every node. To start the
+workflow on some stages or nodes, pass comma-separated lists:
 
 ```sh
-gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=staging
-gh workflow run e2e.yml --repo fil-forge/infra-nodes --ref main -f stage=staging -f node=staging/eu-central-3
+gh workflow run test-nodes.yml --repo fil-forge/infra-nodes --ref main -f stages=staging
+gh workflow run test-nodes.yml --repo fil-forge/infra-nodes --ref main -f nodes=staging/eu-central-3
+gh workflow run test-nodes.yml --repo fil-forge/infra-nodes --ref main -f stages=dev,staging
 ```
 
-A node joins the test in `NODES` in `scripts/ci/e2e-select.sh`, next to the stage whose Environment
-holds its key. Add it there in the same pull request that adds it to the matrix in `smoke.yml`:
-otherwise its first push dispatches a run for a node `e2e.yml` does not know, and that run alerts
-that it could not start.
+Leave both empty to test every node. Only `main` can run the workflow, because the end-to-end test
+reads its key from a GitHub Environment that admits `main` alone. To smoke-test a branch, run
+`scripts/ci/smoke-test.sh` from your machine as above.
 
-Running the script from your machine needs Hilt's partner key, the one FilOne uses, which central
+A node joins the tests in `NODES` in `scripts/ci/test-nodes-select.sh`, next to the stage whose
+Environment holds its key.
+
+Running `scripts/ci/e2e-test.sh` from your machine needs Hilt's partner key, the one FilOne uses, which central
 keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment
 named after the stage:
 
@@ -2022,37 +2026,36 @@ step 2 did not happen, or its weight is zero.
 in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, and in the
 `AWS_REGION` the client signs with.
 
-**A `filone-alerts` message arrived.** The headline says what happened. From `smoke.yml`: the node
-never reached a commit, failed its smoke test, or passed it and could not start its end-to-end
-test. From `e2e.yml`: the node failed its end-to-end test, the cleanup after it failed, or the
-run could not start.
+**A `filone-alerts` message arrived.** One message covers one run of `test-nodes.yml`. Its
+headline names every node that failed, and each node gets a line saying which step failed and where
+to look first. A node's steps run in order: wait for the pushed commit (after a push only), the smoke
+test, the end-to-end test, and the cleanup after it. A node stops at the first step that fails,
+except that the cleanup also runs after a failed end-to-end test. A run that a newer push or a newer
+central deploy replaced posts nothing, because the newer run reports on the same nodes.
 
 When the failing commit is an image bump, the message carries a further line naming the service
 commit that produced the image and who wrote it, read from the source commit link the bump left in
 the commit body. A lookup that fails drops the line and sends the alert anyway, and the run log names
 the repository and commit it could not read.
 
-*The dev node never reached this commit.* The commit merged and the node has not deployed it within
+*The dev node never reached the commit.* The commit merged and the node has not deployed it within
 an hour. `journalctl -u filone-reconcile.service -n 200` on the box shows which: a pass that never
 ran, a proving gate that has not opened, a deploy that failed, or a node pointed at another ref by
 `FILONE_GIT_REF` in `/etc/fil-one/node.conf`. The entries below cover each.
 
-*The dev node failed its smoke test.* The node has the commit and is not serving what the commit
-pins, so suspect the image. The run's log names the failing check. A check that says the deployed
-revision is not in this checkout usually means the clone is behind, so `git fetch` and run it again;
-if the revision is still nowhere on origin, the node is following another ref and
+*The dev node failed its smoke test.* After a push, the node has the commit and is not serving what
+the commit pins, so suspect the image. After any other trigger, the node stopped serving what it
+already ran, so check its services. The run's log names the failing check. A check that says the
+deployed revision is not in this checkout usually means the clone is behind, so `git fetch` and run
+it again; if the revision is still nowhere on origin, the node is following another ref and
 `FILONE_GIT_REF` in `/etc/fil-one/node.conf` says which. Rolling back is a pin bump like any other:
 
 ```sh
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
 ```
 
-*The dev node passed its smoke test, but its end-to-end test could not be started.* GitHub refused
-the dispatch of `e2e.yml`, and the run log has its answer. The message gives the command to start
-the test by hand.
-
 *The dev node failed its end-to-end test.* The node answers its health checks, but cannot create a
-tenant, create a bucket, store an object or serve it back. The headline names the operation that
+tenant, create a bucket, store an object or serve it back. The node's line names the operation that
 failed, and the run log has the error Hilt or Ingot returned. A failure creating the tenant or its
 key points at Hilt, or at the partner key: an HTTP 401 means the `HILT_PARTNER_KEY` secret no
 longer matches central's `hilt/partner-key`. Anything after that points at the node, so treat it
@@ -2066,26 +2069,36 @@ signatures, and it leaves out the AWS CRT transfer client's own log lines. For a
 `SignatureDoesNotMatch`, run the same operation by hand with `--debug` from a machine where it
 passes and compare the two canonical requests. The log's header line names the AWS CLI version.
 
-The second line of the message says what started the run, and that decides where to look first:
+The line after the nodes says what started the run, and that decides where to look first:
 
-- *Triggered by infra-nodes change* means `smoke.yml` started the test after that push, once the
-  node passed its smoke test. Suspect the image the commit pinned, or Hilt.
-- *Triggered by infra-central change* means infra-central deployed that commit to the stage and
-  started the test. Suspect the central change first. Every central push starts a run, and the run
-  tests the node as it stands, so a central change that touched nothing on the write path points
-  at the node instead.
-- No such line means the daily run, and a line *Started by hand* means somebody dispatched it.
+- *Triggered by infra-nodes change* means that commit was pushed to main, and each node reached it
+  before its tests ran. Suspect the image the commit pinned, or Hilt.
+- *Triggered by infra-central change* means infra-central deployed that commit and started the run
+  for the stages it deployed. Suspect the central change first. Every central push starts a run, and
+  the run tests the node as it stands, so a central change that touched nothing on the write path
+  points at the node instead.
+- No such line means the hourly run, and a line *Started by hand* means somebody dispatched it.
   Nothing was deployed for either, so suspect drift on the node or in central, such as a rotated
   partner key.
 
-*The cleanup after the end-to-end test failed.* Each delete was tried four times, and the message
-names the tenant and bucket left behind. Cleanup stops at the first delete that keeps failing and
-never deletes a tenant whose bucket may still hold data, because Hilt cannot recover a deleted
+*The dev node passed its end-to-end test, but the cleanup failed.* Each delete was tried four times,
+and the message names the tenant and bucket left behind. A failed end-to-end test can leave them
+too, and its line then ends with the same list. Cleanup stops at the first delete that keeps failing
+and never deletes a tenant whose bucket may still hold data, because Hilt cannot recover a deleted
 tenant's storage. Delete them by hand as below.
 
-*The end-to-end test could not start.* The run failed while choosing which nodes to test, before it
-touched any. The usual cause is a dispatch with a malformed `change_*` input, and the run log names
-the input.
+*The dev node hit its time limit.* The node's job ran past its own time limit, and GitHub stopped it
+during the step the line names. Each step has a shorter limit of its own and fails when it runs out,
+so this means the job spent its time somewhere else, such as a slow checkout. The run log shows
+where.
+
+*The dev node ended without reporting a result.* Its job stopped before it recorded how its tests
+went, usually because the checkout failed or GitHub lost the runner. The run log says where.
+
+*Node test could not start.* The run failed while choosing which nodes to test, before it touched
+any. A manual run names an unknown stage or node, or a node outside the stages it names. A dispatch
+from infra-central fails here when its payload is malformed or it came from anyone but fil-forge-bot.
+The run log names the input.
 
 **A bump pull request is sitting open.** The refresh workflow rebuilds every open bump on current
 main, so a stale base is not the reason. It leaves one alone in exactly one case: main moved that
@@ -2111,7 +2124,7 @@ Environment's branch rule. Production gets no Environment until
 reach customer tenants.
 
 Create the Environment with its branch rule before the secret goes in, and before a node of that
-stage joins `NODES` in `scripts/ci/e2e-select.sh`: a workflow that names a missing Environment
+stage joins `NODES` in `scripts/ci/test-nodes-select.sh`: a workflow that names a missing Environment
 creates it with no rules. The commands below are for dev; repeat them with `staging`.
 
 ```sh
@@ -2131,8 +2144,8 @@ Repeat that whenever central's `hilt/partner-key` changes. Until then, every end
 that stage fails with HTTP 401.
 
 The workflow names the Environment with `deployment: false`, so its runs create no deployment
-records. Only `e2e.yml` names these Environments; `smoke.yml` needs no secret and can still be
-dispatched from any branch.
+records. Each node's job names its stage's Environment, so `test-nodes.yml` runs from `main` alone,
+smoke test included.
 
 ### Cleaning up after the end-to-end test
 
