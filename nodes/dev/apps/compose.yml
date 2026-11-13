@@ -69,8 +69,8 @@ services:
   # reboot, so when Docker restarts a container at boot the files are missing.
   # create_host_path: false makes that a start that fails; the default would put
   # an empty directory where each file belongs, and every later render would
-  # land inside it. Run deploy-apps.sh after a reboot to render the files and
-  # recreate the containers. The blobs and the config `piri init` writes go on
+  # land inside it. The first reconcile pass after boot renders the files and
+  # recreates the containers. The blobs and the config `piri init` writes go on
   # the Piri's own EBS volume.
   piri-0:
     <<: *piri-base
