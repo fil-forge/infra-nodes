@@ -2,10 +2,12 @@
 Description=Reconcile the FilOne node every five minutes
 
 [Timer]
-# Five minutes after boot, then every five minutes. Not tied to wall-clock
-# times: nothing here needs to happen at a particular minute, and a fixed
-# schedule would make every node in a fleet pull at the same instant.
-OnBootSec=5min
+# One minute after boot, then every five minutes. The first pass after boot
+# starts the Piris and Ingot, which stay down until an apps deploy renders their
+# keys again, so it runs as soon as Docker and the network are up. Not tied to
+# wall-clock times: nothing here needs to happen at a particular minute, and a
+# fixed schedule would make every node in a fleet pull at the same instant.
+OnBootSec=1min
 OnUnitActiveSec=5min
 
 # Spread the load when there is more than one node, and stop the pass from

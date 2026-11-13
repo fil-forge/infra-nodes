@@ -131,6 +131,10 @@ to 2026-10-26. With the 5% root reserve
 and what was already there, it leaves the root filesystem about half used. The staging host is not
 the forge-perf box, so its own rate may be lower; the budget errs on the large side.
 
+Add `FILONE_TESTED=false` to a new node's node.env. `test-nodes.yml` tests every node under
+`nodes/` of a tested stage from the moment its node.env merges, and a node that is not serving yet
+would fail every hour. Step 7 removes the line once the node is up.
+
 ### 3. The node's host
 
 Everything before this step is the same for any node; everything after it is the same procedure run
@@ -144,7 +148,7 @@ with this node's own values:
 | Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` |
 | Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
 | Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
-| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>` | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
+| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
 | Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` |
 | `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | the chain.love token; Alloy is the host's |
 
@@ -176,7 +180,8 @@ docker network ls | grep filone
 The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
 and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
 control and data directories are `/mnt/data/fil-one/control` and
-`/mnt/data/fil-one/data`.
+`/mnt/data/fil-one/data`. The host's Docker must include Compose 2.40 or later;
+bootstrap stops on an older one.
 
 Apply the DNS-only root and confirm every name resolves to `23.83.66.244`:
 
@@ -1023,6 +1028,9 @@ Finish with the node's smoke test:
 scripts/ci/smoke-test.sh <node>          # `dev`, or `staging/eu-central-3`
 ```
 
+Once it passes, delete the `FILONE_TESTED=false` line from step 2 and merge, so `test-nodes.yml`
+starts testing the node after every merge and every hour.
+
 ## Day-to-day operations
 
 Commands in this section run from the infra-nodes checkout: `/opt/fil-one/infra-nodes` on the
@@ -1119,7 +1127,44 @@ The document carries a revision per stamp. `reconcile` is the commit the node ha
 on every pass; `apps` and `platform` move only when that project deploys. The smoke test waits on
 `reconcile` and compares the running digests against the pins at `apps`, which is what proves a bump
 took. The Piris it checks are the ones `compose.yml` defined at `apps`, so a merged Piri the node has
-not deployed yet is not probed. `smoke.yml` runs the same test after every merge and hourly.
+not deployed yet is not probed. `test-nodes.yml` runs the same test after every merge, after every
+infra-central deploy, and hourly.
+
+**Run the end-to-end test by hand.** `scripts/ci/e2e-test.sh` creates a tenant through Hilt and a
+bucket on the node's Ingot, uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart
+upload, downloads both and compares them. `--cleanup` then deletes the objects and the bucket,
+disables the tenant and deletes it. `test-nodes.yml` runs it right after the smoke test, on every
+node that passed. A push to main tests every node once it has reached the commit, an infra-central
+deploy tests every node of the stages it deployed, and the hourly run tests every node. To start the
+workflow on some stages or nodes, pass comma-separated lists:
+
+```sh
+gh workflow run test-nodes.yml --repo fil-forge/infra-nodes --ref main -f stages=staging
+gh workflow run test-nodes.yml --repo fil-forge/infra-nodes --ref main -f nodes=staging/eu-central-3
+gh workflow run test-nodes.yml --repo fil-forge/infra-nodes --ref main -f stages=dev,staging
+```
+
+Leave both empty to test every node. Only `main` can run the workflow, because the end-to-end test
+reads its key from a GitHub Environment that admits `main` alone. To smoke-test a branch, run
+`scripts/ci/smoke-test.sh` from your machine as above.
+
+The workflow tests every node under `nodes/` whose stage is dev or staging, unless its node.env sets
+`FILONE_TESTED=false`; steps 2 and 7 of bringing up a node set and remove that line. The stages are
+listed in `TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`.
+
+Running `scripts/ci/e2e-test.sh` from your machine needs Hilt's partner key, the one FilOne uses, which central
+keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment
+named after the stage:
+
+```sh
+export HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text)"
+E2E_RUN_ID=manual-1 scripts/ci/e2e-test.sh dev
+E2E_RUN_ID=manual-1 scripts/ci/e2e-test.sh dev --cleanup
+```
+
+`E2E_RUN_ID` names the tenant and the bucket (`infra-nodes-e2e-dev-manual-1`), so use a new one for
+each run. The partner key can manage every tenant on that Hilt, FilOne's customers included; keep it
+out of shell history and logs.
 
 **Deploy by hand**, without waiting for the timer:
 
@@ -1324,11 +1369,13 @@ full order, and the on-chain cost of leaving the old proof sets behind.
 to `/var/lib/fil-one/ingot` on the root SSD. The spool holds bodies not yet uploaded to Piri and the
 catalog log under `segments`, so copy them across before the new mount goes live. Before merging
 that change, stop reconcile and Ingot, and copy. Stopping the timer leaves a pass already running,
-which could start Ingot again mid-copy, so wait for it to finish rather than kill a deploy halfway:
+and a retry systemd queued after a failed one, either of which could start Ingot again mid-copy.
+Wait for the running pass on the deploy lock rather than kill a deploy halfway, then cancel the
+retry:
 
 ```sh
 sudo systemctl stop filone-reconcile.timer
-while [ "$(systemctl show -P ActiveState filone-reconcile.service)" = activating ]; do sleep 10; done
+sudo flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
 sudo docker stop filone-ingot
 sudo install -d -m 0755 /var/lib/fil-one/ingot
 sudo rsync -aHAX --numeric-ids /mnt/data/fil-one/data/ingot/ /var/lib/fil-one/ingot/
@@ -1907,28 +1954,58 @@ gives up on a batch, and its blobs wait until it is freed.
 
 ### The node rebooted
 
-The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
-keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts the containers
-before anything has rendered them again, so each restart fails on a missing bind-mount source.
-Reconcile does not notice: it deploys a project only when a commit has touched it since the last
-deploy, and the deployed revision is on the control volume, so a reboot leaves nothing to do. The
-hourly smoke test reports the node not answering within the hour. Render and start the apps by hand:
+The first reconcile pass after boot brings the Piris and Ingot back, about a minute after boot plus
+up to 30 seconds of jitter. Their keys and rendered configs live on a tmpfs that a reboot empties,
+and Docker's own restarts fail on a missing bind-mount source until a deploy renders them again.
+Reconcile deploys the apps whenever `/run/fil-one/apps-deployed`, which only a healthy apps deploy
+writes, is missing, and logs `no apps deploy has succeeded since boot` when it does. The Piri and
+Ingot images are already on the host, so they come back without the registry.
+
+A pass that fails, for example on an OpenBao that has not unsealed yet, is retried after 1 minute,
+then about 1m45s, about 3 minutes, and every 5 minutes from then on. Follow it with:
+
+```sh
+journalctl -u filone-reconcile.service -f
+```
+
+If the apps are still down after a few passes, read the failure there, fix the cause, and deploy by
+hand:
 
 ```sh
 scripts/host/deploy-apps.sh
 ```
 
-The next commit that touches the apps project, an image bump included, would do the same on its own.
 Platform comes back by itself: OpenBao carries its seal token in its environment and unseals against
-central without any file from the tmpfs.
+central without any file from the tmpfs. A host that was off for longer than the seal token's 72-hour
+period needs [Recover an expired unseal token](runbook/recover-expired-unseal-token.md) first.
+
+If a volume did not mount, nothing starts on it. Docker refuses every container whose data lives
+there (`bind source path does not exist` in `docker start` output). Without the control volume,
+every host script stops with `the control volume is not mounted`. Without a Piri's volume, the apps
+deploy leaves that Piri stopped, deploys the rest and fails, so reconcile retries every pass. Mount
+the volume; for the control volume, then run `scripts/host/deploy-platform.sh`.
+
+Reconcile starts the apps on every boot, including in the middle of a manual recovery where you
+stopped them on purpose. Before rebooting during one, disable the timer, so it stays off across the
+reboot, and enable it again when you are done:
+
+```sh
+systemctl disable --now filone-reconcile.timer
+```
+
+```sh
+systemctl enable --now filone-reconcile.timer
+```
 
 A Piri that instead logs `read /keys/piri.pem: is a directory` is on a node whose compose file lets
 Docker create a missing bind-mount source. Docker puts an empty directory where the file belongs,
 every later render lands inside it, and every pass fails its health wait without stamping. Stop the
-timer, clear the directories, deploy by hand, and start the timer again:
+timer and the retries of the failed pass, clear the directories, deploy by hand, and start the timer
+again:
 
 ```sh
 systemctl stop filone-reconcile.timer
+flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
 docker stop filone-piri-0 filone-piri-1 filone-piri-2 filone-ingot
 find /run/fil-one/secrets -mindepth 1 -type d -exec rm -rf {} +
 scripts/host/deploy-apps.sh
@@ -1991,7 +2068,7 @@ recreate Piri around the restart:
 ```sh
 cd /opt/fil-one/infra-nodes
 sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh piri-0 \
-  && rm /mnt/fil-one/piri-0/piri-init.failed \
+  && rm /mnt/fil-one/piri-0/piri-0/piri-init.failed \
   && docker restart filone-piri-0'
 ```
 
@@ -2040,27 +2117,79 @@ step 2 did not happen, or its weight is zero.
 in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, and in the
 `AWS_REGION` the client signs with.
 
-**A `filone-alerts` message arrived.** It says which of two things happened.
+**A `filone-alerts` message arrived.** One message covers one run of `test-nodes.yml`. Its
+headline names every node that failed, and each node gets a line saying which step failed and where
+to look first. A node's steps run in order: wait for the pushed commit (after a push only), the smoke
+test, the end-to-end test, and the cleanup after it. A node stops at the first step that fails,
+except that the cleanup also runs after a failed end-to-end test. A run that a newer push or a newer
+central deploy replaced posts nothing, because the newer run reports on the same nodes.
 
 When the failing commit is an image bump, the message carries a further line naming the service
 commit that produced the image and who wrote it, read from the source commit link the bump left in
 the commit body. A lookup that fails drops the line and sends the alert anyway, and the run log names
 the repository and commit it could not read.
 
-*The dev node never reached this commit.* The commit merged and the node has not deployed it within
+*The dev node never reached the commit.* The commit merged and the node has not deployed it within
 an hour. `journalctl -u filone-reconcile.service -n 200` on the box shows which: a pass that never
 ran, a proving gate that has not opened, a deploy that failed, or a node pointed at another ref by
 `FILONE_GIT_REF` in `/etc/fil-one/node.conf`. The entries below cover each.
 
-*The dev node failed its smoke test.* The node has the commit and is not serving what the commit
-pins, so suspect the image. The run's log names the failing check. A check that says the deployed
-revision is not in this checkout usually means the clone is behind, so `git fetch` and run it again;
-if the revision is still nowhere on origin, the node is following another ref and
+*The dev node failed its smoke test.* After a push, the node has the commit and is not serving what
+the commit pins, so suspect the image. After any other trigger, the node stopped serving what it
+already ran, so check its services. The run's log names the failing check. A check that says the
+deployed revision is not in this checkout usually means the clone is behind, so `git fetch` and run
+it again; if the revision is still nowhere on origin, the node is following another ref and
 `FILONE_GIT_REF` in `/etc/fil-one/node.conf` says which. Rolling back is a pin bump like any other:
 
 ```sh
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
 ```
+
+*The dev node failed its end-to-end test.* The node answers its health checks, but cannot create a
+tenant, create a bucket, store an object or serve it back. The node's line names the operation that
+failed, and the run log has the error Hilt or Ingot returned. A failure creating the tenant or its
+key points at Hilt, or at the partner key: an HTTP 401 means the `HILT_PARTNER_KEY` secret no
+longer matches central's `hilt/partner-key`. Anything after that points at the node, so treat it
+like a failed smoke test and suspect the image. The entries above on `CandidateUnavailable` and
+region mismatches cover the usual Ingot causes.
+
+A failed S3 operation runs once more with `aws --debug`, and the log prints what the client signed
+(the canonical request, the string to sign and the request headers) and what Ingot answered. The
+log is public, so it shows `<access-key-id>` and `<signature>` in place of the key ID and the
+signatures, and it leaves out the AWS CRT transfer client's own log lines. For a
+`SignatureDoesNotMatch`, run the same operation by hand with `--debug` from a machine where it
+passes and compare the two canonical requests. The log's header line names the AWS CLI version.
+
+The line after the nodes says what started the run, and that decides where to look first:
+
+- *Triggered by infra-nodes change* means that commit was pushed to main, and each node reached it
+  before its tests ran. Suspect the image the commit pinned, or Hilt.
+- *Triggered by infra-central change* means infra-central deployed that commit and started the run
+  for the stages it deployed. Suspect the central change first. Every central push starts a run, and
+  the run tests the node as it stands, so a central change that touched nothing on the write path
+  points at the node instead.
+- No such line means the hourly run, and a line *Started by hand* means somebody dispatched it.
+  Nothing was deployed for either, so suspect drift on the node or in central, such as a rotated
+  partner key.
+
+*The dev node passed its end-to-end test, but the cleanup failed.* Each delete was tried four times,
+and the message names the tenant and bucket left behind. A failed end-to-end test can leave them
+too, and its line then ends with the same list. Cleanup stops at the first delete that keeps failing
+and never deletes a tenant whose bucket may still hold data, because Hilt cannot recover a deleted
+tenant's storage. Delete them by hand as below.
+
+*The dev node hit its time limit.* The node's job ran past its own time limit, and GitHub stopped it
+during the step the line names. Each step has a shorter limit of its own and fails when it runs out,
+so this means the job spent its time somewhere else, such as a slow checkout. The run log shows
+where.
+
+*The dev node ended without reporting a result.* Its job stopped before it recorded how its tests
+went, usually because the checkout failed or GitHub lost the runner. The run log says where.
+
+*Node test could not start.* The run failed while choosing which nodes to test, before it touched
+any. A manual run names an unknown stage or node, or a node outside the stages it names. A dispatch
+from infra-central fails here when its payload is malformed or it came from anyone but fil-forge-bot.
+The run log names the input.
 
 **A bump pull request is sitting open.** The refresh workflow rebuilds every open bump on current
 main, so a stale base is not the reason. It leaves one alone in exactly one case: main moved that
@@ -2075,3 +2204,82 @@ gh workflow run bump-deployed-image.yml -f service=piri -f digest=sha256:...
 **The deadman alert fired.** The node stopped reconciling. Check
 `systemctl status filone-reconcile.timer` and the last few
 `journalctl -u filone-reconcile.service` runs; a failing pass leaves its error there.
+
+### Setting up the end-to-end test's credential
+
+The end-to-end test reads Hilt's partner key from the `HILT_PARTNER_KEY` secret of a GitHub
+Environment named after the stage, `dev` or `staging`. It is the key FilOne uses, and it can manage
+every tenant on that stage's Hilt, so the only thing keeping a pushed branch from reading it is the
+Environment's branch rule. Production gets no Environment until
+[FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491) finds a credential that cannot
+reach customer tenants.
+
+Create the Environment with its branch rule before the secret goes in, and before the stage joins
+`TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`: a workflow that names a missing Environment
+creates it with no rules. The commands below are for dev; repeat them with `staging`.
+
+```sh
+gh api -X PUT repos/fil-forge/infra-nodes/environments/dev --input - <<<'{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+gh api -X POST repos/fil-forge/infra-nodes/environments/dev/deployment-branch-policies -f name=main -f type=branch
+gh api repos/fil-forge/infra-nodes/environments/dev/deployment-branch-policies --jq '.branch_policies[].name'
+```
+
+The last command must print `main` and nothing else. Then copy the key from central's SSM into the
+Environment without printing it, with AWS credentials for the stage's account:
+
+```sh
+aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text | gh secret set HILT_PARTNER_KEY --env dev --repo fil-forge/infra-nodes
+```
+
+Repeat that whenever central's `hilt/partner-key` changes. Until then, every end-to-end test on
+that stage fails with HTTP 401.
+
+The workflow names the Environment with `deployment: false`, so its runs create no deployment
+records. Each node's job names its stage's Environment, so `test-nodes.yml` runs from `main` alone,
+smoke test included.
+
+### Cleaning up after the end-to-end test
+
+A failed cleanup leaves a tenant, and possibly a bucket, named `infra-nodes-e2e-<node>-<run id>`.
+The alert names both. Nothing else will ever delete them: Hilt cannot list tenants, so only their
+names lead back to them. The S3 key the test minted has expired by now, so mint another one.
+
+Read the partner key while your AWS credentials still point at central, then give the S3 client
+its own files, so the credentials in your environment do not override them. The values below are
+dev's; take `HILT_URL`, `REGION_LABEL` and `INGOT_HOSTNAME` from the node's `node.env`.
+
+```sh
+NAME=infra-nodes-e2e-dev-1234567890-1
+HILT_URL=https://auth.latest.dev.fil-forge.com
+HILT_PARTNER_KEY="$(aws ssm get-parameter --name /forge-central/dev/hilt/partner-key --with-decryption --query Parameter.Value --output text)"
+hilt() { curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$HILT_PARTNER_KEY") -H 'Content-Type: application/json' "$@"; }
+
+dir="$(mktemp -d)"
+unset AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+export AWS_CONFIG_FILE="$dir/config" AWS_SHARED_CREDENTIALS_FILE="$dir/credentials"
+printf '[default]\nregion = us-east-9\nendpoint_url = https://s3.us-east-9.latest.dev.filonecontent.com\ns3 =\n  addressing_style = path\n' >"$AWS_CONFIG_FILE"
+hilt -X POST "$HILT_URL/tenants/$NAME/access-keys" \
+  -d '{"name":"manual-cleanup-'"$(date +%s)"'","permissions":["s3:ListBucket","s3:DeleteObject","s3:DeleteBucket","s3:ListBucketMultipartUploads","s3:AbortMultipartUpload"]}' |
+  jq -r '"[default]\naws_access_key_id = \(.accessKeyId)\naws_secret_access_key = \(.secretAccessKey)"' >"$AWS_SHARED_CREDENTIALS_FILE"
+```
+
+If the alert names no bucket, cleanup failed while disabling or deleting the tenant, so skip to that
+step. A disabled tenant also refuses every S3 request with a 403. Otherwise empty the bucket and
+delete it. A 404 from either command means it is already gone:
+
+```sh
+aws s3 rm "s3://$NAME" --recursive
+aws s3api delete-bucket --bucket "$NAME"
+```
+
+If DeleteBucket keeps answering `BucketNotEmpty` for a bucket that lists no objects, stop here and
+leave the tenant in place: deleting it would leak the bucket's storage for good. Otherwise disable the
+tenant and delete it. Each call answers 204, and disabling a tenant that is already gone answers 404:
+
+```sh
+hilt -X POST "$HILT_URL/tenants/$NAME/status" -d '{"status":"disabled"}' -w '%{http_code}\n'
+hilt -X DELETE "$HILT_URL/tenants/$NAME" -w '%{http_code}\n'
+rm -rf "$dir"
+```
+
+Deleting the tenant also deletes every key it holds.

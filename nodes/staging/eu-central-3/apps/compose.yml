@@ -51,8 +51,8 @@ services:
   # tmpfs by deploy-apps.sh. Nothing there survives a reboot, so when Docker
   # restarts a container at boot the files are missing. create_host_path: false
   # makes that a start that fails; the default would put an empty directory
-  # where each file belongs, and every later render would land inside it. Run
-  # deploy-apps.sh after a reboot to render the files and recreate the
+  # where each file belongs, and every later render would land inside it. The
+  # first reconcile pass after boot renders the files and recreates the
   # containers.
   piri-0:
     <<: *piri-base
@@ -93,7 +93,11 @@ services:
         bind:
           create_host_path: false
       - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
-      - /mnt/data/fil-one/data/piri-0:/data/piri
+      - type: bind
+        source: /mnt/data/fil-one/data/piri-0
+        target: /data/piri
+        bind:
+          create_host_path: false
 
   piri-1:
     <<: *piri-base
@@ -119,7 +123,11 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - /mnt/data/fil-one/data/piri-1:/data/piri
+      - type: bind
+        source: /mnt/data/fil-one/data/piri-1
+        target: /data/piri
+        bind:
+          create_host_path: false
     # The Piris start one at a time. `piri init` estimates gas for the
     # createDataSet transaction against the chain's pending state, and two
     # Piris estimating at once underestimate it: the loser's transaction
@@ -153,7 +161,11 @@ services:
           create_host_path: false
       - *piri-base-config
       - *piri-entrypoint
-      - /mnt/data/fil-one/data/piri-2:/data/piri
+      - type: bind
+        source: /mnt/data/fil-one/data/piri-2
+        target: /data/piri
+        bind:
+          create_host_path: false
     depends_on:
       piri-1:
         condition: service_healthy
@@ -236,7 +248,13 @@ services:
     # The model downloads from Hugging Face on the first start and is cached
     # here, so a restart does not fetch it again.
     volumes:
-      - /mnt/data/fil-one/data/rag-embed:/data
+      # No tmpfs file stops Docker restarting it at boot, so
+      # create_host_path: false is what keeps it off an unmounted volume.
+      - type: bind
+        source: /mnt/data/fil-one/data/rag-embed
+        target: /data
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
       start_interval: 2s
