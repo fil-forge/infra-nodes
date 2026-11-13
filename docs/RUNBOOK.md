@@ -176,7 +176,8 @@ docker network ls | grep filone
 The staging appliance is not an EC2 node. Its host owns Lotus, Caddy and Alloy,
 and FilOne must leave them intact. Its checkout is `/root/fil-one/infra-nodes`; its
 control and data directories are `/mnt/data/fil-one/control` and
-`/mnt/data/fil-one/data`.
+`/mnt/data/fil-one/data`. The host's Docker must include Compose 2.40 or later;
+bootstrap stops on an older one.
 
 Apply the DNS-only root and confirm every name resolves to `23.83.66.244`:
 
@@ -1356,11 +1357,13 @@ full order, and the on-chain cost of leaving the old proof sets behind.
 to `/var/lib/fil-one/ingot` on the root SSD. The spool holds bodies not yet uploaded to Piri and the
 catalog log under `segments`, so copy them across before the new mount goes live. Before merging
 that change, stop reconcile and Ingot, and copy. Stopping the timer leaves a pass already running,
-which could start Ingot again mid-copy, so wait for it to finish rather than kill a deploy halfway:
+and a retry systemd queued after a failed one, either of which could start Ingot again mid-copy.
+Wait for the running pass on the deploy lock rather than kill a deploy halfway, then cancel the
+retry:
 
 ```sh
 sudo systemctl stop filone-reconcile.timer
-while [ "$(systemctl show -P ActiveState filone-reconcile.service)" = activating ]; do sleep 10; done
+sudo flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
 sudo docker stop filone-ingot
 sudo install -d -m 0755 /var/lib/fil-one/ingot
 sudo rsync -aHAX --numeric-ids /mnt/data/fil-one/data/ingot/ /var/lib/fil-one/ingot/
@@ -1862,28 +1865,52 @@ gives up on a batch, and its blobs wait until it is freed.
 
 ### The node rebooted
 
-The Piris and Ingot come back down, and stay down until an apps deploy runs. Their
-keys and rendered configs live on a tmpfs that a reboot empties, and Docker restarts the containers
-before anything has rendered them again, so each restart fails on a missing bind-mount source.
-Reconcile does not notice: it deploys a project only when a commit has touched it since the last
-deploy, and the deployed revision is on the control volume, so a reboot leaves nothing to do. The
-hourly smoke test reports the node not answering within the hour. Render and start the apps by hand:
+The first reconcile pass after boot brings the Piris and Ingot back, about a minute after boot plus
+up to 30 seconds of jitter. Their keys and rendered configs live on a tmpfs that a reboot empties,
+and Docker's own restarts fail on a missing bind-mount source until a deploy renders them again.
+Reconcile deploys the apps whenever `/run/fil-one/apps-deployed`, which only a healthy apps deploy
+writes, is missing, and logs `no apps deploy has succeeded since boot` when it does. The Piri and
+Ingot images are already on the host, so they come back without the registry.
+
+A pass that fails, for example on an OpenBao that has not unsealed yet, is retried after 1 minute,
+then about 1m45s, about 3 minutes, and every 5 minutes from then on. Follow it with:
+
+```sh
+journalctl -u filone-reconcile.service -f
+```
+
+If the apps are still down after a few passes, read the failure there, fix the cause, and deploy by
+hand:
 
 ```sh
 scripts/host/deploy-apps.sh
 ```
 
-The next commit that touches the apps project, an image bump included, would do the same on its own.
 Platform comes back by itself: OpenBao carries its seal token in its environment and unseals against
-central without any file from the tmpfs.
+central without any file from the tmpfs. A host that was off for longer than the seal token's 72-hour
+period needs [Recover an expired unseal token](runbook/recover-expired-unseal-token.md) first.
+
+Reconcile starts the apps on every boot, including in the middle of a manual recovery where you
+stopped them on purpose. Before rebooting during one, disable the timer, so it stays off across the
+reboot, and enable it again when you are done:
+
+```sh
+systemctl disable --now filone-reconcile.timer
+```
+
+```sh
+systemctl enable --now filone-reconcile.timer
+```
 
 A Piri that instead logs `read /keys/piri.pem: is a directory` is on a node whose compose file lets
 Docker create a missing bind-mount source. Docker puts an empty directory where the file belongs,
 every later render lands inside it, and every pass fails its health wait without stamping. Stop the
-timer, clear the directories, deploy by hand, and start the timer again:
+timer and the retries of the failed pass, clear the directories, deploy by hand, and start the timer
+again:
 
 ```sh
 systemctl stop filone-reconcile.timer
+flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
 docker stop filone-piri-0 filone-piri-1 filone-piri-2 filone-ingot
 find /run/fil-one/secrets -mindepth 1 -type d -exec rm -rf {} +
 scripts/host/deploy-apps.sh

@@ -573,6 +573,10 @@ pause_node_timers() {
   # deploy, so this waits for it on the deploy lock instead.
   systemctl stop "$FILONE_SNAPSHOT_SERVICE" 2>/dev/null || true
   take_deploy_lock
+  # A failed reconcile pass is retried by systemd, not by its timer, so a retry
+  # can still be queued. Stopping the service cancels it. With the lock held, no
+  # pass is past the point where it takes the lock, so none is cut off mid-deploy.
+  systemctl stop filone-reconcile.service 2>/dev/null || true
 }
 
 # Move the store in $FILONE_CONTROL_DIR/openbao to <destination>, and put an
