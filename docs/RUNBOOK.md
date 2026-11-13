@@ -148,7 +148,7 @@ with this node's own values:
 | Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` |
 | Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
 | Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
-| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>` | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
+| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
 | Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` |
 | `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | the chain.love token; Alloy is the host's |
 
@@ -1991,7 +1991,7 @@ recreate Piri around the restart:
 ```sh
 cd /opt/fil-one/infra-nodes
 sudo flock /run/fil-one/deploy.lock sh -c 'scripts/host/pdp-gate.sh piri-0 \
-  && rm /mnt/fil-one/piri-0/piri-init.failed \
+  && rm /mnt/fil-one/piri-0/piri-0/piri-init.failed \
   && docker restart filone-piri-0'
 ```
 

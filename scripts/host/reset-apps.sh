@@ -188,9 +188,9 @@ databases="$(app_databases)" || die "could not list the databases in $POSTGRES_C
 printf '  %s\n' $databases
 
 echo "[4/4] Emptying the data directories"
-# The directory itself stays. On dev each Piri's is an EBS mountpoint, and
-# lost+found belongs to its filesystem. -xdev keeps the find from following a
-# mount someone put further down.
+# The directory itself stays: Docker refuses to start a Piri whose directory is
+# missing. lost+found belongs to a filesystem whose root is emptied. -xdev keeps
+# the find from following a mount someone put further down.
 while read -r container; do
   data_dir="${data_dirs[$container]}"
   find "$data_dir" -xdev -mindepth 1 -maxdepth 1 ! -name lost+found \

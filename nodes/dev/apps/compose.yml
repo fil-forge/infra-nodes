@@ -113,20 +113,13 @@ services:
         bind:
           create_host_path: false
       - &piri-entrypoint ./config/piri/entrypoint.sh:/entrypoint.sh:ro
+      # A directory on the volume rather than its mount point, which is an
+      # empty directory on the root disk while the volume is not mounted. This
+      # path exists only on the volume, so Docker refuses to start the Piri
+      # without it, at boot included.
       - type: bind
-        source: /mnt/fil-one/piri-0
+        source: /mnt/fil-one/piri-0/piri-0
         target: /data/piri
-        bind:
-          create_host_path: false
-      # The volume root above is an empty directory on the root disk while the
-      # volume is not mounted, so it exists either way. lost+found exists only
-      # on the ext4 filesystem itself, so binding it is what makes Docker refuse
-      # to start this Piri without its volume, at boot included. reset-apps.sh
-      # keeps it.
-      - type: bind
-        source: /mnt/fil-one/piri-0/lost+found
-        target: /volume-guard
-        read_only: true
         bind:
           create_host_path: false
 
@@ -154,14 +147,8 @@ services:
       - *piri-base-config
       - *piri-entrypoint
       - type: bind
-        source: /mnt/fil-one/piri-1
+        source: /mnt/fil-one/piri-1/piri-1
         target: /data/piri
-        bind:
-          create_host_path: false
-      - type: bind
-        source: /mnt/fil-one/piri-1/lost+found
-        target: /volume-guard
-        read_only: true
         bind:
           create_host_path: false
     # The Piris start one at a time. `piri init` estimates gas for the
@@ -197,14 +184,8 @@ services:
       - *piri-base-config
       - *piri-entrypoint
       - type: bind
-        source: /mnt/fil-one/piri-2
+        source: /mnt/fil-one/piri-2/piri-2
         target: /data/piri
-        bind:
-          create_host_path: false
-      - type: bind
-        source: /mnt/fil-one/piri-2/lost+found
-        target: /volume-guard
-        read_only: true
         bind:
           create_host_path: false
     depends_on:
