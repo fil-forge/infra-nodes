@@ -9,6 +9,10 @@
 # It creates nothing and prompts for nothing. The one secret it touches is the
 # node's own host token, which it renews and never prints.
 #
+# It also deploys the apps when none has succeeded since boot. A reboot empties
+# the tmpfs that holds their keys and rendered configs, and no Piri or Ingot can
+# start without them.
+#
 # The ref it tracks is FILONE_GIT_REF in /etc/fil-one/node.conf, which is the
 # only statement of it. Point a node at a feature branch by editing that file.
 set -euo pipefail
@@ -132,13 +136,22 @@ project_is_stale() {
   fi
   [ "$base" != "$after" ] || return 1
 
-  git -C "$FILONE_CHECKOUT" diff --name-only "$base" "$after" | grep -qE "$pattern"
+  git -C "$FILONE_CHECKOUT" diff --name-only "$base" "$after" | grep -qE "$pattern" || return 1
+  echo "  $project changed since ${base:0:8}"
 }
 
 deploy_platform=0
 deploy_apps=0
 if project_is_stale platform "$shared_paths|^nodes/$FILONE_NODE/platform/"; then deploy_platform=1; fi
 if project_is_stale apps "$shared_paths|^nodes/$FILONE_NODE/apps/"; then deploy_apps=1; fi
+# A reboot empties the tmpfs that holds the rendered secrets, and Docker cannot
+# start a Piri or Ingot without them. No commit changed, so the staleness check
+# above sees nothing to do. The marker lives on the same tmpfs and is written
+# only by an apps deploy that finished healthy.
+if [ "$deploy_apps" -eq 0 ] && [ ! -e "$FILONE_APPS_DEPLOYED_MARKER" ]; then
+  echo "  no apps deploy has succeeded since boot"
+  deploy_apps=1
+fi
 # Left by a Bucket Intelligence deploy that did not finish healthy, so the
 # engine is retried without waiting for a commit. With no apps commit to deploy,
 # the retry is deploy-rag.sh alone, which never starts, stops or recreates a
@@ -168,12 +181,12 @@ renew_ingot_regionkey_token
 # that fixes a deploy script has to take effect on the pass that pulls it: the
 # checkout HEAD has already moved, so a later pass sees nothing to do.
 if [ "$deploy_platform" -eq 1 ]; then
-  echo "==> platform changed"
+  echo "==> deploying platform"
   "$FILONE_CHECKOUT/scripts/host/deploy-platform.sh"
 fi
 
 if [ "$deploy_apps" -eq 1 ]; then
-  echo "==> apps changed"
+  echo "==> deploying apps"
   "$FILONE_CHECKOUT/scripts/host/deploy-apps.sh"
 elif [ "$retry_rag" -eq 1 ]; then
   echo "==> retrying Bucket Intelligence"

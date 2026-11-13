@@ -16,6 +16,12 @@ FILONE_CONTROL_DIR=/mnt/fil-one/control
 # shellcheck disable=SC2034
 FILONE_DATA_DIR=/mnt/fil-one/data
 FILONE_SECRETS_DIR=/run/fil-one/secrets
+# Written by an apps deploy that finished healthy. It sits on the same tmpfs as
+# the rendered secrets, so a reboot removes both, and reconcile.sh deploys the
+# apps when it is missing.
+# SC2034: deploy-apps.sh and reconcile.sh use this after sourcing the library.
+# shellcheck disable=SC2034
+FILONE_APPS_DEPLOYED_MARKER=/run/fil-one/apps-deployed
 FILONE_SEAL_TOKEN_FILE=/etc/fil-one/seal-token
 FILONE_BAO_TOKEN_FILE=/etc/fil-one/bao-token
 FILONE_BAO_CONTAINER=filone-openbao

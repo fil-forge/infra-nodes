@@ -153,10 +153,33 @@ mark ingot_changed write_secret_file "$FILONE_SECRETS_DIR/hilt-ingot-proof.txt" 
 # --- 2. Pull ----------------------------------------------------------------
 
 echo "[2/5] Pulling images"
-# Before the gate, not after. Pulling can take minutes, and doing it inside the
-# safe window would spend the window on a download.
+# Only the images the host does not have yet. Each one is pinned by digest, so
+# an image present under that reference is exactly the one wanted, and a pull
+# could only confirm it. The Piris and Ingot then come back after a reboot
+# without the registry. A pin bump changes the digest, and the new image is
+# pulled as before.
+#
+# A moving tag would break that: present would no longer mean current. Refuse
+# one rather than run a stale image.
 # shellcheck disable=SC2086 # one service name per word
-compose_apps pull --quiet $core_services
+unpinned="$(compose_apps config --format json | python3 -c '
+import json, sys
+services = json.load(sys.stdin)["services"]
+for name in sys.argv[1:]:
+    image = services[name].get("image", "")
+    if "@sha256:" not in image:
+        print("       " + name + ": " + (image or "(no image)"))
+' $core_services)"
+[ -z "$unpinned" ] ||
+  die "these images are not pinned by digest:
+$unpinned
+       Pin each one as name:tag@sha256:<digest> in nodes/$FILONE_NODE/apps/versions.env."
+
+# Before the gate, not after. Pulling can take minutes, and doing it inside the
+# safe window would spend the window on a download. --policy needs Compose 2.40
+# or later, the oldest version verified to have it.
+# shellcheck disable=SC2086 # one service name per word
+compose_apps pull --quiet --policy missing $core_services
 
 mark ingot_changed image_differs compose_apps ingot
 
@@ -275,6 +298,7 @@ fi
 
 if [ -z "$unusable_services" ]; then
   stamp_deploy_success apps
+  touch "$FILONE_APPS_DEPLOYED_MARKER"
   echo "=== apps deploy complete ==="
 fi
 # Whether or not every app deployed: what this run wrote to OpenBao is snapshotted.

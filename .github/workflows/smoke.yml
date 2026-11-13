@@ -35,7 +35,8 @@ jobs:
   # never got the commit would skip the test on the node that did.
   #
   # The alert lives here too, for the same reason: only inside the job can it
-  # name the node and say which of the two steps failed.
+  # name the node and say which step failed. So does starting the end-to-end
+  # test, which only a node that passed its smoke test gets.
   smoke:
     name: Smoke test
     strategy:
@@ -43,6 +44,10 @@ jobs:
       matrix:
         node: [dev, staging/eu-central-3]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # To dispatch e2e.yml.
+      actions: write
     # The wait budget below, the smoke retries, and room for the checkout and a
     # slow first poll. Both steps stop themselves well inside it; a job that
     # hits this timeout is cancelled, and the alert steps do not run on a
@@ -111,6 +116,7 @@ jobs:
       # gate has already passed by then, so this is about the network rather
       # than about the node still coming up.
       - name: Run the smoke test
+        id: smoke
         env:
           # Only on a push: a schedule and a manual run check the node as it
           # stands, against whatever revision it reports.
@@ -133,14 +139,40 @@ jobs:
           done
           "$passed" || { echo "::error::$NODE did not pass: 5 attempts over 2 minutes"; exit 1; }
 
-      # The two failures need different responses, so the message says which one
-      # happened: the node never reached the commit, or it reached it and the
-      # smoke test failed. The wait step's outcome is `skipped` on a schedule and
-      # a manual run, and `failure` only when the node never arrived.
+      # The node now runs this commit, so start the end-to-end test on it. Only
+      # on a push: a schedule and a manual run deployed nothing, and e2e.yml has
+      # a daily run of its own. A dispatch with GITHUB_TOKEN starts a run, unlike
+      # most events that token triggers.
+      #
+      # The stage is the first part of the node's path. node narrows the run
+      # to this node: another node of the stage may not have reached the
+      # commit, and it starts its own run when it does.
+      - name: Start the end-to-end test
+        id: dispatch
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODE: ${{ matrix.node }}
+          COMMIT: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          stage=${NODE%%/*}
+          gh workflow run e2e.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f "stage=$stage" -f "node=$NODE" -f change_repo=infra-nodes -f "change_sha=$COMMIT" \
+            -f "change_subject=$(git log -1 --format=%s)" -f "change_author=$ACTOR"
+          echo "started the end-to-end test of $NODE"
+
+      # Each failure needs a different response, so the message says which one
+      # happened: the node never reached the commit, it reached it and failed the
+      # smoke test, or it passed and the end-to-end test could not be started.
+      # The wait step's outcome is `skipped` on a schedule and a manual run, and
+      # `failure` only when the node never arrived.
       - id: what
         if: failure()
         env:
           WAIT_OUTCOME: ${{ steps.wait.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           NODE: ${{ matrix.node }}
         run: |
           set -euo pipefail
@@ -148,23 +180,20 @@ jobs:
           if [ "$WAIT_OUTCOME" = failure ]; then
             echo "headline=The $NODE node never reached this commit" >> "$GITHUB_OUTPUT"
             echo "next=Check reconcile on the node: the proving gate, a failing deploy, or a node tracking another ref." >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$SMOKE_OUTCOME" = failure ]; then
             echo "headline=The $NODE node failed its smoke test" >> "$GITHUB_OUTPUT"
             echo "next=The node has this commit and is not serving it. Suspect the image it pinned." >> "$GITHUB_OUTPUT"
+          else
+            echo "headline=The $NODE node passed its smoke test, but its end-to-end test could not be started" >> "$GITHUB_OUTPUT"
+            echo "next=The run log has the error from GitHub. Start the test by hand: gh workflow run e2e.yml --ref main -f stage=${NODE%%/*} -f node=$NODE" >> "$GITHUB_OUTPUT"
           fi
 
-      # A bump commit says which service image changed and nothing about what
-      # changed inside it, so the alert names a digest nobody recognises. Bump
-      # deployed image writes the source commit into the body as a link, and
-      # that line is what this reads: matching it is the actual precondition for
-      # the lookup, stricter than checking the actor and the subject prefix.
+      # For a bump, the service commit that produced the image. Best-effort: the
+      # script prints nothing on any failure, and the message below falls back
+      # to the infra-nodes commit alone.
       #
-      # Every publisher repository is public, so GITHUB_TOKEN reads it and no
-      # app token has to be minted on the failure path.
-      #
-      # The whole step is best-effort. A rename, a deleted repository or a rate
-      # limit must not swallow the alert, so every failure leaves the output
-      # empty and the message below falls back to the infra-nodes commit alone.
+      # The finished Slack line rather than its parts, so the payload below
+      # interpolates one value and needs no markup of its own.
       - id: source
         if: failure()
         continue-on-error: true
@@ -172,41 +201,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          body=$(git log -1 --format=%B)
-          line=$(printf '%s\n' "$body" \
-            | grep -oE '^- Commit: https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/commit/[0-9a-f]{40}$' \
-            | head -1) || true
-          if [ -z "$line" ]; then
-            echo "no source commit link in the commit body"
-            exit 0
-          fi
-
-          line_url=${line#- Commit: }
-          path=${line_url#https://github.com/}
-          repo=${path%/commit/*}
-          sha=${path##*/commit/}
-
-          json=$(gh api "repos/$repo/commits/$sha") || {
-            echo "::warning::could not read $repo@${sha:0:7}"
-            exit 0
-          }
-
-          # First line only: GITHUB_OUTPUT reads a newline as the end of the
-          # value and the rest as further outputs.
-          subject=$(printf '%s' "$json" | jq -r '.commit.message | split("\n")[0]')
-          # login is null when the commit email belongs to no GitHub account, so
-          # the git author name stands in and links no profile.
-          login=$(printf '%s' "$json" | jq -r '.author.login // ""')
-          if [ -n "$login" ]; then
-            author="<https://github.com/$login|@$login>"
-          else
-            author=$(printf '%s' "$json" | jq -r '.commit.author.name // "an unknown author"')
-          fi
-
-          # The finished Slack line rather than its parts, so the payload below
-          # interpolates one value and needs no markup of its own.
-          echo "line=Service commit: \`$subject\` by $author (<$line_url|$repo@${sha:0:7}>)" \
-            >> "$GITHUB_OUTPUT"
+          line=$(git log -1 --format=%B | scripts/ci/service-commit-line.sh)
+          echo "line=$line" >> "$GITHUB_OUTPUT"
 
       # Every interpolation goes through toJSON, because the payload is JSON and
       # a commit subject is free to contain a quote or a backslash.
