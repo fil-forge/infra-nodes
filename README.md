@@ -85,6 +85,7 @@ scripts/
   host/                 run on the node: provision, deploy, reconcile, keygen, onboarding
   operator/             run from a laptop with AWS credentials for the node's account
   ci/                   run by the workflows, and by a person at a terminal
+    test-nodes/         helpers that only one workflow runs, in a directory named after it
 systemd/                the reconcile timer and the seal-token renewal timer
 docs/
   RUNBOOK.md            bringing a node up, and what to do when it will not

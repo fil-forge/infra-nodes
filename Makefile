@@ -37,7 +37,7 @@ check-tofu:
 check-shell:
 	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
 	find nodes -name entrypoint.sh -exec shellcheck {} +
-	shellcheck scripts/ci/*.sh
+	shellcheck scripts/ci/*.sh scripts/ci/*/*.sh
 
 # `compose config` resolves every interpolation, so it catches a variable a
 # compose file expects and no env file supplies — which on a node shows up as a
