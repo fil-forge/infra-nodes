@@ -131,6 +131,10 @@ to 2026-10-26. With the 5% root reserve
 and what was already there, it leaves the root filesystem about half used. The staging host is not
 the forge-perf box, so its own rate may be lower; the budget errs on the large side.
 
+Add `FILONE_TESTED=false` to a new node's node.env. `test-nodes.yml` tests every node under
+`nodes/` of a tested stage from the moment its node.env merges, and a node that is not serving yet
+would fail every hour. Step 7 removes the line once the node is up.
+
 ### 3. The node's host
 
 Everything before this step is the same for any node; everything after it is the same procedure run
@@ -1024,6 +1028,9 @@ Finish with the node's smoke test:
 scripts/ci/smoke-test.sh <node>          # `dev`, or `staging/eu-central-3`
 ```
 
+Once it passes, delete the `FILONE_TESTED=false` line from step 2 and merge, so `test-nodes.yml`
+starts testing the node after every merge and every hour.
+
 ## Day-to-day operations
 
 Commands in this section run from the infra-nodes checkout: `/opt/fil-one/infra-nodes` on the
@@ -1141,8 +1148,9 @@ Leave both empty to test every node. Only `main` can run the workflow, because t
 reads its key from a GitHub Environment that admits `main` alone. To smoke-test a branch, run
 `scripts/ci/smoke-test.sh` from your machine as above.
 
-A node joins the tests in `NODES` in `scripts/ci/test-nodes/select.sh`, next to the stage whose
-Environment holds its key.
+The workflow tests every node under `nodes/` whose stage is dev or staging, unless its node.env sets
+`FILONE_TESTED=false`; steps 2 and 7 of bringing up a node set and remove that line. The stages are
+listed in `TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`.
 
 Running `scripts/ci/e2e-test.sh` from your machine needs Hilt's partner key, the one FilOne uses, which central
 keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment
@@ -2123,8 +2131,8 @@ Environment's branch rule. Production gets no Environment until
 [FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491) finds a credential that cannot
 reach customer tenants.
 
-Create the Environment with its branch rule before the secret goes in, and before a node of that
-stage joins `NODES` in `scripts/ci/test-nodes/select.sh`: a workflow that names a missing Environment
+Create the Environment with its branch rule before the secret goes in, and before the stage joins
+`TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`: a workflow that names a missing Environment
 creates it with no rules. The commands below are for dev; repeat them with `staging`.
 
 ```sh
