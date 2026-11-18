@@ -1603,11 +1603,15 @@ recovery path, then `zpool clear data` and `zpool scrub data` to confirm. Checks
 drive with no data errors were repaired from the other copy; a count that keeps growing between
 scrubs is a drive to have replaced.
 
-**The ZFS pool report is stale.** `filone-pool-health.timer` has not written its report in thirty
-minutes, so scrub results and error counts are not reaching Grafana. The pool's state still does,
-from Alloy's zfs collector. `systemctl list-timers filone-pool-health.timer` shows whether the timer
-runs, and `journalctl -u filone-pool-health.service` why a run failed. A run that times out after a
-minute is a `zpool status` that hung, which happens when the pool's I/O is suspended.
+**The ZFS pool's health is not reporting.** One of the two sources has stopped. A stale report, or
+none, means `filone-pool-health.timer` has not written in thirty minutes or was never enabled, so
+scrub results and error counts are not reaching Grafana; the pool's state still is.
+`systemctl list-timers filone-pool-health.timer` shows whether the timer runs, and
+`journalctl -u filone-pool-health.service` why a run failed. A run that times out after a minute is
+a `zpool status` that hung, which happens when the pool's I/O is suspended. A report with no pool
+state means Alloy's zfs collector is failing, and a degraded pool would raise no alert until it is
+fixed: `docker logs filone-platform-alloy-1` says why, and `zpool status -x data` on the host shows the pool's
+state in the meantime.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key

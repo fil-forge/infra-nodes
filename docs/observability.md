@@ -440,7 +440,7 @@ enables it.
 | `zfs_pool_scan_errors` | `zpool`, `function` (`scrub` or `resilver`) | Errors the latest scrub or resilver could not repair. Absent on a pool never scanned |
 | `zfs_pool_scan_end_timestamp` | `zpool`, `function` | Unix time it ended, 0 while it runs |
 | `zfs_pool_data_errors` | `zpool` | Files with permanent errors, the list `zpool status -v` prints |
-| `zfs_pool_vdev_errors` | `zpool`, `vdev`, `type` (`read`, `write`, `checksum`) | Errors on each vdev, the root and the mirror included, since the last `zpool clear` |
+| `zfs_pool_vdev_errors` | `zpool`, `vdev`, `type` (`read`, `write`, `checksum`) | Errors on each vdev, the root and the mirror included, since the pool was imported at boot or last cleared with `zpool clear` |
 
 A scrub that found errors it could not repair, or a pool with damaged files:
 
@@ -449,17 +449,31 @@ zfs_pool_scan_errors{function="scrub"} > 0 or zfs_pool_data_errors > 0
 ```
 
 Ubuntu's ZFS package scrubs on the second Sunday of each month, so the last scrub's end is at most
-about five weeks old on a healthy node:
+about five weeks old on a healthy node. The second line leaves out a scrub that is still running,
+whose end is 0:
 
 ```promql
 time() - zfs_pool_scan_end_timestamp{function="scrub"} > 40 * 86400
+  and zfs_pool_scan_end_timestamp{function="scrub"} > 0
 ```
 
-The textfile collector records when it last read each file, which is how a stopped timer shows. The
-`file` label is the path inside the Alloy container:
+The textfile collector exports each file's modification time, so a timer that stopped writing shows
+as an age that keeps growing. The `file` label is the path inside the Alloy container:
 
 ```promql
 time() - node_textfile_mtime_seconds{file="/metrics/zfs_pool.prom"} > 30 * 60
+```
+
+Each half can also go missing on its own. A node whose zfs collector fails sends the report but no
+`node_zfs_zpool_state`, so a degraded pool would raise nothing. A node whose timer was never enabled
+sends the state but writes no report, so nothing reads its scrubs. Either one:
+
+```promql
+count by (node) (node_textfile_mtime_seconds{file="/metrics/zfs_pool.prom"})
+  unless on (node) count by (node) (node_zfs_zpool_state)
+or
+count by (node) (node_zfs_zpool_state)
+  unless on (node) count by (node) (node_textfile_mtime_seconds{file="/metrics/zfs_pool.prom"})
 ```
 
 Each run logs to the journal of `filone-pool-health.service`:
@@ -469,7 +483,8 @@ Each run logs to the journal of `filone-pool-health.service`:
 ```
 
 infra-central needs three alert rules on these, with the other appliance rules: a critical one on a
-pool that is not online, a warning on scrub or data errors, and a warning on a stale report.
+pool that is not online, a warning on scrub or data errors, and a warning when the pool's health is
+not reporting, which covers a stale report and either half missing.
 
 ## Traces
 

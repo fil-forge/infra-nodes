@@ -14,7 +14,8 @@
 #   zfs_pool_data_errors{zpool}                   files with permanent errors
 #   zfs_pool_vdev_errors{zpool, vdev, type}       read, write and checksum
 #                                                 errors per vdev since the
-#                                                 last `zpool clear`
+#                                                 pool was imported (at boot)
+#                                                 or last cleared
 #
 # A pool that has never been scrubbed or resilvered has no scan series.
 #
@@ -23,7 +24,7 @@
 # report now. It reads the pool and changes nothing but its own file, so it
 # takes no lock. When zpool fails, the last report stays in place and the run
 # fails: node_textfile_mtime_seconds for the file then stops moving, which is
-# what central's stale-report alert reads.
+# what central's not-reporting alert reads.
 #
 # Usage:
 #   scripts/host/report-pool-health.sh
@@ -60,7 +61,7 @@ jq -r '
     ($scanned[] | "zfs_pool_scan_end_timestamp{zpool=\"\(.pool | esc)\",function=\"\(.item.scan_stats.function | ascii_downcase)\"} \(.item.scan_stats.end_time)"),
     family("zfs_pool_data_errors"; "Files in the pool with permanent errors."),
     ($pools[] | select(.item.error_count != null) | "zfs_pool_data_errors{zpool=\"\(.pool | esc)\"} \(.item.error_count)"),
-    family("zfs_pool_vdev_errors"; "Read, write and checksum errors on a vdev of the pool since its last clear."),
+    family("zfs_pool_vdev_errors"; "Read, write and checksum errors on a vdev of the pool since it was imported or last cleared."),
     ($pools[] | .pool as $pool | .item.vdevs // {} | .. | objects | select(has("checksum_errors"))
       | . as $vdev | ("read", "write", "checksum")
       | "zfs_pool_vdev_errors{zpool=\"\($pool | esc)\",vdev=\"\($vdev.name | esc)\",type=\"\(.)\"} \($vdev[. + "_errors"])")
