@@ -27,12 +27,19 @@
 # because Hilt does not yet delete them (FIL-1488).
 name: Test nodes
 
+# A push gets an empty run-name, so GitHub falls back to its default title for
+# a push: the commit message's first line, such as "Bump piri on dev to
+# sha256:d241abe (#310)". head_commit.message holds the whole message, body
+# included, and GitHub cuts a run-name only at about 500 characters, not at
+# the first newline. Expressions have no function that splits or slices a
+# string, and a step cannot set run-name because GitHub evaluates it before
+# any job starts. The empty string is falsy, so the push case comes last.
 run-name: >-
   ${{
-    github.event_name == 'push' && format('Test nodes after infra-nodes change: {0}', github.event.head_commit.message)
-    || github.event_name == 'repository_dispatch' && format('Test nodes after infra-central change: {0}', github.event.client_payload.change_subject)
+    github.event_name == 'repository_dispatch' && format('Test nodes after infra-central change: {0}', github.event.client_payload.change_subject)
     || github.event_name == 'schedule' && 'Test nodes (hourly)'
-    || format('Test nodes {0} {1}', inputs.stages || 'all stages', inputs.nodes)
+    || github.event_name == 'workflow_dispatch' && format('Test nodes {0} {1}', inputs.stages || 'all stages', inputs.nodes)
+    || ''
   }}
 
 on:
