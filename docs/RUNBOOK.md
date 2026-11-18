@@ -1052,6 +1052,11 @@ that overlaps another, and `0.0.0.0/0`, and a refused list changes nothing. It r
 table in one load, so an address taken off the list loses its access, open connections included.
 It touches no other table and no UFW rule. A second run with the same list loads nothing.
 
+The table filters only what reaches the host. When the provider runs a firewall or translates the
+host's address in front of it, as `VPN_BEHIND_NAT` allows for the VPN, that firewall must also
+pass TCP to `IMPORT_SERVICE_PORT` from the clients' addresses, and the translation must forward
+the port to the host.
+
 Commit the settings, then deploy and check the service:
 
 ```sh
