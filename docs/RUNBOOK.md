@@ -982,14 +982,34 @@ the jump host, readable by root only.
 | `VPN_SITE_PUBLIC_ADDRESS` | `CUSTOMER_GATEWAY_IP` in `tunnels.env`; the site's `public_ip` in central's `pandora_sites` |
 | `VPN_BEHIND_NAT` | `false` when that address is on the host, `true` when the provider translates it in front of the host. The script checks it against the host's addresses |
 | `VPN_SITE_PRIVATE_ADDRESS` | `SITE_PRIVATE_IP` in `tunnels.env`; the site's `private_ip` in `pandora_sites` |
-| `VPN_VPC_CIDR` | the VPC's side of the tunnel, as central's VPN document states it |
 | `VPN_TUNNEL1_OUTSIDE_ADDRESS`, `VPN_TUNNEL2_OUTSIDE_ADDRESS` | `TUNNEL1_ADDRESS` and `TUNNEL2_ADDRESS` in `tunnels.env` |
-| `VPN_TUNNEL{1,2}_INSIDE_LOCAL`, `VPN_TUNNEL{1,2}_INSIDE_REMOTE` | the customer gateway's and the virtual private gateway's inside address of each tunnel, in the VPN connection's `CustomerGatewayConfiguration` from `aws ec2 describe-vpn-connections`. The local one takes its prefix, `/30` |
-| `VPN_PSK_SOURCE`, `VPN_TUNNEL1_PSK_FILE`, `VPN_TUNNEL2_PSK_FILE` | `files` and the paths of `psk1` and `psk2`; tunnel 1's key belongs to `TUNNEL1_ADDRESS`. Or `openbao`, once the node's OpenBao runs, with the keys stored at `filone/vpn`, fields `tunnel1_psk` and `tunnel2_psk` |
+| `VPN_TUNNEL{1,2}_INSIDE_LOCAL`, `VPN_TUNNEL{1,2}_INSIDE_REMOTE` | the customer gateway's and the virtual private gateway's inside address of each tunnel, in the VPN connection's `CustomerGatewayConfiguration` from `aws ec2 describe-vpn-connections`. The local one takes its prefix, `/30`. See below for pairing them with the right tunnel |
+| `VPN_PSK_SOURCE`, `VPN_TUNNEL1_PSK_FILE`, `VPN_TUNNEL2_PSK_FILE` | `files` and the paths of `psk1` and `psk2`; tunnel 1's key belongs to `TUNNEL1_ADDRESS`. Or `openbao`, once the node's OpenBao runs, with the keys stored at `filone/vpn`, fields `tunnel1_psk` and `tunnel2_psk`. Unset, the run keeps the keys already installed |
 
-Three more are optional: `VPN_TUNNEL_MTU` (1,446 bytes, or 1,438 behind NAT, unless the site's
+Each tunnel's inside addresses must be given with that same tunnel's outside address. Tunnel 1 is
+the one whose outside address is `TUNNEL1_ADDRESS`, which central reads from the first entry of the
+connection's `Options.TunnelOptions`. List each tunnel's outside address beside its inside /30
+with:
+
+```sh
+aws ec2 describe-vpn-connections \
+  --filters Name=tag:Name,Values=<VPN_CONNECTION_NAME from tunnels.env> \
+  --query 'VpnConnections[0].Options.TunnelOptions[].[OutsideIpAddress,TunnelInsideCidr]' \
+  --output text
+```
+
+The line with `TUNNEL1_ADDRESS` gives tunnel 1's /30; both inside addresses come from the
+`ipsec_tunnel` element of `CustomerGatewayConfiguration` whose virtual private gateway outside
+address is that same address, and the same for tunnel 2. With the pairs swapped the tunnels still
+come up, but neither inside address answers, so the health check fails on every run and never fails
+over. The status command below prints each tunnel's outside and inside addresses on one line, to be
+compared with this listing.
+
+Four more are optional: `VPN_TUNNEL_MTU` (1,446 bytes, or 1,438 behind NAT, unless the site's
 path MTU is below 1,500), `VPN_DOCKER_NETWORKS` (the Docker networks whose containers may use the
-tunnel, `filone` by default) and `VPN_HEALTH_PING` (see below).
+tunnel, `filone` by default), `VPN_HEALTH_PING` (see below) and `VPN_VPC_CIDR`. The last defaults
+to `10.20.192.0/18`, the VPC's side as central's VPN document states it; the script refuses any
+other value unless `VPN_VPC_CIDR_OVERRIDE=true` is set as well.
 
 With the values in an environment file of your own, kept off the repository, run as root:
 
@@ -1005,9 +1025,13 @@ It then writes `/etc/fil-one/vpn.conf`, the strongSwan connections and secrets u
 `/etc/swanctl/conf.d/` (both 0600), admits UDP 500 and 4500 and ESP from the two tunnel addresses
 in UFW, and no other address, creates the interfaces, the route and the nftables table, restarts
 strongSwan and enables `filone-vpn.service`, which recreates the interfaces after a boot, and
-`filone-vpn-health.timer`. A second run with the same inputs changes nothing. Delete `psk1`,
-`psk2` and the inputs file afterwards: strongSwan reads its copy of the keys from
-`/etc/swanctl/conf.d/filone-vpn-secrets.conf`, on the OS disk like the node's other tokens.
+`filone-vpn-health.timer`. A second run with the same inputs changes nothing. Delete `psk1` and
+`psk2` afterwards: strongSwan reads its copy of the keys from
+`/etc/swanctl/conf.d/filone-vpn-secrets.conf`, on the OS disk like the node's other tokens. A later
+run that changes no key needs neither file: leave `VPN_PSK_SOURCE` and the two key-file inputs
+unset, and the script reads the keys back from that file. It does so only while the file's keys
+belong to the tunnel addresses given; with new addresses it stops and asks for the new keys. Keep
+the inputs file without those three lines, readable by root only, for such re-runs.
 
 Check the tunnels:
 
@@ -1015,8 +1039,10 @@ Check the tunnels:
 scripts/host/setup-vpn.sh status
 ```
 
-It lists each tunnel's IKE and child SA state, whether AWS's inside address answers through it,
-which tunnel carries the route and whether the nftables table is loaded. It exits non-zero when no
+It prints one line per tunnel with its outside address, its two inside addresses, its interface,
+one state that reads `established` only when the IKE SA is established and the child SA installed,
+whether AWS's inside address answers through it and whether it carries the route. It then says
+whether the nftables table is loaded. It exits non-zero when no
 working tunnel carries the route. Then check the path to the database as central's VPN document
 describes under "Checking the path". Central's two tunnel alerts stay paused until this site runs
 strongSwan; the same document says how to unpause them. Do not run central's host check while this
@@ -1034,14 +1060,16 @@ flush it, and nothing is added to their chains. The host's own processes use the
 route's source address.
 
 The health check calls a tunnel healthy when its child SA is installed and AWS's inside address
-answers three pings through it. When the tunnel carrying the route is not healthy and the other
+answers a ping through it: it sends three, and one reply is enough. When the tunnel carrying the route is not healthy and the other
 is, it moves the route, and says so in the journal of `filone-vpn-health.service`. With both down
-it leaves the route and fails. If AWS's inside address turns out not to answer pings, set
+it leaves the route and fails. Each run also puts back the VPC route and its `unreachable`
+fallback if either has gone. If AWS's inside address turns out not to answer pings, set
 `VPN_HEALTH_PING=false` and re-run the script; the check then goes on SA state alone, which notices
 a dead tunnel only when strongSwan's dead peer detection gives up on it.
 
 A change of tunnel addresses or keys, after central's platform root is destroyed and applied
-again, is a re-run with the new values. It removes the UFW rules for the old addresses and restarts
+again, is a re-run with the new values, including new `psk1` and `psk2` from a fresh run of
+central's fetch script. It removes the UFW rules for the old addresses and restarts
 strongSwan, which takes both tunnels down for a few seconds. Reconcile never changes the tunnel.
 
 To take the VPN off the node:

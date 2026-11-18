@@ -24,6 +24,7 @@ SCRIPT="$HERE/../setup-vpn.sh"
 REAL_CAT="$(command -v cat)"
 REAL_CMP="$(command -v cmp)"
 REAL_RM="$(command -v rm)"
+REAL_MKTEMP="$(command -v mktemp)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/setup-vpn-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -37,7 +38,9 @@ INSIDE1_LOCAL=169.254.200.2/30
 INSIDE1_REMOTE=169.254.200.1
 INSIDE2_LOCAL=169.254.200.6/30
 INSIDE2_REMOTE=169.254.200.5
-VPC=10.99.0.0/18
+# The VPC side central's VPN document states, which the script pins.
+VPC=10.20.192.0/18
+OTHER_VPC=10.99.0.0/18
 SITE=10.98.0.7
 CONTAINERS=172.31.0.0/16
 # Two keys shaped like AWS's, made up for the test.
@@ -155,7 +158,8 @@ STUB
 echo "nft $*" >>"$STUB_STATE/calls"
 case "$1" in
   list) [ -e "$STUB_STATE/nft-loaded" ] ;;
-  -f) touch "$STUB_STATE/nft-loaded" ;;
+  # Like nft, refuses a ruleset file that is not there.
+  -f) [ -f "$STUB_ROOT$2" ] || exit 1; touch "$STUB_STATE/nft-loaded" ;;
   *) exit 2 ;;
 esac
 STUB
@@ -257,6 +261,15 @@ STUB
   cat >"$bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >>"$STUB_STATE/calls"
+if [ "$1" = exec ]; then
+  # bao kv get -mount=filone -field=<field> <path>: answers from bao-<path>-<field>.
+  for arg in "$@"; do
+    case "$arg" in -field=*) field="${arg#-field=}" ;; esac
+  done
+  [ -f "$STUB_STATE/bao-${*: -1}-$field" ] || exit 2
+  cat "$STUB_STATE/bao-${*: -1}-$field"
+  exit 0
+fi
 network="${*: -1}"
 [ -f "$STUB_STATE/docker-network-$network" ] || exit 1
 cat "$STUB_STATE/docker-network-$network"
@@ -292,8 +305,8 @@ mkdir -p "$(dirname "${args[1]}")"
 cp "${args[0]}" "${args[1]}"
 STUB
 
-  # cat, cmp and rm run the real command on the moved paths.
-  for tool in cat cmp rm; do
+  # cat, cmp, rm and mktemp run the real command on the moved paths.
+  for tool in cat cmp rm mktemp; do
     cat >"$bin/$tool" <<STUB
 #!/usr/bin/env bash
 [ "$tool" != rm ] || echo "rm \$*" >>"\$STUB_STATE/calls"
@@ -338,7 +351,6 @@ new_case() {
     VPN_SITE_PUBLIC_ADDRESS="$PUBLIC"
     VPN_BEHIND_NAT=false
     VPN_SITE_PRIVATE_ADDRESS="$SITE/32"
-    VPN_VPC_CIDR="$VPC"
     VPN_TUNNEL1_OUTSIDE_ADDRESS="$TUNNEL1"
     VPN_TUNNEL1_INSIDE_LOCAL="$INSIDE1_LOCAL"
     VPN_TUNNEL1_INSIDE_REMOTE="$INSIDE1_REMOTE"
@@ -362,12 +374,16 @@ set_input() { # set_input <name> [value]
   INPUTS=("${kept[@]}")
 }
 
-# Runs the script with only the inputs in INPUTS, plus any arguments.
+# Runs the script with only the inputs in INPUTS, plus any arguments. TMPDIR
+# points at the case's own directory unless NO_TMPDIR is set, as it is under
+# systemd.
 run_vpn() {
+  local tmpdir=(TMPDIR="$CASE/tmp")
+  [ -z "${NO_TMPDIR:-}" ] || tmpdir=()
   set +e
   env -i HOME="$CASE" PATH="$CASE/bin:$PATH" \
-    STUB_STATE="$STATE" STUB_ROOT="$ROOT" TMPDIR="$CASE/tmp" \
-    REAL_CAT="$REAL_CAT" REAL_CMP="$REAL_CMP" REAL_RM="$REAL_RM" \
+    STUB_STATE="$STATE" STUB_ROOT="$ROOT" ${tmpdir[@]+"${tmpdir[@]}"} \
+    REAL_CAT="$REAL_CAT" REAL_CMP="$REAL_CMP" REAL_RM="$REAL_RM" REAL_MKTEMP="$REAL_MKTEMP" \
     "${INPUTS[@]}" bash "$SCRIPT" "$@" >"$CASE/stdout" 2>"$CASE/stderr"
   status=$?
   set -e
@@ -395,6 +411,11 @@ root_empty() { [ -z "$(ls -A "$ROOT")" ]; }
 tmp_empty() { [ -z "$(ls -A "$CASE/tmp")" ]; }
 root_files() { (cd "$ROOT" && find . -type f -exec cksum {} + | sort); }
 route_is() { grep -qx "$VPC dev filone-tun$1 scope link src $SITE" "$STATE/routes"; }
+fallback_present() { grep -qx "unreachable $VPC metric 4294967295" "$STATE/routes"; }
+# One chain of the rendered nftables table.
+nft_chain() { awk -v name="$1" '$1 == "chain" && $2 == name { on = 1 } on { print } on && $1 == "}" { exit }' "$ROOT/run/fil-one/vpn-nftables.conf"; }
+chain_has() { nft_chain "$1" | grep -qxF -- "    $2"; }
+TUNNELS='{ "filone-tun1", "filone-tun2" }'
 
 # Anything that would change the host.
 CHANGES='^(install -m|ip (link (add|set|del)|addr (add|flush)|route replace)|nft -f|sysctl -q|ufw-change|systemctl (restart|start|stop|enable|disable|daemon-reload)|rm .*/etc/)'
@@ -422,7 +443,7 @@ echo "setup-vpn.sh"
 
 # --- Refuses missing and wrong inputs ----------------------------------------
 
-for name in VPN_SITE_PUBLIC_ADDRESS VPN_SITE_PRIVATE_ADDRESS VPN_VPC_CIDR \
+for name in VPN_SITE_PUBLIC_ADDRESS VPN_SITE_PRIVATE_ADDRESS \
   VPN_TUNNEL1_OUTSIDE_ADDRESS VPN_TUNNEL2_OUTSIDE_ADDRESS VPN_TUNNEL1_INSIDE_LOCAL \
   VPN_TUNNEL2_INSIDE_REMOTE VPN_BEHIND_NAT VPN_PSK_SOURCE; do
   new_case "missing $name"
@@ -452,11 +473,15 @@ set_input VPN_TUNNEL1_OUTSIDE_ADDRESS 198.51.100.300
 expect_input_failure inputs "not an IPv4 address"
 
 new_case "a VPC CIDR with host bits"
-set_input VPN_VPC_CIDR 10.99.0.1/18
+set_input VPN_VPC_CIDR 10.20.192.1/18
 expect_input_failure inputs "host bits"
 
+new_case "a VPC CIDR other than central's"
+set_input VPN_VPC_CIDR "$OTHER_VPC"
+expect_input_failure inputs "VPN_VPC_CIDR_OVERRIDE"
+
 new_case "the site address inside the VPC"
-set_input VPN_SITE_PRIVATE_ADDRESS 10.99.0.7
+set_input VPN_SITE_PRIVATE_ADDRESS 10.20.192.7
 expect_input_failure inputs "is inside VPN_VPC_CIDR"
 
 new_case "an inside remote outside its /30"
@@ -532,7 +557,12 @@ NFT=/run/fil-one/vpn-nftables.conf
 check "source-NATs VPC traffic to the /32" in_file "$NFT" "ip daddr $VPC ip saddr != $SITE snat to $SITE"
 check "NATs before Docker's masquerade" in_file "$NFT" "priority srcnat - 10"
 check "admits the filone network's containers" in_file "$NFT" "elements = { $CONTAINERS }"
-check "clamps the MSS to the tunnel MTU" in_file "$NFT" "maxseg size set 1406"
+check "clamps the MSS of SYNs into the tunnels" \
+  chain_has forward "oifname $TUNNELS tcp flags syn / syn,rst tcp option maxseg size > 1406 tcp option maxseg size set 1406"
+check "clamps the MSS of SYNs out of the tunnels" \
+  chain_has forward "iifname $TUNNELS tcp flags syn / syn,rst tcp option maxseg size > 1406 tcp option maxseg size set 1406"
+check "drops new connections from the tunnels to the host" chain_has input "iifname $TUNNELS drop"
+check "admits replies from the tunnels to the host" chain_has input "iifname $TUNNELS ct state established,related accept"
 check "loads the nftables table" called "^nft -f $NFT$"
 check "admits IKE from tunnel 1" called "^ufw allow proto udp from $TUNNEL1 to any port 500,4500 comment"
 check "admits ESP from tunnel 2" called "^ufw allow proto esp from $TUNNEL2 to any comment"
@@ -560,6 +590,10 @@ touch "$STATE/sa-up-1" "$STATE/sa-up-2" "$STATE/ping-filone-tun1" "$STATE/ping-f
 run_vpn status
 check "succeeds" succeeded
 check "says tunnel 1 carries the route" printed "established, inside address answers, carries the route"
+check "pairs tunnel 1's inside addresses with its outside address" \
+  printed "tunnel 1  outside $TUNNEL1  inside $INSIDE1_LOCAL to $INSIDE1_REMOTE"
+check "pairs tunnel 2's inside addresses with its outside address" \
+  printed "tunnel 2  outside $TUNNEL2  inside $INSIDE2_LOCAL to $INSIDE2_REMOTE"
 check "never shows a key" key_never_shown
 
 # --- Failover ----------------------------------------------------------------
@@ -569,6 +603,15 @@ current="health with both tunnels up"
 run_vpn health
 check "succeeds" succeeded
 check "leaves the route alone" not_called '^ip route replace'
+check "keeps tunnel 1" route_is 1
+
+current="health with the fallback route gone"
+grep -v '^unreachable ' "$STATE/routes" >"$STATE/routes.new"
+mv "$STATE/routes.new" "$STATE/routes"
+run_vpn health
+check "succeeds" succeeded
+check "restores the fallback route" fallback_present
+check "says so" printed "fallback route"
 check "keeps tunnel 1" route_is 1
 
 current="health with tunnel 1 down"
@@ -609,6 +652,89 @@ check "succeeds" succeeded
 check "recreates tunnel 2's interface" called '^ip link add filone-tun2 type xfrm dev eth0 if_id 2$'
 check "reloads the nftables table" called '^nft -f /run/fil-one/vpn-nftables.conf$'
 check "routes the VPC into tunnel 1" route_is 1
+
+current="up after a reboot, as systemd runs it"
+rm -r "$STATE/links" "$STATE/nft-loaded"
+mkdir -p "$STATE/links"
+: >"$STATE/routes"
+rm -rf "$ROOT/run"
+NO_TMPDIR=1 run_vpn up
+check "succeeds" succeeded
+check "reloads the nftables table" called '^nft -f /run/fil-one/vpn-nftables.conf$'
+check "routes the VPC into tunnel 1" route_is 1
+check "writes the ruleset" test -f "$ROOT/run/fil-one/vpn-nftables.conf"
+check "leaves no temporary file" test -z "$(ls -A "$ROOT/run/fil-one/secrets")"
+
+new_case "another VPC CIDR, with the override"
+set_input VPN_VPC_CIDR "$OTHER_VPC"
+set_input VPN_VPC_CIDR_OVERRIDE true
+run_vpn
+check "succeeds" succeeded
+check "routes that CIDR into tunnel 1" grep -qx "$OTHER_VPC dev filone-tun1 scope link src $SITE" "$STATE/routes"
+
+# --- Keys --------------------------------------------------------------------
+
+new_case "keys from OpenBao"
+set_input VPN_PSK_SOURCE openbao
+set_input VPN_TUNNEL1_PSK_FILE
+set_input VPN_TUNNEL2_PSK_FILE
+mkdir -p "$ROOT/etc/fil-one"
+echo test-host-token >"$ROOT/etc/fil-one/bao-token"
+printf '%s' "$PSK1_VALUE" >"$STATE/bao-vpn-tunnel1_psk"
+printf '%s' "$PSK2_VALUE" >"$STATE/bao-vpn-tunnel2_psk"
+run_vpn
+check "succeeds" succeeded
+check "reads tunnel 1's key from filone/vpn" called '^docker exec .* bao kv get -mount=filone -field=tunnel1_psk vpn$'
+check "writes tunnel 1's key, base64-encoded" \
+  in_file "$SECRETS" "secret = 0s$(printf '%s' "$PSK1_VALUE" | base64)"
+check "writes tunnel 2's key, base64-encoded" \
+  in_file "$SECRETS" "secret = 0s$(printf '%s' "$PSK2_VALUE" | base64)"
+check "never shows a key" key_never_shown
+
+new_case "a key missing from OpenBao"
+set_input VPN_PSK_SOURCE openbao
+mkdir -p "$ROOT/etc/fil-one"
+echo test-host-token >"$ROOT/etc/fil-one/bao-token"
+printf '%s' "$PSK1_VALUE" >"$STATE/bao-vpn-tunnel1_psk"
+run_vpn
+check "exits non-zero" failed
+check "names the path" said "filone/vpn#tunnel2_psk"
+check "changes nothing" not_called "$CHANGES"
+check "never shows a key" key_never_shown
+
+new_case "a re-run from the installed keys"
+run_vpn
+check "provisions" succeeded
+set_input VPN_PSK_SOURCE
+set_input VPN_TUNNEL1_PSK_FILE
+set_input VPN_TUNNEL2_PSK_FILE
+rm "$CASE/keys/psk1" "$CASE/keys/psk2"
+: >"$STATE/calls"
+before="$(root_files)"
+run_vpn
+check "succeeds" succeeded
+check "changes nothing" not_called "$CHANGES"
+check "leaves every file as it was" test "$(root_files)" = "$before"
+check "never shows a key" key_never_shown
+set_input VPN_TUNNEL_MTU 1400
+run_vpn
+check "applies a change that is not a key" succeeded
+check "keeps the keys" in_file "$SECRETS" "secret = 0s$(printf '%s' "$PSK2_VALUE" | base64)"
+check "sets the new MTU" test "$(cat "$STATE/links/filone-tun1/mtu")" = 1400
+
+current="installed keys after a tunnel address change"
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "names the check 'pre-shared keys'" said "check 'pre-shared keys' failed"
+check "says the key belongs to the old address" said "$TUNNEL2"
+check "changes nothing" not_called "$CHANGES"
+check "never shows a key" key_never_shown
+
+new_case "key files with no key source"
+set_input VPN_PSK_SOURCE
+expect_input_failure inputs "VPN_PSK_SOURCE=files"
 
 new_case "health with pings off"
 set_input VPN_HEALTH_PING false

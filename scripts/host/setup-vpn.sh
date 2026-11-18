@@ -27,17 +27,20 @@
 #   VPN_BEHIND_NAT              true when that address is translated in front of
 #                               the host, false when it sits on the host
 #   VPN_SITE_PRIVATE_ADDRESS    the site's private /32, from central's site list
-#   VPN_VPC_CIDR                the VPC side of the tunnel, the only network
-#                               routed into it
 #   VPN_TUNNEL{1,2}_OUTSIDE_ADDRESS   AWS's two tunnel addresses
-#   VPN_TUNNEL{1,2}_INSIDE_LOCAL      this side's tunnel inside address, with
-#                                     its prefix (address/30)
-#   VPN_TUNNEL{1,2}_INSIDE_REMOTE     AWS's tunnel inside address
-#   VPN_PSK_SOURCE              files or openbao
+#   VPN_TUNNEL{1,2}_INSIDE_LOCAL      this side's inside address of the same
+#                                     tunnel, with its prefix (address/30)
+#   VPN_TUNNEL{1,2}_INSIDE_REMOTE     AWS's inside address of the same tunnel
+#   VPN_PSK_SOURCE              files or openbao; unset keeps the keys already
+#                               installed, for a re-run that changes no key
 #   VPN_TUNNEL{1,2}_PSK_FILE    with files: a root-only file holding the key
 #
 # and optionally:
 #
+#   VPN_VPC_CIDR                the VPC side of the tunnel, the only network
+#                               routed into it. Defaults to the one CIDR
+#                               central's VPN document states; another value
+#                               needs VPN_VPC_CIDR_OVERRIDE=true as well
 #   VPN_TUNNEL_MTU              default 1446, or 1438 behind NAT, the values
 #                               central's runbook gives for a 1,500-byte path
 #   VPN_DOCKER_NETWORKS         Docker networks whose containers may use the
@@ -45,7 +48,9 @@
 #   VPN_HEALTH_PING             true (default) or false; see "health" below
 #
 # With openbao, the keys are read from the node's OpenBao at
-# filone/vpn#tunnel1_psk and #tunnel2_psk. The keys are never taken from an
+# filone/vpn#tunnel1_psk and #tunnel2_psk. With no VPN_PSK_SOURCE, they are
+# read back from the secrets file a previous run wrote, and only while its
+# tunnel addresses are still the ones given. The keys are never taken from an
 # argument, never printed, and written only into the root-only (0600) file
 # strongSwan reads them from, /etc/swanctl/conf.d/filone-vpn-secrets.conf.
 #
@@ -94,6 +99,9 @@ CONF_KEYS="VPN_SITE_PUBLIC_ADDRESS VPN_BEHIND_NAT VPN_SITE_PRIVATE_ADDRESS VPN_V
 VPN_TUNNEL1_OUTSIDE_ADDRESS VPN_TUNNEL1_INSIDE_LOCAL VPN_TUNNEL1_INSIDE_REMOTE
 VPN_TUNNEL2_OUTSIDE_ADDRESS VPN_TUNNEL2_INSIDE_LOCAL VPN_TUNNEL2_INSIDE_REMOTE
 VPN_TUNNEL_MTU VPN_CLIENT_SOURCES VPN_HEALTH_PING"
+
+# The VPC's side of the tunnel, as central's docs/pandora-vpn.md states it.
+STATED_VPC_CIDR=10.20.192.0/18
 
 # The proposals central pins on both tunnels.
 IKE_PROPOSALS=aes256gcm16-prfsha384-ecp384-ecp521
@@ -149,8 +157,9 @@ is_private() { # RFC 1918
 
 # Install stdin at a path with a mode, unless the path already holds exactly
 # that. Says so when it writes, and returns 1 when it did not. The temporary
-# copy sits in TMPDIR or, when that is unset, the root-only secrets tmpfs, so a
-# key never lands on a disk on its way.
+# copy sits in TMPDIR when that is set, and otherwise in the root-only secrets
+# directory on /run's tmpfs, which keeps a key off the disk on its way. Under
+# systemd and from a root shell without TMPDIR, it is the latter.
 install_if_changed() { # install_if_changed <mode> <destination>
   local mode="$1" destination="$2" tmp
   tmp="$(umask 077 && mktemp "${TMPDIR:-$FILONE_SECRETS_DIR}/.vpn.XXXXXX")" || die "mktemp failed"
@@ -202,6 +211,15 @@ route_tunnel() {
     }'
 }
 
+# The route that loses to the tunnel's and refuses VPC traffic when the
+# tunnel's is gone.
+ensure_fallback_route() {
+  ip -4 route show exact "$VPN_VPC_CIDR" | grep -q "^unreachable .* metric $FALLBACK_METRIC" && return 0
+  echo "  restoring the fallback route for $VPN_VPC_CIDR"
+  ip route replace unreachable "$VPN_VPC_CIDR" metric "$FALLBACK_METRIC" ||
+    die "could not add the fallback route for $VPN_VPC_CIDR"
+}
+
 move_route() { # move_route <tunnel>
   ip route replace "$VPN_VPC_CIDR" dev "$(tunnel_link "$1")" src "$VPN_SITE_PRIVATE_ADDRESS" ||
     die "could not route $VPN_VPC_CIDR into tunnel $1"
@@ -214,9 +232,9 @@ sa_up() {
   grep -q "^tunnel$1: .*ESTABLISHED" <<<"$sas" && grep -q "^  tunnel$1: .*INSTALLED" <<<"$sas"
 }
 
-# Whether AWS's inside address answers through tunnel n. The inside /30 is the
-# xfrm interface's own connected route, so this tests that tunnel whichever one
-# the VPC route points at.
+# Whether AWS's inside address answers through tunnel n: three pings, of which
+# one reply is enough. The inside /30 is the xfrm interface's own connected
+# route, so this tests that tunnel whichever one the VPC route points at.
 probe_answers() {
   local remote="VPN_TUNNEL$1_INSIDE_REMOTE"
   ping -n -q -c 3 -W 2 -I "$(tunnel_link "$1")" "${!remote}" >/dev/null 2>&1
@@ -324,7 +342,9 @@ bring_up() {
     ip link set dev "$SITE_LINK" up || die "could not bring up $SITE_LINK"
   ensure_address "$SITE_LINK" "$VPN_SITE_PRIVATE_ADDRESS/32"
 
-  install -d -m 0700 -o root -g root /run/fil-one
+  # At boot nothing else may have created the secrets directory yet; the
+  # temporary copy of the ruleset goes there.
+  install -d -m 0700 -o root -g root /run/fil-one "$FILONE_SECRETS_DIR"
   nft_ruleset | install_if_changed 0600 "$NFT_RULESET" && ruleset_changed=1
   nft list table ip "$NFT_TABLE" >/dev/null 2>&1 && table_present=1
   if [ "$ruleset_changed" = 1 ] || [ "$table_present" = 0 ]; then
@@ -332,10 +352,7 @@ bring_up() {
     nft -f "$NFT_RULESET" || die "nft refused $NFT_RULESET"
   fi
 
-  if ! ip -4 route show exact "$VPN_VPC_CIDR" | grep -q "^unreachable .* metric $FALLBACK_METRIC"; then
-    ip route replace unreachable "$VPN_VPC_CIDR" metric "$FALLBACK_METRIC" ||
-      die "could not add the fallback route for $VPN_VPC_CIDR"
-  fi
+  ensure_fallback_route
   # A route already in a tunnel stays where the health check put it.
   if [ -z "$(route_tunnel)" ]; then
     echo "  routing $VPN_VPC_CIDR into tunnel 1"
@@ -347,6 +364,7 @@ bring_up() {
 
 health() {
   local active other
+  ensure_fallback_route
   active="$(route_tunnel)"
   [ -n "$active" ] || { move_route 1; active=1; echo "the VPC route was missing; put it in tunnel 1"; }
   other=$((3 - active))
@@ -362,13 +380,18 @@ health() {
   return 1
 }
 
+# One line per tunnel, with the outside address and the two inside addresses it
+# was given together, so a pair set against the wrong tunnel shows next to
+# AWS's own listing.
 status() {
-  local n active link sa probe outside status=0
+  local n active link sa probe outside inside_local inside_remote status=0
   active="$(route_tunnel)"
   echo "VPN to $VPN_VPC_CIDR from $VPN_SITE_PRIVATE_ADDRESS (identity $VPN_SITE_PUBLIC_ADDRESS)"
   for n in 1 2; do
     link="$(tunnel_link "$n")"
     outside="VPN_TUNNEL${n}_OUTSIDE_ADDRESS"
+    inside_local="VPN_TUNNEL${n}_INSIDE_LOCAL"
+    inside_remote="VPN_TUNNEL${n}_INSIDE_REMOTE"
     if sa_up "$n"; then sa="established"; else sa="down"; fi
     if [ "$VPN_HEALTH_PING" = false ]; then
       probe="not probed"
@@ -377,7 +400,8 @@ status() {
     else
       probe="inside address does not answer"
     fi
-    printf '  tunnel %s  %-15s %-11s %s, %s%s\n' "$n" "${!outside}" "$link" "$sa" "$probe" \
+    printf '  tunnel %s  outside %s  inside %s to %s  %s: %s, %s%s\n' "$n" "${!outside}" \
+      "${!inside_local}" "${!inside_remote}" "$link" "$sa" "$probe" \
       "$([ "$active" = "$n" ] && echo ", carries the route")"
   done
   if [ -z "$active" ]; then
@@ -431,6 +455,7 @@ for name in VPN_SITE_PUBLIC_ADDRESS VPN_SITE_PRIVATE_ADDRESS VPN_TUNNEL1_OUTSIDE
   [ "$name" != VPN_SITE_PRIVATE_ADDRESS ] || VPN_SITE_PRIVATE_ADDRESS="${VPN_SITE_PRIVATE_ADDRESS%/32}"
   require_address "$name"
 done
+: "${VPN_VPC_CIDR:=$STATED_VPC_CIDR}"
 for name in VPN_VPC_CIDR VPN_TUNNEL1_INSIDE_LOCAL VPN_TUNNEL2_INSIDE_LOCAL; do
   [ -n "${!name:-}" ] || fail inputs "set $name"
   is_cidr "${!name}" || fail inputs "$name is '${!name}', not an IPv4 address with a prefix"
@@ -455,6 +480,9 @@ fi
 [ "${VPN_VPC_CIDR#*/}" -ge 8 ] || fail inputs "VPN_VPC_CIDR $VPN_VPC_CIDR is wider than a /8"
 { is_network "$VPN_VPC_CIDR" && is_private "${VPN_VPC_CIDR%/*}"; } ||
   fail inputs "VPN_VPC_CIDR $VPN_VPC_CIDR is not a private network address with its host bits clear"
+[ "$VPN_VPC_CIDR" = "$STATED_VPC_CIDR" ] || [ "${VPN_VPC_CIDR_OVERRIDE:-}" = true ] ||
+  fail inputs "VPN_VPC_CIDR is $VPN_VPC_CIDR, but central's VPN document states $STATED_VPC_CIDR.
+       Leave VPN_VPC_CIDR unset, or set VPN_VPC_CIDR_OVERRIDE=true to route another CIDR"
 is_private "$VPN_SITE_PRIVATE_ADDRESS" ||
   fail inputs "VPN_SITE_PRIVATE_ADDRESS $VPN_SITE_PRIVATE_ADDRESS is not a private address"
 ! in_network "$VPN_SITE_PRIVATE_ADDRESS" "$VPN_VPC_CIDR" ||
@@ -481,13 +509,39 @@ case "${VPN_PSK_SOURCE:-}" in
     done
     ;;
   openbao)
-    filone_init
+    # bao_get needs only the OpenBao container and the host token, not the
+    # node's checkout configuration.
     for n in 1 2; do
       value="$(bao_get vpn "tunnel${n}_psk")" || fail "pre-shared keys" "cannot read $FILONE_BAO_MOUNT/vpn#tunnel${n}_psk"
       printf -v "PSK$n" '%s' "$value"
     done
     ;;
-  "") fail inputs "set VPN_PSK_SOURCE to files or openbao" ;;
+  "")
+    for n in 1 2; do
+      file_var="VPN_TUNNEL${n}_PSK_FILE"
+      [ -z "${!file_var:-}" ] ||
+        fail inputs "$file_var is set but VPN_PSK_SOURCE is not; set VPN_PSK_SOURCE=files to install new keys"
+    done
+    # The keys a previous run installed, while they still belong to the same
+    # two tunnel addresses.
+    installed="$(cat "$SWANCTL_SECRETS" 2>/dev/null)" ||
+      fail inputs "set VPN_PSK_SOURCE to files or openbao; this node has no installed keys to keep"
+    for n in 1 2; do
+      outside="VPN_TUNNEL${n}_OUTSIDE_ADDRESS"
+      block="$(awk -v name="ike-tunnel$n" '$1 == name && $2 == "{" { on = 1; next } on && $1 == "}" { exit } on' \
+        <<<"$installed")"
+      id1="$(awk '$1 == "id-1" { print $3 }' <<<"$block")"
+      id2="$(awk '$1 == "id-2" { print $3 }' <<<"$block")"
+      [ "$id1" = "$VPN_SITE_PUBLIC_ADDRESS" ] && [ "$id2" = "${!outside}" ] ||
+        fail "pre-shared keys" "tunnel $n's installed key belongs to ${id2:-no address} from ${id1:-no address},
+       not ${!outside} from $VPN_SITE_PUBLIC_ADDRESS. Give the new keys with VPN_PSK_SOURCE=files"
+      value="$(awk '$1 == "secret" { print $3 }' <<<"$block")"
+      value="$(base64 -d <<<"${value#0s}" 2>/dev/null)" ||
+        fail "pre-shared keys" "tunnel $n's installed key in $SWANCTL_SECRETS does not decode"
+      printf -v "PSK$n" '%s' "$value"
+    done
+    unset installed block
+    ;;
   *) fail inputs "VPN_PSK_SOURCE is '$VPN_PSK_SOURCE'; it must be files or openbao" ;;
 esac
 unset value
