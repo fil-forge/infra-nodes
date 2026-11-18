@@ -196,7 +196,12 @@ apply() {
   nft_ruleset | install_if_changed "$NFT_RULESET" && changed=1
   if [ "$changed" = 1 ] || ! table_loaded; then
     echo "  loading nftables table $NFT_TABLE"
-    nft -f "$NFT_RULESET" || die "nft refused $NFT_RULESET; the table loaded before stays as it was"
+    # The file on disk has to match the loaded table, or the next run would
+    # find nothing changed and load nothing. Removing it makes that run load.
+    if ! nft -f "$NFT_RULESET"; then
+      rm -f "$NFT_RULESET"
+      die "nft refused the ruleset; the table loaded before stays as it was"
+    fi
   else
     echo "  nftables table $NFT_TABLE unchanged"
   fi

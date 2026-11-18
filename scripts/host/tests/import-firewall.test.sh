@@ -311,6 +311,20 @@ check "fails" failed
 check "says so" said "nft refused"
 check "loads nothing" nothing_loaded
 
+new_case "nft refuses a changed list once"
+clients "$CLIENT1" "$CLIENT3"
+run_firewall
+clients "$CLIENT3"
+touch "$STATE/nft-refuses"
+run_firewall
+check "fails" failed
+check "the removed address is still in the loaded table" loaded_has "    elements = { $CLIENT1, $CLIENT3 }"
+rm -f "$STATE/nft-refuses"
+run_firewall
+check "the next run succeeds" succeeded
+check "the next run loads the new list" test "$(loads)" -eq 3
+check "the removed address is no longer admitted" loaded_lacks "$CLIENT1"
+
 new_case "an unknown command"
 run_firewall open
 check "fails" failed
