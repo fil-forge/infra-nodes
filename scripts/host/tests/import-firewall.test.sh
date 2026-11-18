@@ -349,6 +349,26 @@ run_firewall status
 check "succeeds" succeeded
 check "says the port is closed" printed "closed to every address"
 
+new_case "status after an edit not yet applied"
+clients "$CLIENT1" "$CLIENT3"
+run_firewall
+clients "$CLIENT3"
+run_firewall status
+check "fails" failed
+check "names what the loaded table admits" printed "admitted to the import service's port: $CLIENT1 $CLIENT3"
+check "does not report the edited list as admitted" eval '! grep -qF "port: $CLIENT3 (" "$CASE/stdout"'
+check "says the list has not been applied" printed "has not been applied"
+check "loads nothing" test "$(loads)" -eq 1
+
+new_case "status after an edit the script would refuse"
+clients "$CLIENT1"
+run_firewall
+clients "not-an-address"
+run_firewall status
+check "fails" failed
+check "names what the loaded table admits" printed "admitted to the import service's port: $CLIENT1"
+check "says why the list is refused" said "$CLIENTS_FILE line 1"
+
 new_case "status with the table gone"
 clients "$CLIENT1"
 run_firewall

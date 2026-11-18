@@ -2,7 +2,8 @@
 # The host firewall in front of the import service's port.
 #
 #   import-firewall.sh           apply the client list in /etc/fil-one/import-clients
-#   import-firewall.sh status    say what is admitted, and fail when the table is gone
+#   import-firewall.sh status    say what the loaded table admits, and fail when the
+#                                table is gone or the list has changed since it loaded
 #
 # The import service publishes its port through Docker, and UFW does not filter
 # a port Docker publishes. So the rule is an nftables table of the node's own,
@@ -181,11 +182,11 @@ install_if_changed() { # install_if_changed <destination>
 
 table_loaded() { nft list table ip "$NFT_TABLE" >/dev/null 2>&1; }
 
-describe_clients() {
-  if [ -z "$CLIENTS" ]; then
+describe_clients() { # describe_clients <space-separated clients>
+  if [ -z "$1" ]; then
     echo "the client list is empty: the import service's port is closed to every address"
   else
-    echo "admitted to the import service's port: $CLIENTS"
+    echo "admitted to the import service's port: $1"
   fi
 }
 
@@ -206,11 +207,18 @@ apply() {
     echo "  nftables table $NFT_TABLE unchanged"
   fi
   # On stderr when nothing is admitted, so it shows in the journal as well.
-  if [ -z "$CLIENTS" ]; then describe_clients >&2; else echo "  $(describe_clients)"; fi
+  if [ -z "$CLIENTS" ]; then
+    describe_clients "" >&2
+  else
+    echo "  $(describe_clients "$CLIENTS")"
+  fi
 }
 
+# What the loaded table admits is read from the ruleset file, which apply keeps
+# equal to the last load that succeeded. The list is then checked against it,
+# so an edit not yet applied is reported as such and not as admitted.
 status() {
-  load_clients
+  local ruleset loaded
   if table_loaded; then
     echo "nftables table $NFT_TABLE loaded"
   else
@@ -218,7 +226,19 @@ status() {
     echo "Run $(basename "$0") as root to load it."
     return 1
   fi
-  echo "$(describe_clients) (from $CLIENTS_FILE)"
+  if ! ruleset="$(cat "$NFT_RULESET" 2>/dev/null)"; then
+    echo "$NFT_RULESET is missing, so which addresses the table admits is unknown."
+    echo "Run $(basename "$0") as root to load the list again."
+    return 1
+  fi
+  loaded="$(sed -n 's/^    elements = { \(.*\) }$/\1/p' <<<"$ruleset")"
+  describe_clients "${loaded//, / }"
+  if [ "$( (load_clients && nft_ruleset) 2>/dev/null)" != "$ruleset" ]; then
+    # Again, for the reason a refused list gives.
+    (load_clients) || true
+    echo "$CLIENTS_FILE has changed and has not been applied. Run $(basename "$0") as root to apply it."
+    return 1
+  fi
 }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
