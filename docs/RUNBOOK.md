@@ -960,6 +960,116 @@ zfs list -o name,quota,reservation,mounted -r data
 systemctl is-active docker.service
 ```
 
+##### The database VPN
+
+The node reaches its database in central's VPC over two IPsec tunnels to an AWS Site-to-Site VPN.
+Central's half, and what the site must provide (a static public IPv4 address, UDP 500, UDP 4500
+and ESP open to the two tunnel addresses, a 1,500-byte path MTU), are in infra-central's
+[VPN document](https://github.com/fil-forge/infra-central/blob/main/docs/pandora-vpn.md).
+`scripts/host/setup-vpn.sh` sets up this node's half: strongSwan with both tunnels up, one xfrm
+interface per tunnel (`filone-tun1`, `filone-tun2`), the site's private /32 on the dummy interface
+`filone-site`, a route for the VPC's CIDR alone, and the nftables table `filone_vpn`. A health
+check every 20 seconds moves the route to the other tunnel when the one carrying it goes down.
+
+Install strongSwan first. On Debian 12 and Ubuntu 24.04 the AES-GCM and DH group 20 and 21
+support is in a recommended package that `--no-install-recommends` leaves out, so name it:
+
+```sh
+apt-get install charon-systemd strongswan-swanctl libstrongswan-standard-plugins nftables
+```
+
+Every site-specific value is an input at provisioning time, because this repository is public.
+Central's `scripts/fetch-pandora-vpn-secrets.sh --stage prod --site <site> --out <dir>`, run on a
+laptop with the stage's AWS credentials, writes most of them to `<dir>/tunnels.env` and the two
+keys to `<dir>/psk1` and `<dir>/psk2`. Copy `psk1` and `psk2` to the host's `/run` tmpfs, through
+the jump host, readable by root only.
+
+| Input | Where it comes from |
+|---|---|
+| `VPN_SITE_PUBLIC_ADDRESS` | `CUSTOMER_GATEWAY_IP` in `tunnels.env`; the site's `public_ip` in central's `pandora_sites` |
+| `VPN_BEHIND_NAT` | `false` when that address is on the host, `true` when the provider translates it in front of the host. The script checks it against the host's addresses |
+| `VPN_SITE_PRIVATE_ADDRESS` | `SITE_PRIVATE_IP` in `tunnels.env`; the site's `private_ip` in `pandora_sites` |
+| `VPN_VPC_CIDR` | the VPC's side of the tunnel, as central's VPN document states it |
+| `VPN_TUNNEL1_OUTSIDE_ADDRESS`, `VPN_TUNNEL2_OUTSIDE_ADDRESS` | `TUNNEL1_ADDRESS` and `TUNNEL2_ADDRESS` in `tunnels.env` |
+| `VPN_TUNNEL{1,2}_INSIDE_LOCAL`, `VPN_TUNNEL{1,2}_INSIDE_REMOTE` | the customer gateway's and the virtual private gateway's inside address of each tunnel, in the VPN connection's `CustomerGatewayConfiguration` from `aws ec2 describe-vpn-connections`. The local one takes its prefix, `/30` |
+| `VPN_PSK_SOURCE`, `VPN_TUNNEL1_PSK_FILE`, `VPN_TUNNEL2_PSK_FILE` | `files` and the paths of `psk1` and `psk2`; tunnel 1's key belongs to `TUNNEL1_ADDRESS`. Or `openbao`, once the node's OpenBao runs, with the keys stored at `filone/vpn`, fields `tunnel1_psk` and `tunnel2_psk` |
+
+Three more are optional: `VPN_TUNNEL_MTU` (1,446 bytes, or 1,438 behind NAT, unless the site's
+path MTU is below 1,500), `VPN_DOCKER_NETWORKS` (the Docker networks whose containers may use the
+tunnel, `filone` by default) and `VPN_HEALTH_PING` (see below).
+
+With the values in an environment file of your own, kept off the repository, run as root:
+
+```sh
+set -a; . /run/vpn-inputs.env; set +a
+scripts/host/setup-vpn.sh
+```
+
+The script checks every input, strongSwan's unit, UFW, IP forwarding, the public address against
+the host's addresses, any existing route for the VPC's CIDR and the subnets of the Docker networks
+before it changes anything. A failed check names itself and changes nothing. It never prints a key.
+It then writes `/etc/fil-one/vpn.conf`, the strongSwan connections and secrets under
+`/etc/swanctl/conf.d/` (both 0600), admits UDP 500 and 4500 and ESP from the two tunnel addresses
+in UFW, and no other address, creates the interfaces, the route and the nftables table, restarts
+strongSwan and enables `filone-vpn.service`, which recreates the interfaces after a boot, and
+`filone-vpn-health.timer`. A second run with the same inputs changes nothing. Delete `psk1`,
+`psk2` and the inputs file afterwards: strongSwan reads its copy of the keys from
+`/etc/swanctl/conf.d/filone-vpn-secrets.conf`, on the OS disk like the node's other tokens.
+
+Check the tunnels:
+
+```sh
+scripts/host/setup-vpn.sh status
+```
+
+It lists each tunnel's IKE and child SA state, whether AWS's inside address answers through it,
+which tunnel carries the route and whether the nftables table is loaded. It exits non-zero when no
+working tunnel carries the route. Then check the path to the database as central's VPN document
+describes under "Checking the path". Central's two tunnel alerts stay paused until this site runs
+strongSwan; the same document says how to unpause them. Do not run central's host check while this
+strongSwan runs: two IKE initiators from one address compete for the same tunnels.
+
+How container traffic reaches the database. Docker masquerades traffic leaving its bridges, which
+would give a container's connection whatever address the kernel picks, and the VPN admits only the
+site's /32. The `filone_vpn` table therefore source-NATs everything routed into a tunnel towards
+the VPC to the /32, in a NAT chain that runs just before Docker's (priority `srcnat - 10`). The
+first NAT chain that maps a connection decides its source, so Docker's masquerade leaves it alone.
+The table's forward chain lets only the subnets of `VPN_DOCKER_NETWORKS` into the tunnels, only
+towards the VPC, and lets nothing in the VPC open a connection to the node. It also clamps the TCP MSS
+to the tunnel MTU less 40 in both directions. The table belongs to the node: Docker and UFW never
+flush it, and nothing is added to their chains. The host's own processes use the /32 as the
+route's source address.
+
+The health check calls a tunnel healthy when its child SA is installed and AWS's inside address
+answers three pings through it. When the tunnel carrying the route is not healthy and the other
+is, it moves the route, and says so in the journal of `filone-vpn-health.service`. With both down
+it leaves the route and fails. If AWS's inside address turns out not to answer pings, set
+`VPN_HEALTH_PING=false` and re-run the script; the check then goes on SA state alone, which notices
+a dead tunnel only when strongSwan's dead peer detection gives up on it.
+
+A change of tunnel addresses or keys, after central's platform root is destroyed and applied
+again, is a re-run with the new values. It removes the UFW rules for the old addresses and restarts
+strongSwan, which takes both tunnels down for a few seconds. Reconcile never changes the tunnel.
+
+To take the VPN off the node:
+
+```sh
+systemctl disable --now filone-vpn-health.timer filone-vpn.service strongswan.service
+nft delete table ip filone_vpn
+ip link del filone-tun1; ip link del filone-tun2; ip link del filone-site
+ip route del unreachable <VPC CIDR> metric 4294967295
+rm /etc/fil-one/vpn.conf /etc/swanctl/conf.d/filone-vpn*.conf /etc/strongswan.d/zz-filone-vpn.conf
+ufw status numbered   # then `ufw delete <n>` for each rule commented filone-vpn
+```
+
+What has not been run against a real gateway. The script and its units are tested only against
+stubs (`scripts/host/tests/setup-vpn.test.sh`). Not yet exercised: IKE and ESP negotiation with
+AWS using these proposals, NAT traversal, the rendered swanctl files as strongSwan parses them, the
+nftables table as `nft` parses it, the source NAT and MSS clamp on real container traffic, UFW's
+handling of the `proto esp` rules, whether AWS's inside address answers pings, failover with
+real tunnels, and the boot unit across a real reboot. The first run on the node is the first test of
+all of these, so run it with a session open and with central's tunnel alerts still paused.
+
 ### 4. The unseal token
 
 Central mints it, and only now: the token is bound to the node's address. For the appliance that is

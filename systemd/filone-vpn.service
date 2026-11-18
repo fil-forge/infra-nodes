@@ -1,0 +1,22 @@
+[Unit]
+# Recreate the node's half of the database VPN after a boot: the two xfrm
+# interfaces, the site's private /32, the route into the tunnel and the
+# nftables table, from /etc/fil-one/vpn.conf. strongSwan brings the tunnels up
+# itself. Enabled by scripts/host/setup-vpn.sh, on a node that has a VPN only.
+Description=FilOne node database VPN interfaces and routes
+ConditionPathExists=/etc/fil-one/vpn.conf
+After=network-online.target
+Wants=network-online.target
+Before=strongswan.service filone-vpn-health.timer
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The checkout lives where /etc/fil-one/node.conf says. systemd will not take a
+# variable as the program itself, hence bash in front.
+EnvironmentFile=/etc/fil-one/node.conf
+ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/setup-vpn.sh up
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
