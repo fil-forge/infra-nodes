@@ -268,7 +268,8 @@ fi
 
 # Catch a service added to compose.yml and remove one deleted from it, without
 # recreating any of the services above: whether they restart was decided, and
-# gated, further up. Bucket Intelligence's two are left out; a container whose
+# gated, further up. Bucket Intelligence's two and the import service are left
+# out, since their own scripts deploy them below; a container whose
 # service is gone from compose.yml is still removed. --no-deps keeps a Piri
 # left out above from being started as a dependency.
 # shellcheck disable=SC2086 # one service name per word
