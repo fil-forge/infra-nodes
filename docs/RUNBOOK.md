@@ -1024,6 +1024,10 @@ scripts/host/provision-apps.sh
 A second onboarding run at central is safe. It performs only what is missing and returns the same
 delegation byte for byte, so a node that lost its copy can ask for it again.
 
+A node whose reconcile timer already runs before onboarding finishes keeps its platform deployed
+and leaves the apps alone. Each pass logs "not deploying the apps: OpenBao has no hilt proof" and
+still succeeds. The first pass after `store-hilt-proof.sh` deploys the apps with no further step.
+
 Each Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means
 that Piri's DID is not on the delegator's allow list, which means its onboarding did not complete.
 
@@ -1517,7 +1521,8 @@ replaces it. A store restored from a snapshot that stays sealed is missing one o
 [a restore needs](runbook/restore-openbao-from-snapshot.md#what-a-restore-needs).
 
 **`deploy-apps.sh` says OpenBao has no hilt-to-ingot delegation.** Onboarding has not finished. Run
-`onboarding-request.sh` and install what central returns with `store-hilt-proof.sh`.
+`onboarding-request.sh` and install what central returns with `store-hilt-proof.sh`. A reconcile
+pass in the same state logs "not deploying the apps" instead and succeeds.
 
 **`deploy-apps.sh` or a reconcile pass says OpenBao has no token for the region wrap key.** The node
 predates the region key, or its token was revoked. Run `provision-regionkey.sh`. Until it runs,

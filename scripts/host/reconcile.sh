@@ -155,6 +155,17 @@ renew_bao_token
 # deploy_last_success_timestamp.
 renew_ingot_regionkey_token
 
+# A node that is not onboarded yet has no hilt-to-ingot delegation, and
+# deploy-apps.sh refuses to run without one. Leave the apps alone until
+# store-hilt-proof.sh stores it; with no apps deploy since boot, the next pass
+# deploys them. After the renewals, which stop the pass on a sealed or
+# unreachable OpenBao, and only when Ingot's own path reads, so a failed read is
+# never taken for a missing proof. retry_rag is already 0 whenever this skips.
+if [ "$deploy_apps" -eq 1 ] && bao_path_exists ingot && ! bao_has ingot hilt_proof; then
+  echo "  not deploying the apps: OpenBao has no hilt proof, so the node is not onboarded yet"
+  deploy_apps=0
+fi
+
 # --- 5. Deploy --------------------------------------------------------------
 
 # From the checkout, not from the copy this script re-exec'd out of. A commit
