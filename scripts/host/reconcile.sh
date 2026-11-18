@@ -198,4 +198,5 @@ stamp_deploy_success reconcile
 # does not ask for a snapshot itself, goes up within five minutes rather than
 # at the next daily run.
 request_openbao_snapshot
+request_postgres_backup
 echo "=== reconcile complete ==="

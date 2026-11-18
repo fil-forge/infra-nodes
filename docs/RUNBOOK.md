@@ -1308,12 +1308,18 @@ lost store back from one of these snapshots, checks a snapshot without downtime,
 quarterly restore drill.
 
 **The Postgres WAL archive and base backups.** On a node that takes backups and runs the Debian
-Postgres image, Postgres archives every WAL segment through WAL-G to `<region>/postgres/wal_005/` in
-the backup bucket, and cuts a segment at least once a minute while anything writes.
-`filone-postgres-backup.timer` adds a base backup to `<region>/postgres/basebackups_005/` once a day.
-A restore to a point in time needs a base backup from before that point and every segment after it,
-so the archive reaches back as far as the oldest base backup the bucket still holds: 35 days on
-staging, after which the bucket expires base backups and segments alike.
+Postgres image, Postgres archives every WAL segment through WAL-G to
+`<region>/postgres/<system identifier>/wal_005/` in the backup bucket, and cuts a segment at least
+once a minute while anything writes. `filone-postgres-backup.timer` adds a base backup to
+`<region>/postgres/<system identifier>/basebackups_005/` once a day. A restore to a point in time
+needs a base backup from before that point and every segment after it, so the archive reaches back
+as far as the oldest base backup the bucket still holds: 35 days on staging, after which the bucket
+expires base backups and segments alike.
+
+The system identifier is the cluster's, chosen by `initdb`, and `SELECT system_identifier FROM
+pg_control_system()` prints it. A cluster initialised again, on a node rebuilt after losing its
+control volume or migrated again, starts its WAL at the same segment names as the one before it, and
+archives under a directory of its own, so the earlier cluster's archive stays whole for a restore.
 
 - **Archiving is on** where the node's `platform/versions.env` sets `POSTGRES_ARCHIVE_MODE=on`,
   beside the Debian image it needs; going back to Alpine takes it off with the image.
@@ -1323,17 +1329,18 @@ staging, after which the bucket expires base backups and segments alike.
   installed by `install-tools.sh`, which the deploys never run, under
   `/usr/local/lib/fil-one/wal-g/<version>/`. The container mounts that directory read-only, and
   `archive_command` names the pinned version. Run `install-tools.sh` as soon as a new pin reaches
-  the checkout. Until it has run, the deploys warn, Postgres keeps every segment in `pg_wal`, and
-  "Appliance Postgres WAL archive is failing" fires about 25 minutes later; nothing else stops. The
-  deploy that takes the new pin recreates Postgres to run it. Each version stays installed, since
+  the checkout. Until it has run, the deploys warn, Postgres keeps every segment in `pg_wal`, base
+  backups fail, and "Appliance Postgres WAL archive is failing" fires about 25 minutes later; the
+  platform and the apps carry on. The deploy that takes the new pin recreates Postgres to run it. Each version stays installed, since
   the running Postgres uses its own until then; remove old ones by hand.
 - **Its config** is rendered from `filone/backup-target` to `/run/fil-one/walg/walg.json` on every
   reconcile pass and every platform deploy, readable only by the container's `postgres` user (uid
   999). A failure to render it warns and lets the deploys go on. Postgres starts without it after
   a reboot; archiving fails, keeping the segments in `pg_wal`, until the first pass renders it, and
   then catches up.
-- **The timer** is enabled by the first platform deploy that runs with archiving on, which also
-  starts the first base backup. To take one now, as root:
+- **The timer** is enabled by the first platform deploy that runs with archiving on. Until the
+  running cluster has a base backup of its own, every reconcile pass starts one, so the first
+  follows within a pass of WAL-G being installed. To take one now, as root:
 
   ```sh
   scripts/host/backup-postgres.sh
@@ -1349,8 +1356,11 @@ staging, after which the bucket expires base backups and segments alike.
 Each pass stamps the archiver's state and each base backup its time, described in
 [observability.md](observability.md#the-postgres-wal-archive). WAL-G's uploads carry `Content-MD5`,
 which the bucket's Object Lock requires. WAL-G otherwise only writes, but for the timeline history
-files it reads under the node's own prefix, which the backup key may read; it can't delete or
-overwrite anything.
+files it reads under the node's own prefix, which the backup key may read. The key can't delete a
+backup or change a locked version, but a put to an existing key adds a newer current version, so a
+restore after a leaked key reads the versions written before the leak; central's
+[backup target decision](https://github.com/fil-forge/infra-central/blob/main/docs/decisions/2026-11-appliance-backup-target.md)
+says more.
 
 **Give a node a new host token.** The host token is the OpenBao token every deploy, reconcile pass
 and snapshot runs as, under the `filone-host` policy. A node provisioned before snapshots existed
@@ -1529,7 +1539,10 @@ new one otherwise), make sure Postgres runs on it, and go on from the case above
 
 To go back, revert the node's `platform/versions.env` and `platform/compose.yml`, not the whole
 change, which would also remove the guards. The next deploy starts the old image on the old
-directory, with the data as it was when the move began, so everything written since is lost. Once
+directory, with the data as it was when the move began, so everything written since is lost. On a
+node that takes backups, the old image cannot archive, so also run `systemctl disable --now
+filone-postgres-backup.timer`; "Appliance Postgres base backup is stale" fires until the node moves
+again. Once
 the old cluster has run, the migration stops counting, so merging the move again later waits for a
 fresh migration, which carries the old cluster's newer data across and moves the stale copy aside.
 After the old directory is removed there is no way back but a restore, and the guard refuses a
@@ -1618,10 +1631,13 @@ firing shows in `systemctl list-timers filone-openbao-snapshot.timer`.
 **The Postgres base backup is stale.** The last base backup to reach the bucket is more than a day
 old. The unit's journal has the reason: `{service_name="appliance-staging-eu-central-3-host",
 unit="filone-postgres-backup.service"}` in Loki, or `journalctl -u filone-postgres-backup.service`
-on the host. An age of centuries means none has run: the timer is enabled by the first platform
-deploy with archiving on, so check that one finished (`systemctl list-timers
-filone-postgres-backup.timer`). A key or bucket error reads more plainly from
-`check-backup-target.sh`. Until a base backup lands, the WAL archive cannot be restored from.
+on the host. An age of centuries means none has finished yet. Every reconcile pass starts one
+until the running cluster has its first, so the journal shows each attempt: `WAL-G ... is not
+installed` means run `install-tools.sh`, and `archive_mode=off` means the node's `versions.env`
+does not turn archiving on. With no attempts at all, check that the timer is enabled
+(`systemctl list-timers filone-postgres-backup.timer`); the first platform deploy with archiving on
+enables it. A key or bucket error reads more plainly from `check-backup-target.sh`. Until a base
+backup lands, the WAL archive cannot be restored from.
 
 **The Postgres WAL archive is failing.** A WAL segment has waited more than 15 minutes in `pg_wal`
 because WAL-G has not uploaded it. Postgres keeps every one and retries, so nothing is lost yet, but

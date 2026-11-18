@@ -52,22 +52,47 @@ warn_unless_walg_installed() {
     "so Postgres cannot archive WAL. Run scripts/host/install-tools.sh."
 }
 
+# The system identifier of the node's Postgres cluster: initdb picks it, and it
+# stays with the cluster for life, through restarts, restores and a standby's
+# promotion. Read from the first eight bytes of global/pg_control, in the host's
+# byte order as Postgres wrote it, so it answers while Postgres is down too.
+# The directory is the running container's, else the one compose.yml mounts.
+postgres_system_identifier() {
+  local dir sysid
+  dir="$(postgres_container_data_dir 2>/dev/null || true)"
+  [ -n "$dir" ] || dir="$(postgres_data_dir)" || return 1
+  [ -r "$dir/global/pg_control" ] || return 1
+  sysid="$(od -An -t u8 -N8 "$dir/global/pg_control" | tr -d ' ')" || return 1
+  [[ "$sysid" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$sysid"
+}
+
 # Render WAL-G's config from filone/backup-target, where provision-backups.sh
 # stored the key and its target, into the tmpfs directory compose.yml binds.
 # The archive goes under the key prefix's postgres/, the place central's
-# writer policy gives it. Readable by the container's postgres user alone.
+# writer policy gives it, in a directory named for the cluster's system
+# identifier. A cluster initialised again, on a node rebuilt after losing its
+# control volume or migrated again, starts its WAL at the same segment names
+# as the one before it; under one prefix its uploads would become the current
+# versions of the old cluster's segments, and a restore of the old cluster
+# would read them. Readable by the container's postgres user alone.
 write_walg_config() {
-  local content
+  local content sysid
   load_backup_target
+  [ -n "$backup_bucket" ] && [ -n "$backup_aws_region" ] ||
+    die "$FILONE_BAO_MOUNT/$FILONE_BACKUP_PATH has an empty bucket or region"
+  sysid="$(postgres_system_identifier)" ||
+    die "could not read the Postgres cluster's system identifier, which names its archive;
+       Postgres may not have initialised its cluster yet"
   install -d -m 0755 -o root -g root "$FILONE_WALG_DIR"
   # On stdin, so the secret is never in an argv.
-  content="$(printf '%s\n' "$backup_bucket" "$backup_key_prefix" "$backup_aws_region" \
+  content="$(printf '%s\n' "$backup_bucket" "$backup_key_prefix" "$sysid" "$backup_aws_region" \
     "$backup_access_key_id" "$backup_secret_access_key" | python3 -c '
 import json, sys
 
-bucket, prefix, region, key_id, secret = sys.stdin.read().split("\n")[:5]
+bucket, prefix, sysid, region, key_id, secret = sys.stdin.read().split("\n")[:6]
 json.dump({
-    "WALG_S3_PREFIX": "s3://%s/%spostgres" % (bucket, prefix),
+    "WALG_S3_PREFIX": "s3://%s/%spostgres/%s" % (bucket, prefix, sysid),
     "AWS_REGION": region,
     "AWS_ACCESS_KEY_ID": key_id,
     "AWS_SECRET_ACCESS_KEY": secret,
@@ -85,27 +110,60 @@ print()
     die "could not hand $FILONE_WALG_CONFIG to the Postgres container's user"
 }
 
-# Enable the daily base backup, and take the first one now, once the platform
-# runs with archiving on. WAL is no use for a restore without a base backup to
-# replay it onto, so the first one does not wait for the timer.
-start_postgres_backups() {
-  node_takes_backups || return 0
-  systemctl is-enabled --quiet "$FILONE_POSTGRES_BACKUP_TIMER" 2>/dev/null && return 0
-
-  # The unit may not be on the box yet when this runs by hand, before a
-  # reconcile pass has installed the checkout's units.
-  sync_systemd_units
-  systemctl enable --now "$FILONE_POSTGRES_BACKUP_TIMER" >/dev/null ||
-    die "could not enable $FILONE_POSTGRES_BACKUP_TIMER"
-  echo "  $FILONE_POSTGRES_BACKUP_TIMER enabled; taking the first base backup now"
-  systemctl start --no-block "$FILONE_POSTGRES_BACKUP_SERVICE" ||
-    echo "  WARNING: could not start $FILONE_POSTGRES_BACKUP_SERVICE; the timer takes one within a day"
+# Where backup-postgres.sh records the system identifier of the cluster its
+# last successful base backup was of. A function, since filone_init sets the
+# state directory after this file is sourced.
+postgres_backup_cluster_file() {
+  printf '%s/postgres-basebackup-cluster\n' "$FILONE_STATE_DIR"
 }
 
-# Stamp a base backup that reached the backup bucket. The deadman for the base
-# backups, in the shape of the OpenBao snapshot stamp.
+# Enable the daily base backup once the platform runs with archiving on, and
+# ask for the first one.
+start_postgres_backups() {
+  node_takes_backups || return 0
+  if ! systemctl is-enabled --quiet "$FILONE_POSTGRES_BACKUP_TIMER" 2>/dev/null; then
+    # The unit may not be on the box yet when this runs by hand, before a
+    # reconcile pass has installed the checkout's units.
+    sync_systemd_units
+    systemctl enable --now "$FILONE_POSTGRES_BACKUP_TIMER" >/dev/null ||
+      die "could not enable $FILONE_POSTGRES_BACKUP_TIMER"
+    echo "  $FILONE_POSTGRES_BACKUP_TIMER enabled"
+  fi
+  request_postgres_backup
+}
+
+# Start a base backup in the background while the running cluster has none:
+# WAL is no use for a restore without a base backup of its own cluster to
+# replay it onto, so the first one does not wait for the timer. Every reconcile
+# pass asks, so a first backup that fails, because WAL-G was not installed yet
+# or for any other reason, is retried within a pass rather than a day; one that
+# keeps failing shows in the unit's journal. Only where the timer is enabled and
+# Postgres archives.
+request_postgres_backup() {
+  local sysid archiving
+  node_takes_backups || return 0
+  systemctl is-enabled --quiet "$FILONE_POSTGRES_BACKUP_TIMER" 2>/dev/null || return 0
+  container_running "$FILONE_POSTGRES_CONTAINER" || return 0
+  sysid="$(postgres_system_identifier)" || return 0
+  [ "$(cat "$(postgres_backup_cluster_file)" 2>/dev/null)" != "$sysid" ] || return 0
+  archiving="$(docker exec "$FILONE_POSTGRES_CONTAINER" psql -U admin -d admin -At \
+    -c 'SHOW archive_mode' 2>/dev/null)" || return 0
+  [ "$archiving" = on ] || return 0
+  systemctl is-active --quiet "$FILONE_POSTGRES_BACKUP_SERVICE" && return 0
+
+  echo "  Postgres has no base backup of this cluster yet; starting one"
+  systemctl start --no-block "$FILONE_POSTGRES_BACKUP_SERVICE" ||
+    echo "  WARNING: could not start $FILONE_POSTGRES_BACKUP_SERVICE; the next reconcile pass retries"
+}
+
+# Stamp a base backup of the cluster with this system identifier that reached
+# the backup bucket. The deadman for the base backups, in the shape of the
+# OpenBao snapshot stamp.
 stamp_postgres_backup_success() {
-  local tmp
+  local sysid="$1" record tmp
+  record="$(postgres_backup_cluster_file)"
+  printf '%s\n' "$sysid" >"$record.tmp"
+  mv -f "$record.tmp" "$record"
   mkdir -p "$FILONE_METRICS_DIR"
   tmp="$(mktemp "$FILONE_METRICS_DIR/.postgres-backup.XXXXXX")"
   {
@@ -122,8 +180,20 @@ stamp_postgres_backup_success() {
 # config, archiving fails and alerts, and a problem with filone/backup-target
 # must not keep the platform or the apps from deploying, the first deploy after
 # a boot included.
+#
+# The subshell sets errexit itself: run as the left side of || or &&, it would
+# run with errexit ignored, and a failed read in it would render an empty field
+# over a good config. Every caller runs under set -e, which this puts back.
 refresh_walg_config() {
-  ( write_walg_config ) && return 0
+  local status
+  set +e
+  (
+    set -e
+    write_walg_config
+  )
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || return 0
   echo "  WARNING: could not render WAL-G's config, so Postgres cannot archive WAL" \
     "until a later pass renders it. scripts/host/check-backup-target.sh tests the key."
 }

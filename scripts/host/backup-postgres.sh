@@ -3,21 +3,25 @@
 #
 # WAL-G runs inside the Postgres container, as its postgres user, with the
 # config every reconcile pass renders from filone/backup-target. It streams the
-# data directory up as tar partitions under <key_prefix>postgres/basebackups_005/,
-# beside the WAL that archive_command sends to <key_prefix>postgres/wal_005/. A
+# data directory up as tar partitions under
+# <key_prefix>postgres/<system identifier>/basebackups_005/, beside the WAL that
+# archive_command sends to <key_prefix>postgres/<system identifier>/wal_005/. A
 # point-in-time restore needs a base backup from before the moment it restores
 # to and every WAL segment after it, so the WAL is only as useful as the newest
 # base backup it follows.
 #
-# The backup key can write new objects, and read only the timeline history
-# files WAL-G looks for under its own prefix; it cannot delete or overwrite
-# anything. The bucket locks each object for central's
-# appliance_backups.retention_days, 35 days on staging, and then expires it, so
-# old base backups and the WAL after them age out together.
+# The backup key can write, and read only the timeline history files WAL-G
+# looks for under its own prefix. It cannot delete a backup or change a locked
+# version, but a put to an existing key adds a newer current version (central's
+# docs/decisions/2026-11-appliance-backup-target.md). The bucket locks each
+# object for central's appliance_backups.retention_days, 35 days on staging,
+# and then expires it, so old base backups and the WAL after them age out
+# together.
 #
 # Runs from filone-postgres-backup.timer once a day. deploy-platform.sh enables
-# the timer, and starts the first backup, once the platform runs with archiving
-# on. Run it by hand, as root, to take one now. Runs take a lock of their own,
+# the timer once the platform runs with archiving on, and every reconcile pass
+# starts a run while the running cluster has no base backup of its own. Run it
+# by hand, as root, to take one now. Runs take a lock of their own,
 # so one started by hand waits for the timer's rather than overlapping it.
 #
 # Usage:
@@ -55,6 +59,17 @@ container_running "$FILONE_POSTGRES_CONTAINER" ||
 walg_installed ||
   die "WAL-G ${WALG_VERSION:-(no pin in node.env)} is not installed at $(walg_binary).
        Run scripts/host/install-tools.sh."
+# WAL-G takes a base backup with archiving off, warning only, and it would
+# stamp a fresh backup that no archived WAL can be replayed onto.
+archiving="$(docker exec "$FILONE_POSTGRES_CONTAINER" psql -U admin -d admin -At -c 'SHOW archive_mode')" ||
+  die "could not read archive_mode from $FILONE_POSTGRES_CONTAINER"
+[ "$archiving" = on ] ||
+  die "Postgres runs with archive_mode=$archiving, so a base backup would have no WAL to
+       restore with. $FILONE_NODE_DIR/platform/versions.env turns archiving on beside the
+       Debian image."
+# The cluster this backup is of, which also names the archive it goes to.
+sysid="$(postgres_system_identifier)" ||
+  die "could not read the Postgres cluster's system identifier"
 
 # Render it here as well as in reconcile, so a run by hand right after a boot
 # does not wait for a pass.
@@ -70,5 +85,5 @@ docker exec -u postgres "$FILONE_POSTGRES_CONTAINER" \
   die "WAL-G could not push the base backup; its output above says why.
        scripts/host/check-backup-target.sh tests the key and the target on their own."
 
-stamp_postgres_backup_success
+stamp_postgres_backup_success "$sysid"
 echo "=== base backup uploaded ==="
