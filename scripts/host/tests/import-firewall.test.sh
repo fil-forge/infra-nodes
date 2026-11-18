@@ -161,6 +161,7 @@ succeeded() {
 }
 said() { grep -qF -- "$1" "$CASE/stderr"; }
 printed() { grep -qF -- "$1" "$CASE/stdout"; }
+not_printed_line() { ! grep -qxF -- "$1" "$CASE/stdout"; }
 called() { grep -qE "$1" "$STATE/calls"; }
 not_called() { ! called "$1"; }
 loads() { grep -c '^nft -f ' "$STATE/calls" || true; }
@@ -358,7 +359,8 @@ clients "$CLIENT3"
 run_firewall status
 check "fails" failed
 check "names what the loaded table admits" printed "admitted to the import service's port: $CLIENT1 $CLIENT3"
-check "does not report the edited list as admitted" eval '! grep -qF "port: $CLIENT3 (" "$CASE/stdout"'
+check "does not report the edited list as admitted" \
+  not_printed_line "admitted to the import service's port: $CLIENT3"
 check "says the list has not been applied" printed "has not been applied"
 check "loads nothing" test "$(loads)" -eq 1
 
