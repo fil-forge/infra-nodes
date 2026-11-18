@@ -107,13 +107,19 @@ STUB
   chmod +x "$bin"/*
 }
 
-# A deploy script in the checkout that records it ran and succeeds.
+# A deploy script in the checkout that records it ran and succeeds. The apps
+# deploy fails, as the real one does, when OpenBao holds no hilt proof.
 write_deploy_stub() {
   local name="$1"
   {
     echo '#!/usr/bin/env bash'
     # shellcheck disable=SC2016 # expanded by the stub, not here
     printf 'echo %s >>"$STUB_STATE/deploys"\n' "$name"
+    if [ "$name" = deploy-apps.sh ]; then
+      # shellcheck disable=SC2016 # expanded by the stub, not here
+      echo '[ -f "$STUB_STATE/bao/ingot/hilt_proof" ] ||
+  { echo "ERROR: OpenBao has no hilt-to-ingot delegation" >&2; exit 1; }'
+    fi
   } >"$ORIGIN_WORK/scripts/host/$name"
   chmod +x "$ORIGIN_WORK/scripts/host/$name"
 }
@@ -245,6 +251,19 @@ check "exits zero" succeeded
 check "deploys the platform" deployed deploy-platform.sh
 check "deploys the apps" deployed deploy-apps.sh
 check "does not say it skipped them" not_said "$SKIP_LINE"
+show_output_on_failure "$before"
+
+new_case "onboarded, then the proof is lost"
+# An apps deploy has succeeded before, so its revision is recorded. A missing
+# proof here is a fault, and the pass has to fail rather than go green with
+# the apps down.
+mkdir -p "$ROOT/mnt/fil-one/control/state/revisions"
+git -C "$CHECKOUT" rev-parse HEAD >"$ROOT/mnt/fil-one/control/state/revisions/apps"
+before=$failures
+run_reconcile
+check "exits non-zero" failed
+check "attempts the apps deploy" deployed deploy-apps.sh
+check "does not read it as not onboarded" not_said "$SKIP_LINE"
 show_output_on_failure "$before"
 
 new_case "OpenBao sealed or unreachable"

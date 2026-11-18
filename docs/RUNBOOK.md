@@ -1026,7 +1026,8 @@ delegation byte for byte, so a node that lost its copy can ask for it again.
 
 A node whose reconcile timer already runs before onboarding finishes keeps its platform deployed
 and leaves the apps alone. Each pass logs "not deploying the apps: OpenBao has no hilt proof" and
-still succeeds. The first pass after `store-hilt-proof.sh` deploys the apps with no further step.
+still succeeds. Once the proof is stored, reconcile resumes deploying the apps, and
+`provision-apps.sh` is still the step that starts them.
 
 Each Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means
 that Piri's DID is not on the delegator's allow list, which means its onboarding did not complete.
