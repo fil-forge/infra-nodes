@@ -252,7 +252,7 @@ new_case "the port matches the service's published container port"
 compose="$NODES/prod/us-east-2/apps/compose.yml"
 check "prod/us-east-2 publishes the service on container port 8443" \
   grep -qE '^      - "0\.0\.0\.0:\$\{IMPORT_SERVICE_PORT\}:8443"$' "$compose"
-check "and the service listens there" grep -qE '^      SPIDEROAK_IMPORT_PORT: "8443"$' "$compose"
+check "and the service listens there" grep -qE '^      IST1_IMPORT_PORT: "8443"$' "$compose"
 
 # --- Refusals ------------------------------------------------------------------
 

@@ -184,24 +184,24 @@ services:
     ports:
       - "0.0.0.0:${IMPORT_SERVICE_PORT}:8443"
     environment:
-      SPIDEROAK_IMPORT_LISTEN_IP: ${IMPORT_SERVICE_CONTAINER_ADDRESS:-}
-      SPIDEROAK_IMPORT_PORT: "8443"
-      SPIDEROAK_IMPORT_TLS_CERT: /run/import/server.pem
-      SPIDEROAK_IMPORT_TLS_KEY: /run/import/server-key.pem
-      SPIDEROAK_IMPORT_CLIENT_CA: /run/import/client-ca.pem
-      SPIDEROAK_IMPORT_ALLOWED_CLIENTS: ${IMPORT_SERVICE_ALLOWED_CLIENTS}
+      IST1_IMPORT_LISTEN_IP: ${IMPORT_SERVICE_CONTAINER_ADDRESS:-}
+      IST1_IMPORT_PORT: "8443"
+      IST1_IMPORT_TLS_CERT: /run/import/server.pem
+      IST1_IMPORT_TLS_KEY: /run/import/server-key.pem
+      IST1_IMPORT_CLIENT_CA: /run/import/client-ca.pem
+      IST1_IMPORT_ALLOWED_CLIENTS: ${IMPORT_SERVICE_ALLOWED_CLIENTS}
       PGPASSFILE: /run/import/pgpass
-      SPIDEROAK_PACK_LEASE_HOLDER: ${IMPORT_SERVICE_LEASE_HOLDER}
-      SPIDEROAK_PACK_S3_BUCKET: ${IMPORT_SERVICE_S3_BUCKET}
+      IST1_PACK_LEASE_HOLDER: ${IMPORT_SERVICE_LEASE_HOLDER}
+      IST1_PACK_S3_BUCKET: ${IMPORT_SERVICE_S3_BUCKET}
       # Ingot over the filone network, as rag-engine reaches it on staging:
       # SigV4 signs the host the client contacts, so the key still verifies.
-      SPIDEROAK_PACK_S3_ENDPOINT: http://ingot:9000
-      SPIDEROAK_PACK_S3_REGION: ${REGION_LABEL}
-      SPIDEROAK_PACK_S3_PREFIX: ${IMPORT_SERVICE_S3_PREFIX:-}
-      SPIDEROAK_PACK_S3_PATH_STYLE: "1"
-      SPIDEROAK_PACK_S3_SECRET_KEY_FILE: /run/import/s3-secret-key
-      SPIDEROAK_PACK_OPENBAO_ADDR: ${IMPORT_SERVICE_KEYS_ADDR}
-      SPIDEROAK_PACK_RECOVERY_PUBLIC_KEY: ${IMPORT_SERVICE_RECOVERY_PUBLIC_KEY}
+      IST1_PACK_S3_ENDPOINT: http://ingot:9000
+      IST1_PACK_S3_REGION: ${REGION_LABEL}
+      IST1_PACK_S3_PREFIX: ${IMPORT_SERVICE_S3_PREFIX:-}
+      IST1_PACK_S3_PATH_STYLE: "1"
+      IST1_PACK_S3_SECRET_KEY_FILE: /run/import/s3-secret-key
+      IST1_PACK_OPENBAO_ADDR: ${IMPORT_SERVICE_KEYS_ADDR}
+      IST1_PACK_RECOVERY_PUBLIC_KEY: ${IMPORT_SERVICE_RECOVERY_PUBLIC_KEY}
     # The ledger's DSN, the object store's access key id and the key service's
     # AppRole id and secret id, rendered from OpenBao by deploy-import.sh. Not
     # required here so CI can validate this file without it; the service does
