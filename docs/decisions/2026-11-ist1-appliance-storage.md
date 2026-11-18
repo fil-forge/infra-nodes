@@ -3,7 +3,7 @@
 The IST-1 appliance's two 7.68 TB NVMe drives form one ZFS mirror, a pool named `data` mounted at
 `/mnt/data`, with about 6.9 TiB usable. Either drive can fail without losing data or stopping the
 node. The operating system stays on its own disk. The node's control and data directories go on the
-pool; `/mnt/data/fil-one/control` and `/mnt/data/fil-one/data` match staging.
+pool, under `/mnt/data/fil-one`.
 
 ## The pool
 
@@ -37,12 +37,26 @@ Ubuntu 26.04, with ZFS 2.4, ships `zfs-load-key.service` masked, so nothing load
 local unit, `zfs-load-key-data.service`, loads the key before `zfs-mount.service` mounts
 the pool.
 
-Docker must not start the containers before the pool is mounted. If it did, Docker would bind each
-container to an empty directory under `/mnt/data` on the OS disk, creating any that is missing, and
-Postgres would initialise a new, empty cluster there. A drop-in for `docker.service` makes Docker
-wait for `zfs-mount.service` and refuse to start while the pool is missing or any dataset on it is
-unmounted. Once the pool is fixed, `systemctl reset-failed docker.service docker.socket` clears the
-failed starts so Docker can start again.
+Docker must not start the containers before the pool is mounted, or Postgres would initialise a
+new, empty cluster on the OS disk. Two checks prevent that. The node's Compose files set
+`create_host_path: false` on every bind, so a container fails to start when its directory is
+missing ([#252](https://github.com/fil-forge/infra-nodes/pull/252)). That check passes when a
+dataset is unmounted but its mount point still exists as an empty directory in the dataset above
+it. So a drop-in for `docker.service` also makes Docker wait for `zfs-mount.service` and refuse to
+start while the pool is missing or any dataset on it is unmounted. Once the pool is fixed,
+`systemctl reset-failed docker.service docker.socket` clears the failed starts so Docker can start
+again.
+
+## Left to the node's deployment
+
+- **Datasets and quotas.** The pool is created with its root dataset only. The node's bootstrap
+  creates a dataset for each kind of state and sets reservations and quotas, following the fast
+  pool layout in the
+  [appliance layout RFC](https://github.com/fil-one/RFC/blob/f0a3e7ad24a4a946cc05838bcce9a05a3bc84ba6/rfcs/2026-10-appliance-layout-and-disaster-recovery.md#fast-pool).
+- **A pool-health signal.** After one drive fails, the pool and the containers keep running, and
+  the node's telemetry today reports nothing about ZFS. The node must report the pool's state, and
+  central must alert when it is not `ONLINE`, so that on-call replaces the drive before a second
+  failure loses the pool.
 
 ## Setting it up
 
