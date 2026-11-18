@@ -5,7 +5,10 @@
 # itself. Enabled by scripts/host/setup-vpn.sh, on a node that has a VPN only.
 Description=FilOne node database VPN interfaces and routes
 ConditionPathExists=/etc/fil-one/vpn.conf
-After=network-online.target
+# setup-vpn.sh up creates /run/fil-one/secrets itself, where its temporary
+# files go; the ordering after tmpfiles only keeps it from racing bootstrap's
+# tmpfiles.d entry for the same directory.
+After=network-online.target systemd-tmpfiles-setup.service
 Wants=network-online.target
 Before=strongswan.service filone-vpn-health.timer
 
