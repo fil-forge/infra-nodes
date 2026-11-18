@@ -152,8 +152,16 @@ loki.source.docker "containers" {
 // compose.yml. Without them, filesystem would report the container's overlay
 // and describe none of the ZFS datasets this node's capacity actually depends
 // on.
+//
+// zfs is here for one series, node_zfs_zpool_state{zpool, state}: 1 for the
+// state each pool is in and 0 for the others, read from the kernel's
+// /proc/spl/kstat/zfs/<pool>/state through the /host/proc mount. That file is
+// world-readable and not namespaced, so the existing mount is enough. It is what
+// says a drive of the mirror has failed while every container keeps running.
+// What the last scrub found is not in the kernel's statistics;
+// scripts/host/report-pool-health.sh writes that to the textfile directory.
 prometheus.exporter.unix "host" {
-	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "textfile"]
+	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "textfile", "zfs"]
 
 	rootfs_path = "/host/root"
 	procfs_path = "/host/proc"
@@ -175,6 +183,28 @@ prometheus.scrape "host" {
 // own.
 prometheus.relabel "host" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	// The zfs collector also exports the ARC's and every dataset's I/O
+	// statistics, a few hundred series nothing reads. Only the pool state goes
+	// on: it is marked first, and every other node_zfs_ series is dropped.
+	rule {
+		source_labels = ["__name__"]
+		regex         = "node_zfs_zpool_state"
+		replacement   = "keep"
+		target_label  = "__tmp_zfs_keep"
+	}
+
+	rule {
+		source_labels = ["__name__", "__tmp_zfs_keep"]
+		separator     = ";"
+		regex         = "node_zfs_.+;"
+		action        = "drop"
+	}
+
+	rule {
+		action = "labeldrop"
+		regex  = "__tmp_zfs_keep"
+	}
 
 	rule {
 		replacement  = sys.env("SERVICE_NAME_PREFIX") + "-host"

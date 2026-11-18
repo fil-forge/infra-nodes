@@ -30,6 +30,8 @@ Piri's and Ingot's own application metrics, which each pushes over OTLP to Alloy
 thirty seconds, Ingot every minute.
 Ingot's metrics arrive under `job="forge/ingot"`, among them `ingot_local_blobs_usage_bytes` and
 `ingot_local_blobs_budget_bytes`, which infra-central's "Ingot local disk over budget" alert reads.
+On `prod/us-east-2`, whose state is on a ZFS mirror, the pool's state and what its last scrub found;
+[The ZFS pool](#the-zfs-pool) below says what arrives.
 
 **Traces.** Whatever spans Piri and Ingot record, pushed over OTLP to Alloy and on to the stack's
 Tempo unchanged apart from the node's identity.
@@ -168,8 +170,8 @@ built on them works on one node only.
 ## Metrics
 
 Metric names are the node exporter's `node_*` family, cAdvisor's `container_*` family on staging,
-Caddy's `caddy_http_*` family, `deploy_last_success_timestamp` and
-`openbao_snapshot_last_success_timestamp`. Every series carries the four
+Caddy's `caddy_http_*` family, `deploy_last_success_timestamp`,
+`openbao_snapshot_last_success_timestamp`, and `zfs_pool_*` on a node with a ZFS pool. Every series carries the four
 labels above plus `instance`, which is the node name (`<node>/piri-<n>` on Piri's own series), and
 `job`, which is `integrations/unix` for the host, `cadvisor` for containers, `caddy` for Caddy and
 `forge/piri` for Piri.
@@ -411,6 +413,63 @@ it carries the `-host` service name with the unit on the `unit` label, as on dev
 ```logql
 {service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}
 ```
+
+### The ZFS pool
+
+`prod/us-east-2` keeps its state on one ZFS pool, `data`, a mirror of two drives. When one drive
+fails the pool runs on the other and every container keeps serving, so the pool's own state is the
+only sign.
+
+The state comes from the node exporter's zfs collector, which reads it from the kernel on every
+scrape. `node_zfs_zpool_state` has one series per pool and state (`online`, `degraded`, `faulted`,
+`offline`, `removed`, `unavail`, `suspended`), at 1 for the state the pool is in and 0 for the
+rest. The collector's other `node_zfs_*` series are dropped in the node's `prometheus.relabel
+"host"`. A pool that is not online:
+
+```promql
+node_zfs_zpool_state{node="prod/us-east-2", state!="online"} == 1
+```
+
+What the last scrub found is not in the kernel's statistics. `scripts/host/report-pool-health.sh`
+reads it from `zpool status` every five minutes, from `filone-pool-health.timer`, and writes
+`zfs_pool.prom` to the textfile collector. The timer runs only where the runbook's timer step
+enables it.
+
+| Metric | Labels | Value |
+|---|---|---|
+| `zfs_pool_scan_errors` | `zpool`, `function` (`scrub` or `resilver`) | Errors the latest scrub or resilver could not repair. Absent on a pool never scanned |
+| `zfs_pool_scan_end_timestamp` | `zpool`, `function` | Unix time it ended, 0 while it runs |
+| `zfs_pool_data_errors` | `zpool` | Files with permanent errors, the list `zpool status -v` prints |
+| `zfs_pool_vdev_errors` | `zpool`, `vdev`, `type` (`read`, `write`, `checksum`) | Errors on each vdev, the root and the mirror included, since the last `zpool clear` |
+
+A scrub that found errors it could not repair, or a pool with damaged files:
+
+```promql
+zfs_pool_scan_errors{function="scrub"} > 0 or zfs_pool_data_errors > 0
+```
+
+Ubuntu's ZFS package scrubs on the second Sunday of each month, so the last scrub's end is at most
+about five weeks old on a healthy node:
+
+```promql
+time() - zfs_pool_scan_end_timestamp{function="scrub"} > 40 * 86400
+```
+
+The textfile collector records when it last read each file, which is how a stopped timer shows. The
+`file` label is the path inside the Alloy container:
+
+```promql
+time() - node_textfile_mtime_seconds{file="/metrics/zfs_pool.prom"} > 30 * 60
+```
+
+Each run logs to the journal of `filone-pool-health.service`:
+
+```logql
+{node="prod/us-east-2", unit="filone-pool-health.service"}
+```
+
+infra-central needs three alert rules on these, with the other appliance rules: a critical one on a
+pool that is not online, a warning on scrub or data errors, and a warning on a stale report.
 
 ## Traces
 
