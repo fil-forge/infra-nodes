@@ -9,10 +9,11 @@
 # left alone, so re-runs are cheap and offline-safe.
 #
 # Key generation uses ucantool and cast. WAL-G runs inside the Postgres
-# container, which mounts it from here. The deploy scripts never call this, so
-# the unattended reconcile path gains no dependency on GitHub releases: a
-# platform deploy on a node that takes backups refuses to run until WAL-G is
-# installed at its pin.
+# container, which mounts the directory each version is installed under. The
+# deploy scripts never call this, so the unattended reconcile path gains no
+# dependency on GitHub releases. Until this has run for a new WAL-G pin,
+# Postgres's archive_command fails and the archive alert fires; the deploys
+# carry on.
 set -euo pipefail
 
 # SC2154: the *_VERSION and *_SHA256 pins come from the node's node.env, which
@@ -41,16 +42,18 @@ echo "  target platform: $TARGET_PLATFORM"
 # so a version-and-platform stamp next to each binary records which pin
 # installed it.
 #
-# Usage: install_from_archive <name> <version> <sha256> <url> <member>
+# Usage: install_from_archive <name> <version> <sha256> <url> <member> [<path>]
+# <path> is where the binary goes, /usr/local/bin/<name> unless given.
 install_from_archive() {
   local name="$1" version="$2" sha256="$3" url="$4" member="$5"
+  local path="${6:-/usr/local/bin/$1}"
   local stamp="/etc/fil-one/$name.version" expected_stamp="$version $TARGET_PLATFORM"
 
   if [ -z "$version" ] || [ -z "$sha256" ]; then
     die "no $name pin: set its version and sha256 in nodes/$FILONE_NODE/node.env"
   fi
 
-  if [ -x "/usr/local/bin/$name" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$expected_stamp" ]; then
+  if [ -x "$path" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$expected_stamp" ]; then
     echo "  $name already at $expected_stamp"
     return 0
   fi
@@ -61,7 +64,7 @@ install_from_archive() {
   curl -fsSL -o "$tmp/archive.tar.gz" "$url"
   echo "$sha256  $tmp/archive.tar.gz" | sha256sum -c -
   tar -xzf "$tmp/archive.tar.gz" -C "$tmp" "$member"
-  install -m 0755 "$tmp/$member" "/usr/local/bin/$name"
+  install -D -m 0755 "$tmp/$member" "$path"
   printf '%s\n' "$expected_stamp" >"$stamp"
   rm -rf "$tmp"
 }
@@ -80,13 +83,15 @@ install_from_archive ucantool "$UCANTOOL_VERSION" "$UCANTOOL_SHA256" \
 ucantool --help >/dev/null
 
 # WAL-G publishes its Postgres builds by Ubuntu release and by architecture,
-# with aarch64 where the node says arm64.
+# with aarch64 where the node says arm64. Each version goes in a directory of
+# its own, which the running Postgres keeps using until a deploy recreates it
+# on the new pin; earlier versions are left for that reason.
 if node_takes_backups; then
   walg_asset="wal-g-pg-22.04-$(case "$TARGET_PLATFORM" in linux_arm64) echo aarch64 ;; *) echo amd64 ;; esac)"
-  install_from_archive wal-g "$WALG_VERSION" "$WALG_SHA256" \
-    "https://github.com/wal-g/wal-g/releases/download/$WALG_VERSION/$walg_asset.tar.gz" \
-    "$walg_asset"
-  wal-g --version
+  install_from_archive wal-g "${WALG_VERSION:-}" "${WALG_SHA256:-}" \
+    "https://github.com/wal-g/wal-g/releases/download/${WALG_VERSION:-}/$walg_asset.tar.gz" \
+    "$walg_asset" "$(walg_binary)"
+  "$(walg_binary)" --version
 fi
 
 echo "=== tools installed ==="

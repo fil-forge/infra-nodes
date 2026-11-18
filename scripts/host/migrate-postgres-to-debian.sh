@@ -140,12 +140,13 @@ esac
 # Start the old cluster again from its own directory under the image it ran
 # before. The shell's values win over the env files', so this one start uses
 # them while compose.yml keeps the new ones, and the deploy-platform.sh guard
-# leaves the cluster alone until a migration finishes. Returns non-zero rather
-# than dying.
+# leaves the cluster alone until a migration finishes. Archiving is off: a node
+# whose compose.yml archives through WAL-G would otherwise run it under a C
+# library it cannot run with. Returns non-zero rather than dying.
 start_old_cluster() {
   local image="$1"
   echo "  starting the old cluster again under $image"
-  POSTGRES_IMAGE="$image" POSTGRES_DATA_DIR="$previous" \
+  POSTGRES_IMAGE="$image" POSTGRES_DATA_DIR="$previous" POSTGRES_ARCHIVE_MODE=off \
     compose_platform up -d --no-deps --force-recreate postgres || return 1
   ( wait_healthy compose_platform 300 postgres ) || return 1
 }
@@ -356,7 +357,12 @@ if [ -e "$configured" ] && [ -n "$(ls -A -- "$configured")" ]; then
   echo "  moved what a failed run left in $configured to $aside"
 fi
 install -d -m 0700 "$configured"
-compose_platform up -d --no-deps --force-recreate postgres || die "could not start the new cluster"
+# Archiving off while the dumps go in: their WAL would be no use to a restore
+# without a base backup taken after it. deploy-platform.sh recreates the
+# container with the checkout's settings at the end, and the first base backup
+# follows.
+POSTGRES_ARCHIVE_MODE=off compose_platform up -d --no-deps --force-recreate postgres ||
+  die "could not start the new cluster"
 wait_healthy compose_platform 300 postgres
 collation="$(psql_in admin "SELECT datcollate FROM pg_database WHERE datname = 'admin'")" ||
   die "could not read the new cluster's locale"

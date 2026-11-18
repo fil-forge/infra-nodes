@@ -44,12 +44,20 @@ services:
     # restore from the archive can lose. A segment that fails to upload stays
     # in pg_wal and is retried; the archive metrics and their alerts watch for
     # it. filone-postgres-backup.timer takes the base backups.
+    #
+    # versions.env turns archiving on beside the image, because WAL-G runs only
+    # under the Debian image's glibc. migrate-postgres-to-debian.sh turns it off
+    # for the clusters it starts by hand: the old one under Alpine, and the new
+    # one while it restores into it.
+    #
+    # The path names the pinned version, so a new pin changes this service's
+    # definition, and the deploy that takes it recreates Postgres to run it.
     command:
       - postgres
       - -c
-      - archive_mode=on
+      - archive_mode=${POSTGRES_ARCHIVE_MODE:-off}
       - -c
-      - archive_command=/usr/local/bin/wal-g --config /etc/wal-g/walg.json wal-push %p
+      - archive_command=/opt/wal-g/${WALG_VERSION:?node.env pins WALG_VERSION on a node that takes backups}/wal-g --config /etc/wal-g/walg.json wal-push %p
       - -c
       - archive_timeout=60
     volumes:
@@ -58,13 +66,14 @@ services:
         target: /var/lib/postgresql/data
         bind:
           create_host_path: false
-      # Installed on the host by install-tools.sh, at the pin in node.env.
+      # install-tools.sh installs each pinned WAL-G under a directory of its
+      # version here. The directory rather than the binary, and one Docker may
+      # create, so that Postgres starts before WAL-G is installed: the archive
+      # then fails, and alerts, instead of the platform.
       - type: bind
-        source: /usr/local/bin/wal-g
-        target: /usr/local/bin/wal-g
+        source: /usr/local/lib/fil-one/wal-g
+        target: /opt/wal-g
         read_only: true
-        bind:
-          create_host_path: false
       # WAL-G's config, rendered from filone/backup-target in OpenBao on every
       # reconcile pass. The directory rather than the file, and one Docker may
       # create: tmpfs is empty after a reboot, and Postgres has to start

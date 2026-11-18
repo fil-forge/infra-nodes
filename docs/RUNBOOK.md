@@ -1315,14 +1315,23 @@ A restore to a point in time needs a base backup from before that point and ever
 so the archive reaches back as far as the oldest base backup the bucket still holds: 35 days on
 staging, after which the bucket expires base backups and segments alike.
 
+- **Archiving is on** where the node's `platform/versions.env` sets `POSTGRES_ARCHIVE_MODE=on`,
+  beside the Debian image it needs; going back to Alpine takes it off with the image.
+  `migrate-postgres-to-debian.sh` starts each cluster it starts by hand with archiving off, the old
+  one under Alpine and the new one while the dumps go in, and its last platform deploy turns it on.
 - **WAL-G** is a binary on the host, pinned in `node.env` (`WALG_VERSION`, `WALG_SHA256`) and
-  installed by `install-tools.sh`, which the deploys never run. The container mounts it read-only.
-  A platform deploy refuses to run until it is installed at the pin, so run `install-tools.sh`
-  before a pin change reaches the node.
+  installed by `install-tools.sh`, which the deploys never run, under
+  `/usr/local/lib/fil-one/wal-g/<version>/`. The container mounts that directory read-only, and
+  `archive_command` names the pinned version. Run `install-tools.sh` as soon as a new pin reaches
+  the checkout. Until it has run, the deploys warn, Postgres keeps every segment in `pg_wal`, and
+  "Appliance Postgres WAL archive is failing" fires about 25 minutes later; nothing else stops. The
+  deploy that takes the new pin recreates Postgres to run it. Each version stays installed, since
+  the running Postgres uses its own until then; remove old ones by hand.
 - **Its config** is rendered from `filone/backup-target` to `/run/fil-one/walg/walg.json` on every
   reconcile pass and every platform deploy, readable only by the container's `postgres` user (uid
-  999). Postgres starts without it after a reboot; archiving fails, keeping the segments in
-  `pg_wal`, until the first pass renders it, and then catches up.
+  999). A failure to render it warns and lets the deploys go on. Postgres starts without it after
+  a reboot; archiving fails, keeping the segments in `pg_wal`, until the first pass renders it, and
+  then catches up.
 - **The timer** is enabled by the first platform deploy that runs with archiving on, which also
   starts the first base backup. To take one now, as root:
 
@@ -1339,8 +1348,9 @@ staging, after which the bucket expires base backups and segments alike.
 
 Each pass stamps the archiver's state and each base backup its time, described in
 [observability.md](observability.md#the-postgres-wal-archive). WAL-G's uploads carry `Content-MD5`,
-which the bucket's Object Lock requires, and need no read access, so the write-only backup key
-serves for both.
+which the bucket's Object Lock requires. WAL-G otherwise only writes, but for the timeline history
+files it reads under the node's own prefix, which the backup key may read; it can't delete or
+overwrite anything.
 
 **Give a node a new host token.** The host token is the OpenBao token every deploy, reconcile pass
 and snapshot runs as, under the `filone-host` policy. A node provisioned before snapshots existed
@@ -1613,13 +1623,14 @@ deploy with archiving on, so check that one finished (`systemctl list-timers
 filone-postgres-backup.timer`). A key or bucket error reads more plainly from
 `check-backup-target.sh`. Until a base backup lands, the WAL archive cannot be restored from.
 
-**The Postgres WAL archive is failing.** Segments are waiting in `pg_wal` because WAL-G cannot
-upload them. Postgres keeps every one and retries, so nothing is lost yet, but `pg_wal` grows on the
-control volume until archiving works again. `docker logs filone-platform-postgres-1` has WAL-G's
-error for each attempt. A missing `/etc/wal-g/walg.json` means no reconcile pass has rendered it
-since a boot: check that reconcile runs and that OpenBao is unsealed. A missing `wal-g` means the
-binary is not installed: run `install-tools.sh`. A key or bucket error reads more plainly from
-`check-backup-target.sh`.
+**The Postgres WAL archive is failing.** A WAL segment has waited more than 15 minutes in `pg_wal`
+because WAL-G has not uploaded it. Postgres keeps every one and retries, so nothing is lost yet, but
+`pg_wal` grows on the control volume until archiving works again. `docker logs
+filone-platform-postgres-1` has WAL-G's error for each attempt. A missing `/etc/wal-g/walg.json`
+means no pass has rendered it since a boot, and the reconcile journal says why: check that OpenBao
+is unsealed and that `filone/backup-target` holds the key. `wal-g: not found` (exit 127) means the
+pinned version is not installed: run `install-tools.sh`. A key or bucket error reads more plainly
+from `check-backup-target.sh`.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key

@@ -97,10 +97,11 @@ case "$postgres_dir" in
 esac
 
 # On a node that takes backups, Postgres archives its WAL through WAL-G, which
-# compose.yml mounts from the host along with its config.
+# compose.yml mounts from the host along with its config. Neither stops the
+# deploy: without them Postgres runs and archiving fails, which alerts.
 if node_takes_backups; then
-  require_walg_installed
-  write_walg_config
+  warn_unless_walg_installed
+  refresh_walg_config
 fi
 
 echo "[3/7] Pulling images"

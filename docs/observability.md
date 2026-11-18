@@ -415,21 +415,26 @@ minutes of random delay, so a stamp older than 26 hours means a day without one:
 time() - postgres_basebackup_last_success_timestamp > 26 * 3600
 ```
 
-Every reconcile pass reads `pg_stat_archiver` and writes the archiver's state:
+Every reconcile pass reads `pg_stat_archiver` and `pg_wal/archive_status`, before it deploys
+anything, and writes the archiver's state:
 
 - `postgres_wal_archived_total` and `postgres_wal_archive_failed_total`: segments archived and
   failed attempts, since the archiver's statistics were last reset;
 - `postgres_wal_last_archived_timestamp` and `postgres_wal_last_failed_timestamp`: when, or 0;
-- `postgres_wal_archive_pending`: segments waiting in `pg_wal`.
+- `postgres_wal_archive_pending`: segments waiting in `pg_wal`;
+- `postgres_wal_archive_oldest_pending_timestamp`: when the oldest of them became ready to archive,
+  present only while one waits.
 
-Segments wait only while uploads fail, so the signal is a backlog that has lasted:
+A segment waits seconds while uploads work, so the signal is the oldest one's age:
 
 ```promql
-postgres_wal_archive_pending > 0
-  and time() - postgres_wal_last_failed_timestamp < 15 * 60
+time() - postgres_wal_archive_oldest_pending_timestamp > 15 * 60
 ```
 
-A quiet database cuts no segments, so the age of the last archived one says nothing on its own.
+The failure count can't serve. Postgres counts only an `archive_command` that exits 1 to 125, and
+one that can't find WAL-G (126, 127) or is killed by a signal takes the archiver down with it,
+leaving the count, and `postgres_wal_last_failed_timestamp`, unchanged while segments pile up. A
+quiet database cuts no segments, so the age of the last archived one says nothing on its own either.
 
 The base backups log to the journal of `filone-postgres-backup.service`; WAL-G's per-segment errors
 go to the Postgres container's log:

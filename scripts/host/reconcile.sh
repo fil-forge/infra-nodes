@@ -157,9 +157,12 @@ renew_ingot_regionkey_token
 
 # Every pass on a node that takes backups: WAL-G's config lives on tmpfs, so
 # after a reboot nothing else would put it back until the next platform deploy,
-# and Postgres's archive_command fails without it.
+# and Postgres's archive_command fails without it. A failure only warns, so it
+# cannot hold up the deploys below. The archiver's state is stamped here too,
+# ahead of the deploys, so a deploy that fails does not freeze it.
 if node_takes_backups; then
-  write_walg_config
+  refresh_walg_config
+  stamp_postgres_archive
 fi
 
 # --- 5. Deploy --------------------------------------------------------------
@@ -195,5 +198,4 @@ stamp_deploy_success reconcile
 # does not ask for a snapshot itself, goes up within five minutes rather than
 # at the next daily run.
 request_openbao_snapshot
-stamp_postgres_archive
 echo "=== reconcile complete ==="

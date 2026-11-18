@@ -29,13 +29,27 @@ FILONE_WALG_CONFIG="$FILONE_WALG_DIR/walg.json"
 FILONE_POSTGRES_BACKUP_SERVICE=filone-postgres-backup.service
 FILONE_POSTGRES_BACKUP_TIMER=filone-postgres-backup.timer
 
-# Refuse to deploy a platform whose archive_command runs a WAL-G that is not
-# installed at the node's pin. install-tools.sh installs it; the deploys never
-# download anything.
-require_walg_installed() {
-  [ "$(cat /etc/fil-one/wal-g.version 2>/dev/null)" = "$WALG_VERSION $TARGET_PLATFORM" ] ||
-    die "WAL-G $WALG_VERSION for $TARGET_PLATFORM is not installed at /usr/local/bin/wal-g,
-       and Postgres's archive_command runs it. Run scripts/host/install-tools.sh."
+# install-tools.sh installs each pinned WAL-G as <version>/wal-g under this
+# directory, which compose.yml binds into the Postgres container as /opt/wal-g.
+FILONE_WALG_LIB=/usr/local/lib/fil-one/wal-g
+
+# The host's path to the WAL-G of the node's pin.
+walg_binary() {
+  printf '%s/%s/wal-g\n' "$FILONE_WALG_LIB" "${WALG_VERSION:-}"
+}
+
+# Whether the WAL-G of the node's pin is installed. The deploys only warn when
+# it is not: archive_command then fails, keeping every segment in pg_wal, and
+# the archive alert fires, while the platform and the apps carry on.
+# install-tools.sh installs it; the deploys never download anything.
+walg_installed() {
+  [ -n "${WALG_VERSION:-}" ] && [ -x "$(walg_binary)" ]
+}
+
+warn_unless_walg_installed() {
+  walg_installed && return 0
+  echo "  WARNING: WAL-G ${WALG_VERSION:-(no pin in node.env)} is not installed at $(walg_binary)," \
+    "so Postgres cannot archive WAL. Run scripts/host/install-tools.sh."
 }
 
 # Render WAL-G's config from filone/backup-target, where provision-backups.sh
@@ -103,27 +117,54 @@ stamp_postgres_backup_success() {
   mv "$tmp" "$FILONE_METRICS_DIR/postgres-backup.prom"
 }
 
+# Render WAL-G's config as write_walg_config does, warning instead of failing.
+# For the reconcile pass and the platform deploy: Postgres runs without the
+# config, archiving fails and alerts, and a problem with filone/backup-target
+# must not keep the platform or the apps from deploying, the first deploy after
+# a boot included.
+refresh_walg_config() {
+  ( write_walg_config ) && return 0
+  echo "  WARNING: could not render WAL-G's config, so Postgres cannot archive WAL" \
+    "until a later pass renders it. scripts/host/check-backup-target.sh tests the key."
+}
+
 # Write the WAL archiver's state for the textfile collector, from
 # pg_stat_archiver and the segments waiting in pg_wal/archive_status. Every
-# reconcile pass calls it, so the figures are at most five minutes old.
+# reconcile pass calls it, ahead of the deploys so that a failing deploy does
+# not freeze it, and the figures are at most five minutes old.
+#
+# The archive alert reads the oldest waiting segment's age, which it computes
+# from the segment's timestamp, so the age goes on growing even if these
+# figures stop being refreshed. It does not read the failure count: Postgres
+# counts only an archive_command that exits 1 to 125, and an archiver that a
+# missing binary (126, 127) or a signal kills leaves the count alone while the
+# segments pile up.
+#
 # Nothing is written while archiving is off, which it is until the node runs
-# the Debian image, so a node never reports an archive it does not have.
+# the Debian image, so a node never reports an archive it does not have; a
+# file an earlier pass wrote is removed, so the alert does not read it.
 stamp_postgres_archive() {
-  local row on archived failed last_archived last_failed pending tmp
+  local row on archived failed last_archived last_failed pending oldest tmp
+  local prom="$FILONE_METRICS_DIR/postgres-archive.prom"
   node_takes_backups || return 0
   container_running "$FILONE_POSTGRES_CONTAINER" || return 0
 
   row="$(docker exec "$FILONE_POSTGRES_CONTAINER" psql -U admin -d admin -v ON_ERROR_STOP=1 -At -F ' ' -c "
-    SELECT current_setting('archive_mode'), archived_count, failed_count,
-           coalesce(extract(epoch FROM last_archived_time)::bigint, 0),
-           coalesce(extract(epoch FROM last_failed_time)::bigint, 0),
-           (SELECT count(*) FROM pg_ls_dir('pg_wal/archive_status') AS f WHERE f LIKE '%.ready')
-    FROM pg_stat_archiver")" || {
+    SELECT current_setting('archive_mode'), a.archived_count, a.failed_count,
+           coalesce(extract(epoch FROM a.last_archived_time)::bigint, 0),
+           coalesce(extract(epoch FROM a.last_failed_time)::bigint, 0),
+           r.pending, coalesce(extract(epoch FROM r.oldest)::bigint, 0)
+    FROM pg_stat_archiver a,
+         (SELECT count(*) AS pending, min(modification) AS oldest
+          FROM pg_ls_archive_statusdir() WHERE name LIKE '%.ready') r")" || {
     echo "  WARNING: could not read the WAL archiver's state from $FILONE_POSTGRES_CONTAINER"
     return 0
   }
-  read -r on archived failed last_archived last_failed pending <<<"$row"
-  [ "$on" = on ] || return 0
+  read -r on archived failed last_archived last_failed pending oldest <<<"$row"
+  if [ "$on" != on ]; then
+    rm -f "$prom"
+    return 0
+  fi
 
   mkdir -p "$FILONE_METRICS_DIR"
   tmp="$(mktemp "$FILONE_METRICS_DIR/.postgres-archive.XXXXXX")"
@@ -131,7 +172,7 @@ stamp_postgres_archive() {
     echo "# HELP postgres_wal_archived_total WAL segments archived since the archiver's statistics were last reset."
     echo "# TYPE postgres_wal_archived_total counter"
     echo "postgres_wal_archived_total $archived"
-    echo "# HELP postgres_wal_archive_failed_total Failed attempts to archive a WAL segment since the statistics were last reset."
+    echo "# HELP postgres_wal_archive_failed_total Failed attempts to archive a WAL segment since the statistics were last reset. Attempts that killed the archiver are not counted."
     echo "# TYPE postgres_wal_archive_failed_total counter"
     echo "postgres_wal_archive_failed_total $failed"
     echo "# HELP postgres_wal_last_archived_timestamp Unix time of the last WAL segment archived, 0 if none."
@@ -143,7 +184,13 @@ stamp_postgres_archive() {
     echo "# HELP postgres_wal_archive_pending WAL segments waiting in pg_wal to be archived."
     echo "# TYPE postgres_wal_archive_pending gauge"
     echo "postgres_wal_archive_pending $pending"
+    # Absent while nothing waits, so the alert has no age to read.
+    if [ "$pending" -gt 0 ]; then
+      echo "# HELP postgres_wal_archive_oldest_pending_timestamp Unix time the oldest WAL segment waiting to be archived became ready."
+      echo "# TYPE postgres_wal_archive_oldest_pending_timestamp gauge"
+      echo "postgres_wal_archive_oldest_pending_timestamp $oldest"
+    fi
   } >"$tmp"
   chmod 0644 "$tmp"
-  mv "$tmp" "$FILONE_METRICS_DIR/postgres-archive.prom"
+  mv "$tmp" "$prom"
 }

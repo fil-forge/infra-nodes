@@ -9,9 +9,11 @@
 # to and every WAL segment after it, so the WAL is only as useful as the newest
 # base backup it follows.
 #
-# The backup key can put but not read or delete. The bucket locks each object
-# for central's appliance_backups.retention_days, 35 days on staging, and then
-# expires it, so old base backups and the WAL after them age out together.
+# The backup key can write new objects, and read only the timeline history
+# files WAL-G looks for under its own prefix; it cannot delete or overwrite
+# anything. The bucket locks each object for central's
+# appliance_backups.retention_days, 35 days on staging, and then expires it, so
+# old base backups and the WAL after them age out together.
 #
 # Runs from filone-postgres-backup.timer once a day. deploy-platform.sh enables
 # the timer, and starts the first backup, once the platform runs with archiving
@@ -50,14 +52,21 @@ flock -w "$backup_lock_wait" 7 ||
 
 container_running "$FILONE_POSTGRES_CONTAINER" ||
   die "$FILONE_POSTGRES_CONTAINER is not running, so there is nothing to back up"
+walg_installed ||
+  die "WAL-G ${WALG_VERSION:-(no pin in node.env)} is not installed at $(walg_binary).
+       Run scripts/host/install-tools.sh."
 
 # Render it here as well as in reconcile, so a run by hand right after a boot
 # does not wait for a pass.
 write_walg_config
 
 echo "=== Postgres base backup ($FILONE_NODE) ==="
+# Bounded inside the container, under the unit's TimeoutStartSec: systemd's
+# timeout kills the docker exec client here, which would leave WAL-G running in
+# the container, past the lock, into the next day's run.
 docker exec -u postgres "$FILONE_POSTGRES_CONTAINER" \
-  /usr/local/bin/wal-g --config /etc/wal-g/walg.json backup-push /var/lib/postgresql/data ||
+  timeout --kill-after=5m 690m \
+  "/opt/wal-g/$WALG_VERSION/wal-g" --config /etc/wal-g/walg.json backup-push /var/lib/postgresql/data ||
   die "WAL-G could not push the base backup; its output above says why.
        scripts/host/check-backup-target.sh tests the key and the target on their own."
 
