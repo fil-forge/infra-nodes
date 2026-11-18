@@ -874,15 +874,19 @@ through every step here. Check out this repository on the host, then run, as roo
 JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
 ```
 
-Bootstrap first checks the pool, its encryption and key, the two units, Compose 2.40 or later, and
-the UFW rule admitting port 22 from `JUMP_HOST_ADDRESS`. It stops on the first check that fails,
-names it, and changes nothing. It never changes a firewall rule.
+Bootstrap first checks the pool, its encryption and key, the two units, Compose 2.40 or later, the
+UFW rule admitting port 22 from `JUMP_HOST_ADDRESS`, the `filone` network's subnet if it exists,
+`/etc/docker/daemon.json`, and any datasets already under `data/fil-one`. It stops on the first
+check that fails, names it, and changes nothing. It never changes a firewall rule. Existing
+datasets with other quotas, reservations or mount points are all reported before it stops, and are
+left for you to change by hand.
 
-It then creates the datasets under `data/fil-one` with their quotas and reservations, writes
-`/etc/docker/daemon.json` and restarts Docker (refusing while containers run), and creates the
-FilOne tmpfs paths, the `filone` network, `node.conf` and the systemd units. An existing dataset
-with other values is reported and left alone, and bootstrap exits non-zero. A second run changes
-nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value for the node's `node.env`.
+It then creates the datasets under `data/fil-one` with their quotas and reservations and checks
+each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when there is none, and
+restarts Docker for it only when no container runs; an existing file that differs is shown as a
+diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
+systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value for
+the node's `node.env`.
 
 Reboot before anything holds state, and confirm the key loads, every dataset mounts and Docker
 starts:
