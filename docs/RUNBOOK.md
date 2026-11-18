@@ -1150,7 +1150,8 @@ reads its key from a GitHub Environment that admits `main` alone. To smoke-test 
 
 The workflow tests every node under `nodes/` whose stage is dev or staging, unless its node.env sets
 `FILONE_TESTED=false`; steps 2 and 7 of bringing up a node set and remove that line. The stages are
-listed in `TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`.
+listed in `TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`, and the run titles in
+`.github/workflows/test-nodes.yml` name them too.
 
 Running `scripts/ci/e2e-test.sh` from your machine needs Hilt's partner key, the one FilOne uses, which central
 keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment

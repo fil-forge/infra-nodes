@@ -32,7 +32,8 @@ set -euo pipefail
 
 # The stages with a GitHub Environment named after them, holding the partner key
 # the end-to-end test uses. Prod stays out until FIL-1491 finds a credential
-# that cannot reach customer tenants.
+# that cannot reach customer tenants. The run-name in
+# .github/workflows/test-nodes.yml names these stages too; change both together.
 TESTED_STAGES='["dev", "staging"]'
 
 usage="usage: scripts/ci/test-nodes/select.sh [<stages> [<nodes>]]"

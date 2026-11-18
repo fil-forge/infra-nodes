@@ -34,11 +34,18 @@ name: Test nodes
 # the first newline. Expressions have no function that splits or slices a
 # string, and a step cannot set run-name because GitHub evaluates it before
 # any job starts. The empty string is falsy, so the push case comes last.
+#
+# The other titles follow the same shape. infra-central sends change_title,
+# its subject with the pull request written as infra-central#N, because a bare
+# #N would read as a pull request in this repository. A manual run names the
+# nodes it was given, else the stages with all their nodes. "dev & staging"
+# repeats TESTED_STAGES in scripts/ci/test-nodes/select.sh, because run-name
+# cannot read a file; change both together.
 run-name: >-
   ${{
-    github.event_name == 'repository_dispatch' && format('Test nodes after infra-central change: {0}', github.event.client_payload.change_subject)
-    || github.event_name == 'schedule' && 'Test nodes (hourly)'
-    || github.event_name == 'workflow_dispatch' && format('Test nodes {0} {1}', inputs.stages || 'all stages', inputs.nodes)
+    github.event_name == 'repository_dispatch' && (github.event.client_payload.change_title || format('{0} (infra-central)', github.event.client_payload.change_subject))
+    || github.event_name == 'schedule' && 'Hourly run (dev & staging: all nodes)'
+    || github.event_name == 'workflow_dispatch' && format('Manual run ({0})', inputs.nodes || format('{0}: all nodes', inputs.stages || 'dev & staging'))
     || ''
   }}
 
