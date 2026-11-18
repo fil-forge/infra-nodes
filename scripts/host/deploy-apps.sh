@@ -44,6 +44,16 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
   die "INGOT_LOCAL_BLOB_MAX_BYTES in nodes/$FILONE_NODE/node.env is '${INGOT_LOCAL_BLOB_MAX_BYTES:-}', not a
        positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
 
+# Values a node.env commits as placeholders until their source is confirmed.
+# Each reaches Piri's config or its on-chain registration, where a wrong one
+# fails far from here. Dev and staging carry real values, which pass.
+require_configured PDP_VERIFIER_ADDRESS 0x0000000000000000000000000000000000000000
+require_configured FWSS_VIEW_ADDRESS 0x0000000000000000000000000000000000000000
+require_configured LOTUS_RPC_URL PLACEHOLDER
+require_configured OPERATOR_EMAIL PLACEHOLDER
+
+! piri_uses_s3 || require_piri_s3
+
 piri_services="$(piri_services)"
 # A Piri whose volume is not mounted is left out of this deploy, and the rest go
 # ahead. Docker would refuse to start it anyway; the run fails at the end, so
@@ -100,8 +110,14 @@ for service in "${piris[@]}"; do
 done
 unset identity_pem owner_wallet_key owner_wallet_hex
 
-# Piri's base config carries no secret, only addresses and URLs from node.env.
-# Every Piri on the node reads the same one.
+# Piri's base config carries addresses and URLs from node.env, and on a node
+# whose Piris use object storage its credentials too. Every Piri on the node
+# reads the same one.
+if piri_uses_s3; then
+  PIRI_S3_ACCESS_KEY_ID="$(bao_get external piri_s3_access_key_id)"
+  PIRI_S3_SECRET_ACCESS_KEY="$(bao_get external piri_s3_secret_access_key)"
+  export PIRI_S3_ACCESS_KEY_ID PIRI_S3_SECRET_ACCESS_KEY
+fi
 mark piris_changed render_template \
   "$FILONE_NODE_DIR/apps/config/piri/piri-base-config.toml.tpl" \
   "$FILONE_SECRETS_DIR/piri-base-config.toml"

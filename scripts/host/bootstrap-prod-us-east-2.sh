@@ -421,8 +421,15 @@ esac
 # piri holds what piri init writes and the config provision-apps.sh renders;
 # its blobs go to object storage.
 #
+# caddy holds Caddy's certificates, ACME account keys and autosaved config, and
+# alloy the write-ahead log Alloy buffers telemetry in while Grafana Cloud is
+# unreachable. Each has a quota of its own so that neither can grow into the
+# pool the other datasets share. The two sizes are this script's choice; no
+# record sets them.
+#
 # nodes/prod/us-east-2 binds these mount points, under /mnt/data/fil-one, into
-# the containers, and tests/ checks that every bind there lies in one of them.
+# the containers, and tests/ checks that every bind there under /mnt lies in
+# one of them.
 # Two things there depend on this layout. Its node.env sets
 # FILONE_CONTROL_DIR=/mnt/data/fil-one/control and
 # FILONE_DATA_DIR=/mnt/data/fil-one/ingot, because lib.sh's defaults are the
@@ -436,6 +443,8 @@ datasets="
 control/postgres reservation $(percent 20)
 control/openbao reservation $((10 * GIB))
 control/state quota $((50 * GIB))
+control/caddy quota $((1 * GIB))
+control/alloy quota $((10 * GIB))
 piri quota $((50 * GIB))
 ingot/segments quota $(percent 5)
 ingot/blobs quota $blobs_quota

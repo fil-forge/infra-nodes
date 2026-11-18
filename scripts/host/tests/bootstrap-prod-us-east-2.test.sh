@@ -37,6 +37,8 @@ OTHER=198.51.100.7
 EXPECT_POSTGRES_RESERVATION=$((POOL_SIZE * 20 / 100 / MIB * MIB))
 EXPECT_OPENBAO_RESERVATION=$((10 * GIB))
 EXPECT_STATE_QUOTA=$((50 * GIB))
+EXPECT_CADDY_QUOTA=$((1 * GIB))
+EXPECT_ALLOY_QUOTA=$((10 * GIB))
 EXPECT_PIRI_QUOTA=$((50 * GIB))
 EXPECT_SEGMENTS_QUOTA=$((POOL_SIZE * 5 / 100 / MIB * MIB))
 EXPECT_BLOBS_QUOTA=$((POOL_SIZE * 50 / 100 / MIB * MIB))
@@ -777,6 +779,10 @@ check "creates control/openbao with its reservation" \
   prop_is data/fil-one/control/openbao reservation "$EXPECT_OPENBAO_RESERVATION"
 check "creates control/state with its quota" \
   prop_is data/fil-one/control/state quota "$EXPECT_STATE_QUOTA"
+check "creates control/caddy with its quota" \
+  prop_is data/fil-one/control/caddy quota "$EXPECT_CADDY_QUOTA"
+check "creates control/alloy with its quota" \
+  prop_is data/fil-one/control/alloy quota "$EXPECT_ALLOY_QUOTA"
 check "creates piri with its quota" \
   prop_is data/fil-one/piri quota "$EXPECT_PIRI_QUOTA"
 check "creates ingot/segments with its quota" \
@@ -784,8 +790,8 @@ check "creates ingot/segments with its quota" \
 check "creates ingot/blobs with its quota" \
   prop_is data/fil-one/ingot/blobs quota "$EXPECT_BLOBS_QUOTA"
 check "tries the key file without loading it" called '^zfs load-key -n data$'
-check "creates exactly six datasets" \
-  test "$(grep -c '^zfs create' "$STATE/calls")" -eq 6
+check "creates exactly eight datasets" \
+  test "$(grep -c '^zfs create' "$STATE/calls")" -eq 8
 check "checks where the blobs dataset mounted" called '^zfs get .*mountpoint data/fil-one/ingot/blobs$'
 check "writes daemon.json with json-file rotation" \
   grep -q '"log-driver": "json-file"' "$ROOT/etc/docker/daemon.json"
@@ -967,6 +973,12 @@ check "the status document is served from control/state" \
   test "$(mount_of "$(bind_source platform /srv/filone/.well-known)")" = /mnt/data/fil-one/control/state
 check "the deploy stamps are read from control/state" \
   test "$(mount_of "$(bind_source platform /metrics)")" = /mnt/data/fil-one/control/state
+check "Caddy's certificates are on control/caddy" \
+  test "$(mount_of "$(bind_source platform /data)")" = /mnt/data/fil-one/control/caddy
+check "Caddy's autosaved config is on control/caddy" \
+  test "$(mount_of "$(bind_source platform /config)")" = /mnt/data/fil-one/control/caddy
+check "Alloy's write-ahead log is control/alloy" \
+  test "$(bind_source platform /var/lib/alloy/data)" = /mnt/data/fil-one/control/alloy
 check "the Piri is bound to a directory on the piri dataset" \
   test "$(mount_of "$(bind_source apps /data/piri)")" = /mnt/data/fil-one/piri
 check "the Piri's directory is below the dataset's mount point" \
@@ -975,8 +987,14 @@ check "Ingot's data directory is ingot/blobs" \
   test "$(bind_source apps /data)" = /mnt/data/fil-one/ingot/blobs
 check "Ingot's segments are ingot/segments" \
   test "$(bind_source apps /data/segments)" = /mnt/data/fil-one/ingot/segments
-outside="$(awk '$2 ~ /^\/mnt\// && $2 !~ /^\/mnt\/data\/fil-one\// { print $2 }' <<<"$binds")"
-check "binds nothing under /mnt outside /mnt/data/fil-one" test -z "$outside"
+# Every bind from /mnt, named above or not, lies on a dataset the run created
+# rather than on a parent such as control, which has no quota of its own.
+off_dataset=""
+while read -r _ source _; do
+  case "$source" in /mnt/*) ;; *) continue ;; esac
+  [ -n "$(mount_of "$source")" ] || off_dataset="$off_dataset $source"
+done <<<"$binds"
+check "binds nothing from /mnt outside the created datasets" test -z "$off_dataset"
 
 echo
 if [ "$failures" -ne 0 ]; then

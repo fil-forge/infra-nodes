@@ -1,9 +1,9 @@
 # Platform services for the prod/us-east-2 node: OpenBao, Postgres, Caddy and
 # Alloy.
 #
-# The dev node's four services, with bare-metal paths: every bind below sits on
-# a ZFS dataset scripts/host/bootstrap-prod-us-east-2.sh creates under
-# /mnt/data/fil-one. OpenBao and Postgres carry staging's limits; Caddy and
+# The dev node's four services, with bare-metal paths: every bind below from
+# /mnt sits on a ZFS dataset scripts/host/bootstrap-prod-us-east-2.sh creates
+# under /mnt/data/fil-one, which its test checks. OpenBao and Postgres carry staging's limits; Caddy and
 # Alloy have none, as on dev.
 #
 # Run through scripts/host/deploy-platform.sh, which supplies the env files and
@@ -104,7 +104,9 @@ services:
 
   # Terminates TLS for the node's public hostnames and obtains and renews their
   # certificates over ACME. Publishes 80 and 443 on every host address, as on
-  # dev.
+  # dev. The host has one public address, so that is the one it serves. If the
+  # host gains a second, bind both ports to the public address alone, as
+  # "<address>:80:80" and "<address>:443:443".
   caddy:
     image: ${CADDY_IMAGE}
     ports:
@@ -115,8 +117,8 @@ services:
       - INGOT_HOSTNAME=${INGOT_HOSTNAME}
     volumes:
       - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      # Issued certificates and ACME account keys, kept on the pool so a
-      # recreated container serves the same certificates.
+      # Issued certificates and ACME account keys, kept on the control/caddy
+      # dataset so a recreated container serves the same certificates.
       - type: bind
         source: /mnt/data/fil-one/control/caddy/data
         target: /data
@@ -179,6 +181,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # Alloy's write-ahead log, on the control/alloy dataset.
       - type: bind
         source: /mnt/data/fil-one/control/alloy
         target: /var/lib/alloy/data

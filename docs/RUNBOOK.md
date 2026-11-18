@@ -140,11 +140,18 @@ Commit the printed value in place of the 0 placeholder.
 
 `nodes/prod/us-east-2/node.env` was committed with these values still open, and each is refused
 until it is set: `PAYER_ADDRESS` (from central's prod stage), `INGOT_LOCAL_BLOB_MAX_BYTES` (from
-bootstrap), the three Grafana user ids (for the stack its URLs name), and `TARGET_PLATFORM` with
+bootstrap), `PDP_VERIFIER_ADDRESS` and `FWSS_VIEW_ADDRESS` (central's prod files name neither),
+`LOTUS_RPC_URL`, `OPERATOR_EMAIL`, the three Grafana URLs and user ids, and `TARGET_PLATFORM` with
 the two tool checksums for the host's architecture. Ingot's `cors_allowed_origins` is empty, which
-turns CORS off, until a production console origin is recorded. Piri still uses the filesystem blob
-backend; the piri dataset's 50 GiB quota is not sized for blobs, so wire its object storage in
-before Piri takes uploads.
+turns CORS off, until a production console origin is recorded.
+
+Prod/us-east-2's Piri keeps its blobs in S3-compatible object storage, through the `[repo.s3]`
+section of its base config, because the piri dataset's 50 GiB quota is sized for its config and
+state. `PIRI_S3_ENDPOINT` and `PIRI_S3_BUCKET_PREFIX` are committed empty, and `deploy-apps.sh`
+refuses to start a Piri while either is empty or OpenBao lacks `filone/external`'s
+`piri_s3_access_key_id` and `piri_s3_secret_access_key`. Once the endpoint is committed,
+`provision-platform.sh` asks for the two credentials. `piri init` copies them into the config it
+writes on the piri dataset.
 
 Add `FILONE_TESTED=false` to a new node's node.env. `test-nodes.yml` tests every node under
 `nodes/` of a tested stage from the moment its node.env merges, and a node that is not serving yet
@@ -918,9 +925,15 @@ diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, 
 systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value;
 commit it in `nodes/prod/us-east-2/node.env` before step 6.
 
-`nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao and the state directory to their
-`control/` datasets, Caddy's and Alloy's state to directories in `control`, Piri to `piri-0/` on
-`piri`, and Ingot's data directory to `ingot/blobs` with `ingot/segments` over its `segments`.
+`nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao, the state directory, Caddy's
+state and Alloy's write-ahead log to their `control/` datasets (Caddy's to `data/` and `config/`
+on `control/caddy`), Piri to `piri-0/` on `piri`, and Ingot's data directory to `ingot/blobs` with
+`ingot/segments` over its `segments`.
+
+Caddy publishes 80 and 443 on every host address. The host has one public address, so that is the
+address it serves. If the host gains a second address, publish the two ports on the public one
+alone, as `"<address>:80:80"` and `"<address>:443:443"` in
+`nodes/prod/us-east-2/platform/compose.yml`, and open them only there.
 
 Reboot before anything holds state, and confirm the key loads, every dataset mounts and Docker
 starts:

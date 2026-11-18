@@ -27,10 +27,10 @@ x-piri-base: &piri-base
     PLC_DIRECTORY_URL: ${PLC_DIRECTORY_URL}
     OPERATOR_EMAIL: ${OPERATOR_EMAIL}
     PIRI_DB_BACKEND: postgres
-    # Staging's backend until the object storage this node's Piri is to use is
-    # wired in. The piri dataset's 50 GiB quota is sized for Piri's config and
-    # state, not for blobs.
-    PIRI_BLOB_BACKEND: filesystem
+    # No PIRI_BLOB_BACKEND, which dev and staging set to filesystem: this
+    # node's Piri keeps its blobs in object storage, set in the [repo.s3]
+    # section of its base config, because the piri dataset's 50 GiB quota is
+    # sized for its config and state.
     # Seconds a re-run of `piri init` may take before it is killed and the
     # existing config served. Set PIRI_INIT_TIMEOUT in node.env to change it.
     PIRI_INIT_TIMEOUT: ${PIRI_INIT_TIMEOUT:-300}

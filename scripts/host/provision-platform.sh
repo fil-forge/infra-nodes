@@ -172,6 +172,13 @@ prompt_secret() {
 
 prompt_secret external chain_rpc_token "chain.love access token"
 
+# Only once the endpoint is committed: until then nobody has the credentials,
+# and deploy-apps.sh refuses to start a Piri without them.
+if piri_uses_s3 && [ -n "$PIRI_S3_ENDPOINT" ]; then
+  prompt_secret external piri_s3_access_key_id "Piri object storage access key id"
+  prompt_secret external piri_s3_secret_access_key "Piri object storage secret access key"
+fi
+
 if node_ships_telemetry; then
   prompt_secret external grafana_push_token "Grafana Cloud push token"
 else

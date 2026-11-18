@@ -139,6 +139,33 @@ require_configured() {
     die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
 }
 
+# Whether this node's Piris keep their blobs in S3-compatible object storage,
+# from whether its node.env defines PIRI_S3_ENDPOINT, empty or not. Its Piri
+# base config then has a [repo.s3] section rendered from these settings.
+piri_uses_s3() {
+  [ -n "${PIRI_S3_ENDPOINT+set}" ]
+}
+
+# Refuse a Piri deploy on such a node while its object storage is not
+# configured. A Piri started without it would keep its blobs on its own
+# dataset, which is sized for its config and state, and fill it. The endpoint
+# and bucket prefix come from node.env, where they are committed empty until
+# they are known; the credentials come from OpenBao, which
+# provision-platform.sh stores once the endpoint is set.
+require_piri_s3() {
+  local name
+  for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX; do
+    [ -n "${!name:-}" ] ||
+      die "$name in $FILONE_NODE_DIR/node.env is empty. This node's Piris keep their blobs in
+       object storage, and none starts until it is configured."
+  done
+  for name in piri_s3_access_key_id piri_s3_secret_access_key; do
+    bao_has external "$name" ||
+      die "OpenBao has no $FILONE_BAO_MOUNT/external#$name. Run provision-platform.sh,
+       which asks for the object storage credentials once PIRI_S3_ENDPOINT is set."
+  done
+}
+
 # Whether this node ships its own telemetry, from whether its node.env carries
 # the Grafana Cloud endpoints. A node whose host owns Alloy leaves all six out
 # and needs no push token; a node that runs Alloy in the platform project has

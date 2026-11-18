@@ -579,18 +579,75 @@ pause_node_timers() {
   systemctl stop filone-reconcile.service 2>/dev/null || true
 }
 
-# Move the store in $FILONE_CONTROL_DIR/openbao to <destination>, and put an
+# Move the store in $FILONE_CONTROL_DIR/openbao to <destination>, and leave an
 # empty raft directory with the same owner and mode in its place. The caller
-# stops OpenBao first. The destination sits on the same filesystem, so the move
-# is a rename and cannot leave half a store behind.
+# stops OpenBao first. The destination is in the control directory;
+# move_dir_aside says how the store gets there.
 #
 # Usage: move_bao_store_aside <destination>
 move_bao_store_aside() {
-  local destination="$1" raft_dir="$FILONE_CONTROL_DIR/openbao" uid gid mode
+  move_dir_aside "$FILONE_CONTROL_DIR/openbao" "$1"
+}
+
+# Whether a directory is a mount point, such as a ZFS dataset's: it is on
+# another filesystem than its parent directory.
+is_mount_root() {
+  [ "$(stat -c %d "$1")" != "$(stat -c %d "$(dirname "$1")")" ]
+}
+
+# Move <dir> to <destination>, which must not exist yet and sits on the
+# filesystem of <dir>'s parent, and leave an empty <dir> with the same owner and
+# mode in its place.
+#
+# Where <dir> is on its parent's filesystem, as on the cloud nodes and staging,
+# the move is a rename and cannot leave half a directory behind. A mount point,
+# as control/openbao is on prod/us-east-2, cannot be renamed: Linux refuses with
+# EBUSY. Its contents are copied to <destination> instead and deleted from
+# <dir> only once the copy is complete, so a failure leaves <dir> as it was.
+# <dir> stays the mount point.
+#
+# Usage: move_dir_aside <dir> <destination>
+move_dir_aside() {
+  local dir="$1" destination="$2" uid gid mode
   [ ! -e "$destination" ] || die "$destination exists already"
-  read -r uid gid mode < <(stat -c '%u %g %a' "$raft_dir")
-  mv -T "$raft_dir" "$destination"
-  install -d -o "$uid" -g "$gid" -m "$mode" "$raft_dir"
+  read -r uid gid mode < <(stat -c '%u %g %a' "$dir")
+  if ! is_mount_root "$dir"; then
+    mv -T "$dir" "$destination"
+    install -d -o "$uid" -g "$gid" -m "$mode" "$dir"
+    return 0
+  fi
+  install -d -o "$uid" -g "$gid" -m "$mode" "$destination"
+  if ! cp -a -- "$dir/." "$destination/"; then
+    rm -rf -- "$destination"
+    die "could not copy $dir to $destination; $dir is unchanged"
+  fi
+  find "$dir" -mindepth 1 -delete ||
+    die "copied $dir to $destination but could not empty $dir; the full copy is in $destination"
+}
+
+# Put back what move_dir_aside moved: <dir>'s contents now go to <displaced>,
+# which must not exist yet, and the directory at <aside> becomes <dir> again.
+#
+# Two renames where <dir> is on its parent's filesystem. Where it is a mount
+# point, <dir> is moved aside by move_dir_aside, <aside>'s contents are copied
+# into it, and <aside> is then renamed <aside>.rolled-back, so nothing is
+# deleted and a second run finds no <aside> to put back.
+#
+# Usage: move_dir_back <dir> <aside> <displaced>
+move_dir_back() {
+  local dir="$1" aside="$2" displaced="$3"
+  [ -d "$aside" ] || die "$aside is not a directory"
+  [ ! -e "$displaced" ] || die "$displaced exists already"
+  if ! is_mount_root "$dir"; then
+    mv -T "$dir" "$displaced"
+    mv -T "$aside" "$dir"
+    return 0
+  fi
+  move_dir_aside "$dir" "$displaced"
+  cp -a -- "$aside/." "$dir/" ||
+    die "could not copy $aside into $dir. $aside still holds the store moved aside, and
+       $displaced the one $dir held"
+  mv -T "$aside" "$aside.rolled-back"
 }
 
 # Initialise the empty store in a running OpenBao container, restore a raft
