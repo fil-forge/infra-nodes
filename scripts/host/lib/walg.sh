@@ -18,13 +18,13 @@
 FILONE_POSTGRES_UID=999
 
 # A directory on tmpfs that compose.yml binds into the Postgres container
-# whole. A bind of the config file itself would keep Postgres from starting
+# whole, as /etc/wal-g, holding the config of the running cluster as
+# <system identifier>.json. A bind of a file would keep Postgres from starting
 # after a reboot, until something had rendered the file again; a missing file
 # only fails archive_command, which Postgres retries, holding the segment in
 # pg_wal. Every reconcile pass renders it, so the archive resumes within one
 # pass of a boot.
 FILONE_WALG_DIR=/run/fil-one/walg
-FILONE_WALG_CONFIG="$FILONE_WALG_DIR/walg.json"
 
 FILONE_POSTGRES_BACKUP_SERVICE=filone-postgres-backup.service
 FILONE_POSTGRES_BACKUP_TIMER=filone-postgres-backup.timer
@@ -75,12 +75,14 @@ postgres_system_identifier() {
 # control volume or migrated again, starts its WAL at the same segment names
 # as the one before it; under one prefix its uploads would become the current
 # versions of the old cluster's segments, and a restore of the old cluster
-# would read them. Readable by the container's postgres user alone.
+# would read them. The file is named for the identifier too, and Postgres's
+# archive_command (config/postgres/wal-push.sh in the node's platform) reads
+# the one named for the cluster it runs, so a config left from an earlier
+# cluster is never used for a later one. Configs of other clusters are removed.
+# Readable by the container's postgres user alone.
 write_walg_config() {
-  local content sysid
+  local content sysid config stale
   load_backup_target
-  [ -n "$backup_bucket" ] && [ -n "$backup_aws_region" ] ||
-    die "$FILONE_BAO_MOUNT/$FILONE_BACKUP_PATH has an empty bucket or region"
   sysid="$(postgres_system_identifier)" ||
     die "could not read the Postgres cluster's system identifier, which names its archive;
        Postgres may not have initialised its cluster yet"
@@ -104,10 +106,20 @@ print()
 ')" || die "could not build WAL-G's config"
   unset backup_secret_access_key
 
-  write_secret_file "$FILONE_WALG_CONFIG" "$content" || true
+  config="$FILONE_WALG_DIR/$sysid.json"
+  write_secret_file "$config" "$content" || true
   unset content
-  chown "$FILONE_POSTGRES_UID:$FILONE_POSTGRES_UID" "$FILONE_WALG_CONFIG" ||
-    die "could not hand $FILONE_WALG_CONFIG to the Postgres container's user"
+  chown "$FILONE_POSTGRES_UID:$FILONE_POSTGRES_UID" "$config" ||
+    die "could not hand $config to the Postgres container's user"
+  for stale in "$FILONE_WALG_DIR"/*.json; do
+    [ "$stale" = "$config" ] || rm -f -- "$stale"
+  done
+}
+
+# The archive_mode the running Postgres reports, or a failure when it cannot
+# be asked.
+postgres_archive_mode() {
+  docker exec "$FILONE_POSTGRES_CONTAINER" psql -U admin -d admin -At -c 'SHOW archive_mode' 2>/dev/null
 }
 
 # Where backup-postgres.sh records the system identifier of the cluster its
@@ -117,10 +129,25 @@ postgres_backup_cluster_file() {
   printf '%s/postgres-basebackup-cluster\n' "$FILONE_STATE_DIR"
 }
 
-# Enable the daily base backup once the platform runs with archiving on, and
-# ask for the first one.
+# At the end of a platform deploy: enable the daily base backup while Postgres
+# archives, and ask for the first one; disable it while Postgres does not, as
+# on a node taken back to the Alpine image, where every run would fail. A
+# setting that cannot be read leaves the timer as it is.
 start_postgres_backups() {
+  local mode
   node_takes_backups || return 0
+  mode="$(postgres_archive_mode)" || {
+    echo "  WARNING: could not read archive_mode; $FILONE_POSTGRES_BACKUP_TIMER left as it is"
+    return 0
+  }
+  if [ "$mode" != on ]; then
+    if systemctl is-enabled --quiet "$FILONE_POSTGRES_BACKUP_TIMER" 2>/dev/null; then
+      systemctl disable --now "$FILONE_POSTGRES_BACKUP_TIMER" >/dev/null ||
+        die "could not disable $FILONE_POSTGRES_BACKUP_TIMER"
+      echo "  Postgres runs with archive_mode=$mode, so $FILONE_POSTGRES_BACKUP_TIMER is disabled"
+    fi
+    return 0
+  fi
   if ! systemctl is-enabled --quiet "$FILONE_POSTGRES_BACKUP_TIMER" 2>/dev/null; then
     # The unit may not be on the box yet when this runs by hand, before a
     # reconcile pass has installed the checkout's units.
@@ -140,16 +167,17 @@ start_postgres_backups() {
 # keeps failing shows in the unit's journal. Only where the timer is enabled and
 # Postgres archives.
 request_postgres_backup() {
-  local sysid archiving
+  local sysid
   node_takes_backups || return 0
   systemctl is-enabled --quiet "$FILONE_POSTGRES_BACKUP_TIMER" 2>/dev/null || return 0
   container_running "$FILONE_POSTGRES_CONTAINER" || return 0
   sysid="$(postgres_system_identifier)" || return 0
   [ "$(cat "$(postgres_backup_cluster_file)" 2>/dev/null)" != "$sysid" ] || return 0
-  archiving="$(docker exec "$FILONE_POSTGRES_CONTAINER" psql -U admin -d admin -At \
-    -c 'SHOW archive_mode' 2>/dev/null)" || return 0
-  [ "$archiving" = on ] || return 0
-  systemctl is-active --quiet "$FILONE_POSTGRES_BACKUP_SERVICE" && return 0
+  [ "$(postgres_archive_mode)" = on ] || return 0
+  # A oneshot unit is activating, not active, for as long as it runs.
+  case "$(systemctl show -P ActiveState "$FILONE_POSTGRES_BACKUP_SERVICE" 2>/dev/null)" in
+    active | activating | deactivating | reloading) return 0 ;;
+  esac
 
   echo "  Postgres has no base backup of this cluster yet; starting one"
   systemctl start --no-block "$FILONE_POSTGRES_BACKUP_SERVICE" ||
@@ -194,8 +222,9 @@ refresh_walg_config() {
   status=$?
   set -e
   [ "$status" -ne 0 ] || return 0
-  echo "  WARNING: could not render WAL-G's config, so Postgres cannot archive WAL" \
-    "until a later pass renders it. scripts/host/check-backup-target.sh tests the key."
+  echo "  WARNING: could not render WAL-G's config this pass. Postgres archives with the" \
+    "one an earlier pass rendered for its cluster, and cannot archive without one." \
+    "scripts/host/check-backup-target.sh tests the key."
 }
 
 # Write the WAL archiver's state for the textfile collector, from

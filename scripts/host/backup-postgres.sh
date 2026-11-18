@@ -61,7 +61,7 @@ walg_installed ||
        Run scripts/host/install-tools.sh."
 # WAL-G takes a base backup with archiving off, warning only, and it would
 # stamp a fresh backup that no archived WAL can be replayed onto.
-archiving="$(docker exec "$FILONE_POSTGRES_CONTAINER" psql -U admin -d admin -At -c 'SHOW archive_mode')" ||
+archiving="$(postgres_archive_mode)" ||
   die "could not read archive_mode from $FILONE_POSTGRES_CONTAINER"
 [ "$archiving" = on ] ||
   die "Postgres runs with archive_mode=$archiving, so a base backup would have no WAL to
@@ -81,7 +81,7 @@ echo "=== Postgres base backup ($FILONE_NODE) ==="
 # the container, past the lock, into the next day's run.
 docker exec -u postgres "$FILONE_POSTGRES_CONTAINER" \
   timeout --kill-after=5m 690m \
-  "/opt/wal-g/$WALG_VERSION/wal-g" --config /etc/wal-g/walg.json backup-push /var/lib/postgresql/data ||
+  "/opt/wal-g/$WALG_VERSION/wal-g" --config "/etc/wal-g/$sysid.json" backup-push /var/lib/postgresql/data ||
   die "WAL-G could not push the base backup; its output above says why.
        scripts/host/check-backup-target.sh tests the key and the target on their own."
 

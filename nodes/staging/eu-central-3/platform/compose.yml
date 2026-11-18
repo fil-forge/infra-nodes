@@ -50,14 +50,16 @@ services:
     # for the clusters it starts by hand: the old one under Alpine, and the new
     # one while it restores into it.
     #
-    # The path names the pinned version, so a new pin changes this service's
-    # definition, and the deploy that takes it recreates Postgres to run it.
+    # filone-wal-push runs WAL-G with the config rendered for this cluster
+    # alone (config/postgres/wal-push.sh says why). It is given the pinned
+    # version, so a new pin changes this service's definition, and the deploy
+    # that takes it recreates Postgres to run it.
     command:
       - postgres
       - -c
       - archive_mode=${POSTGRES_ARCHIVE_MODE:-off}
       - -c
-      - archive_command=/opt/wal-g/${WALG_VERSION:?node.env pins WALG_VERSION on a node that takes backups}/wal-g --config /etc/wal-g/walg.json wal-push %p
+      - archive_command=/usr/local/bin/filone-wal-push ${WALG_VERSION:?node.env pins WALG_VERSION on a node that takes backups} %p
       - -c
       - archive_timeout=60
     volumes:
@@ -74,10 +76,12 @@ services:
         source: /usr/local/lib/fil-one/wal-g
         target: /opt/wal-g
         read_only: true
+      - ./config/postgres/wal-push.sh:/usr/local/bin/filone-wal-push:ro
       # WAL-G's config, rendered from filone/backup-target in OpenBao on every
-      # reconcile pass. The directory rather than the file, and one Docker may
-      # create: tmpfs is empty after a reboot, and Postgres has to start
-      # before a pass renders the file again (scripts/host/lib/walg.sh).
+      # reconcile pass, one file per cluster. The directory rather than a file,
+      # and one Docker may create: tmpfs is empty after a reboot, and Postgres
+      # has to start before a pass renders the file again
+      # (scripts/host/lib/walg.sh).
       - type: bind
         source: /run/fil-one/walg
         target: /etc/wal-g

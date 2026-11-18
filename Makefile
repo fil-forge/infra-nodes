@@ -36,7 +36,7 @@ check-tofu:
 .PHONY: check-shell
 check-shell:
 	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
-	find nodes -name entrypoint.sh -exec shellcheck {} +
+	find nodes -name '*.sh' -exec shellcheck {} +
 	shellcheck scripts/ci/*.sh scripts/ci/*/*.sh
 
 # `compose config` resolves every interpolation, so it catches a variable a

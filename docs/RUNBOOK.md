@@ -1331,16 +1331,20 @@ archives under a directory of its own, so the earlier cluster's archive stays wh
   `archive_command` names the pinned version. Run `install-tools.sh` as soon as a new pin reaches
   the checkout. Until it has run, the deploys warn, Postgres keeps every segment in `pg_wal`, base
   backups fail, and "Appliance Postgres WAL archive is failing" fires about 25 minutes later; the
-  platform and the apps carry on. The deploy that takes the new pin recreates Postgres to run it. Each version stays installed, since
-  the running Postgres uses its own until then; remove old ones by hand.
-- **Its config** is rendered from `filone/backup-target` to `/run/fil-one/walg/walg.json` on every
-  reconcile pass and every platform deploy, readable only by the container's `postgres` user (uid
-  999). A failure to render it warns and lets the deploys go on. Postgres starts without it after
-  a reboot; archiving fails, keeping the segments in `pg_wal`, until the first pass renders it, and
+  platform and the apps carry on. The deploy that takes the new pin recreates Postgres to run it.
+  Each version stays installed, since the running Postgres uses its own until then; remove old ones
+  by hand.
+- **Its config** is rendered from `filone/backup-target` to
+  `/run/fil-one/walg/<system identifier>.json` on every reconcile pass and every platform deploy,
+  readable only by the container's `postgres` user (uid 999). `archive_command` runs
+  `config/postgres/wal-push.sh` from the node's platform directory, which uses only the file named
+  for the cluster Postgres runs, so a config left from an earlier cluster is never used for a new
+  one. A failure to render it warns and lets the deploys go on. Postgres starts without it after a
+  reboot; archiving fails, keeping the segments in `pg_wal`, until the first pass renders it, and
   then catches up.
-- **The timer** is enabled by the first platform deploy that runs with archiving on. Until the
-  running cluster has a base backup of its own, every reconcile pass starts one, so the first
-  follows within a pass of WAL-G being installed. To take one now, as root:
+- **The timer** is enabled by each platform deploy while Postgres archives, and disabled while it
+  does not. Until the running cluster has a base backup of its own, every reconcile pass starts
+  one, so the first follows within a pass of WAL-G being installed. To take one now, as root:
 
   ```sh
   scripts/host/backup-postgres.sh
@@ -1540,11 +1544,11 @@ new one otherwise), make sure Postgres runs on it, and go on from the case above
 To go back, revert the node's `platform/versions.env` and `platform/compose.yml`, not the whole
 change, which would also remove the guards. The next deploy starts the old image on the old
 directory, with the data as it was when the move began, so everything written since is lost. On a
-node that takes backups, the old image cannot archive, so also run `systemctl disable --now
-filone-postgres-backup.timer`; "Appliance Postgres base backup is stale" fires until the node moves
-again. Once
-the old cluster has run, the migration stops counting, so merging the move again later waits for a
-fresh migration, which carries the old cluster's newer data across and moves the stale copy aside.
+node that takes backups the old image cannot archive, so that deploy disables
+`filone-postgres-backup.timer`, and "Appliance Postgres base backup is stale" fires until the node
+moves again. Once the old cluster has run, the migration stops counting, so merging the move again
+later waits for a fresh migration, which carries the old cluster's newer data across and moves the
+stale copy aside.
 After the old directory is removed there is no way back but a restore, and the guard refuses a
 revert of those two files rather than starting an empty cluster.
 
@@ -1633,18 +1637,20 @@ old. The unit's journal has the reason: `{service_name="appliance-staging-eu-cen
 unit="filone-postgres-backup.service"}` in Loki, or `journalctl -u filone-postgres-backup.service`
 on the host. An age of centuries means none has finished yet. Every reconcile pass starts one
 until the running cluster has its first, so the journal shows each attempt: `WAL-G ... is not
-installed` means run `install-tools.sh`, and `archive_mode=off` means the node's `versions.env`
-does not turn archiving on. With no attempts at all, check that the timer is enabled
-(`systemctl list-timers filone-postgres-backup.timer`); the first platform deploy with archiving on
-enables it. A key or bucket error reads more plainly from `check-backup-target.sh`. Until a base
-backup lands, the WAL archive cannot be restored from.
+installed` means run `install-tools.sh`. With no attempts at all, check that the timer is enabled
+(`systemctl list-timers filone-postgres-backup.timer`). The platform deploy enables it while
+Postgres archives and disables it while it does not, so a disabled timer means the node's
+`versions.env` does not turn archiving on, or no platform deploy has finished since it did. A key
+or bucket error reads more plainly from `check-backup-target.sh`. Until a base backup lands, the
+WAL archive cannot be restored from.
 
 **The Postgres WAL archive is failing.** A WAL segment has waited more than 15 minutes in `pg_wal`
 because WAL-G has not uploaded it. Postgres keeps every one and retries, so nothing is lost yet, but
 `pg_wal` grows on the control volume until archiving works again. `docker logs
-filone-platform-postgres-1` has WAL-G's error for each attempt. A missing `/etc/wal-g/walg.json`
-means no pass has rendered it since a boot, and the reconcile journal says why: check that OpenBao
-is unsealed and that `filone/backup-target` holds the key. `wal-g: not found` (exit 127) means the
+filone-platform-postgres-1` has WAL-G's error for each attempt. `no WAL-G config for cluster`
+means no pass has rendered this cluster's since a boot or since the cluster was initialised, and
+the reconcile journal says why: check that OpenBao is unsealed and that `filone/backup-target`
+holds the key. `wal-g: not found` (exit 127) means the
 pinned version is not installed: run `install-tools.sh`. A key or bucket error reads more plainly
 from `check-backup-target.sh`.
 
