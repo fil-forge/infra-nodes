@@ -105,6 +105,16 @@ The whole dev journal, every unit, for a boot or a Docker problem:
 {service_name="appliance-dev-us-east-9-host"}
 ```
 
+On a node with the database VPN, the health check's output: a line each time it moves the
+database route to the other tunnel, and an error on every run while both tunnels are down. The
+tunnels' own state is alerted on from the AWS side, by infra-central's two VPN tunnel rules, a
+warning for one tunnel down and a critical for both. A host whose Alloy ships only the units it lists needs
+`filone-vpn-health.service` and `filone-vpn.service` added to that list.
+
+```logql
+{node="prod/us-east-2", unit="filone-vpn-health.service"}
+```
+
 ### Caddy
 
 Both nodes ship Caddy's runtime log as JSON: certificate issuance and renewal, TLS cache
