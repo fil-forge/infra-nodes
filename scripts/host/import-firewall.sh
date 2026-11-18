@@ -28,9 +28,10 @@
 #
 # deploy-import.sh applies the list before it starts the service, on every run.
 # A reboot empties the table, and the service cannot start until that deploy
-# has rendered its certificates into the secrets tmpfs, so the port is never
-# open without the table in front of it. After editing the list, run this as
-# root, then `import-firewall.sh status`.
+# has rendered its certificates into the secrets tmpfs. Once the service has
+# come up, reconcile.sh applies the list on every pass too, so a table flushed
+# by hand is loaded again within five minutes. After editing the list, run this
+# as root, then `import-firewall.sh status`.
 #
 # Files under /etc and /run are read only through cat and cmp and written only
 # through install and rm, which is what lets the test in tests/ run it against

@@ -193,6 +193,17 @@ if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ] && [ "$retry_rag" -e
   echo "  nothing to deploy"
 fi
 
+# Every pass on a node where the import service has come up healthy, whose
+# deploy records its configuration hash. Its port is open to every address
+# whenever its firewall table is gone, and deploy-import.sh loads the table only
+# when it runs. The script loads nothing when the table matches the list. A
+# failure is a warning, as for the service's own deploy: Piri and Ingot are not
+# involved.
+if [ -e "$FILONE_STATE_DIR/apps-import-service.sha256" ]; then
+  "$FILONE_CHECKOUT/scripts/host/import-firewall.sh" ||
+    echo "WARNING: the import service's firewall table could not be applied; see above." >&2
+fi
+
 # Stamped on every pass that gets this far, including a pass that deployed
 # nothing. That is what makes it a deadman: the metric goes stale when the node
 # stops reconciling, whether or not anyone was shipping.

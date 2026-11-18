@@ -986,7 +986,8 @@ How it is wired:
   service's port unless it comes from an address in `/etc/fil-one/import-clients`. An empty or
   missing list closes the port to everyone. `deploy-import.sh` applies the list on every run, before
   it starts the service. After a reboot the service cannot start until that deploy renders its
-  certificates, so the port is never open without the table.
+  certificates. Once the service has come up, every reconcile pass applies the list as well, so a
+  table flushed by hand is back within five minutes.
 
 Its settings:
 
@@ -1068,9 +1069,10 @@ To take the service off the node, remove it from `compose.yml` and its settings 
 
 ```sh
 docker rm -f filone-import-service
+# First, so no reconcile pass loads the table again.
+rm -f /mnt/data/fil-one/control/state/import-retry /mnt/data/fil-one/control/state/apps-import-service.sha256
 nft delete table ip filone_import
 rm -rf /run/fil-one/secrets/import-service /run/fil-one/secrets/import-service.env /etc/fil-one/import-clients
-rm -f /mnt/data/fil-one/control/state/import-retry /mnt/data/fil-one/control/state/apps-import-service.sha256
 ```
 
 What has not been run. The scripts are tested only against stubs
