@@ -51,11 +51,13 @@ SERVICE_PORT=8443
 usage() { die "usage: $(basename "$0") [status]"; }
 
 # --- Addresses -------------------------------------------------------------
-# As in setup-vpn.sh.
+# As in setup-vpn.sh, except that an octet or prefix with a leading zero is
+# refused: nft reads an address through inet_aton, which takes 010 as octal 8,
+# so the table would admit an address other than the one on the list.
 
 ipv4_to_int() { # prints the address as a number, or fails
   local IFS=. a b c d octet
-  [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  [[ "$1" =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]] || return 1
   read -r a b c d <<<"$1"
   for octet in "$a" "$b" "$c" "$d"; do
     [ "$((10#$octet))" -le 255 ] || return 1
@@ -77,7 +79,7 @@ entry_problem() { # entry_problem <entry>
   local address="${1%/*}" prefix=32 start mask
   if [[ "$1" == */* ]]; then
     prefix="${1#*/}"
-    [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && [ "$prefix" -le 32 ] || {
+    [[ "$prefix" =~ ^(0|[1-9][0-9]?)$ ]] && [ "$prefix" -le 32 ] || {
       echo "is not an IPv4 address or network"
       return
     }
