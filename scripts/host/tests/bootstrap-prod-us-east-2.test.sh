@@ -923,6 +923,61 @@ run_bootstrap
 check "exits non-zero" failed
 check "names the check 'docker restart'" said "check 'docker restart' failed"
 
+# --- The node directory ------------------------------------------------------
+
+# nodes/prod/us-east-2 binds the datasets this script creates. Read statically,
+# without docker: every bind in its compose files is written as a source line
+# followed by its target line.
+NODE_DIR="$HERE/../../../nodes/prod/us-east-2"
+
+new_case "the node directory matches the datasets"
+run_bootstrap
+check "succeeds" succeeded
+# Each dataset the run created, as the mount point bootstrap checked it at.
+mounts="$(sed -nE 's#^zfs create .* data/(fil-one/[^ ]+)$#/mnt/data/\1#p' "$STATE/calls")"
+# One line per bind: project, source, target.
+binds="$(for project in platform apps; do
+  awk -v project="$project" '
+    $1 == "source:" { source = $2; next }
+    $1 == "target:" && source != "" { print project " " source " " $2 }
+    { source = "" }
+  ' "$NODE_DIR/$project/compose.yml"
+done)"
+bind_source() { # bind_source <project> <target>: the source bound at that target
+  awk -v project="$1" -v target="$2" '$1 == project && $3 == target { print $2 }' <<<"$binds"
+}
+mount_of() { # mount_of <path>: the created dataset whose mount point holds it
+  local mount best=""
+  for mount in $mounts; do
+    case "$1/" in "$mount"/*) [ "${#mount}" -le "${#best}" ] || best="$mount" ;; esac
+  done
+  printf '%s' "$best"
+}
+node_value() { sed -nE "s/^$1=(.*)$/\\1/p" "$NODE_DIR/node.env" | tail -1; }
+
+check "node.env's control directory is the control datasets' parent" \
+  test "$(node_value FILONE_CONTROL_DIR)" = /mnt/data/fil-one/control
+check "node.env's data directory is the Ingot datasets' parent" \
+  test "$(node_value FILONE_DATA_DIR)" = /mnt/data/fil-one/ingot
+check "Postgres is bound to control/postgres" \
+  test "$(mount_of "$(bind_source platform /var/lib/postgresql)")" = /mnt/data/fil-one/control/postgres
+check "OpenBao is bound to control/openbao" \
+  test "$(mount_of "$(bind_source platform /openbao/file)")" = /mnt/data/fil-one/control/openbao
+check "the status document is served from control/state" \
+  test "$(mount_of "$(bind_source platform /srv/filone/.well-known)")" = /mnt/data/fil-one/control/state
+check "the deploy stamps are read from control/state" \
+  test "$(mount_of "$(bind_source platform /metrics)")" = /mnt/data/fil-one/control/state
+check "the Piri is bound to a directory on the piri dataset" \
+  test "$(mount_of "$(bind_source apps /data/piri)")" = /mnt/data/fil-one/piri
+check "the Piri's directory is below the dataset's mount point" \
+  test "$(bind_source apps /data/piri)" != /mnt/data/fil-one/piri
+check "Ingot's data directory is ingot/blobs" \
+  test "$(bind_source apps /data)" = /mnt/data/fil-one/ingot/blobs
+check "Ingot's segments are ingot/segments" \
+  test "$(bind_source apps /data/segments)" = /mnt/data/fil-one/ingot/segments
+outside="$(awk '$2 ~ /^\/mnt\// && $2 !~ /^\/mnt\/data\/fil-one\// { print $2 }' <<<"$binds")"
+check "binds nothing under /mnt outside /mnt/data/fil-one" test -z "$outside"
+
 echo
 if [ "$failures" -ne 0 ]; then
   echo "$failures check(s) failed"

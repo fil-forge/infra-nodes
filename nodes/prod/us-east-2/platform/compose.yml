@@ -1,0 +1,198 @@
+# Platform services for the prod/us-east-2 node: OpenBao, Postgres, Caddy and
+# Alloy.
+#
+# The dev node's four services, with bare-metal paths: every bind below sits on
+# a ZFS dataset scripts/host/bootstrap-prod-us-east-2.sh creates under
+# /mnt/data/fil-one. OpenBao and Postgres carry staging's limits; Caddy and
+# Alloy have none, as on dev.
+#
+# Run through scripts/host/deploy-platform.sh, which supplies the env files and
+# renders the secrets these definitions point at.
+#
+# Only Caddy publishes a port. Postgres is reachable on the filone network and
+# nowhere else, and OpenBao is not on that network at all: the one thing that
+# reaches its API is Ingot, over a unix socket on a shared bind mount.
+name: filone-platform
+
+services:
+  openbao:
+    image: ${OPENBAO_IMAGE}
+    container_name: filone-openbao
+    # Root so the entrypoint can chown the raft directory before it drops to
+    # the `openbao` user; see the dev node's compose.yml.
+    user: "0:0"
+    command: ["server", "-config=/etc/openbao/bao.hcl"]
+    environment: ["VAULT_TRANSIT_SEAL_TOKEN=${SEAL_TOKEN}"]
+    volumes:
+      - ./config/openbao/bao.hcl:/etc/openbao/bao.hcl:ro
+      # create_host_path: false so a start fails when the dataset's directory
+      # is missing, including Docker's own restart at boot, instead of running
+      # on an empty directory somewhere else.
+      - type: bind
+        source: /mnt/data/fil-one/control/openbao
+        target: /openbao/file
+        bind:
+          create_host_path: false
+      - /run/fil-one/bao:/openbao/logs
+    healthcheck:
+      test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null"]
+      start_interval: 2s
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Limits give the capacity alerts a denominator and keep one service from
+    # starving the shared host. Staging's sizes (FIL-1214).
+    mem_limit: 512m
+    cpus: 1
+    restart: unless-stopped
+
+  # One Postgres for both applications, with a role and a database each.
+  #
+  # PostgreSQL 18 keeps its cluster in /var/lib/postgresql/18/docker, one level
+  # per major version below the directory bound here, so a later major version
+  # can be initialised beside this one. initdb turns data checksums on by
+  # default from 18.
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+    volumes:
+      - type: bind
+        source: /mnt/data/fil-one/control/postgres
+        target: /var/lib/postgresql
+        bind:
+          create_host_path: false
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP check; see the dev node's compose.yml.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U admin -d admin"]
+      start_interval: 1s
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    mem_limit: 4g
+    cpus: 4
+    restart: unless-stopped
+    networks: [filone]
+
+  # Idempotent role and database creation; see the dev node's compose.yml.
+  postgres-init:
+    image: ${POSTGRES_IMAGE}
+    depends_on: { postgres: { condition: service_healthy } }
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        export PGPASSWORD="$$POSTGRES_ADMIN_PASSWORD"
+        ensure_role() { printf '%s\n' "SELECT 'CREATE ROLE \"$$1\"' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$$1')" '\gexec' "ALTER ROLE \"$$1\" WITH LOGIN PASSWORD '$$2';" | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet; }
+        ensure_database() { printf '%s\n' "SELECT 'CREATE DATABASE \"$$1\" OWNER \"$$2\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$$1')" '\gexec' | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet; }
+        # One role for every Piri and one database each, named after its
+        # compose service with _ for -. This node runs piri-0 alone.
+        ensure_role piri "$$PIRI_POSTGRES_PASSWORD"
+        ensure_database piri_0 piri
+        ensure_role ingot "$$INGOT_POSTGRES_PASSWORD"
+        ensure_database ingot ingot
+    environment:
+      POSTGRES_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      PIRI_POSTGRES_PASSWORD: ${PIRI_POSTGRES_PASSWORD}
+      INGOT_POSTGRES_PASSWORD: ${INGOT_POSTGRES_PASSWORD}
+    restart: "no"
+    networks: [filone]
+
+  # Terminates TLS for the node's public hostnames and obtains and renews their
+  # certificates over ACME. Publishes 80 and 443 on every host address, as on
+  # dev.
+  caddy:
+    image: ${CADDY_IMAGE}
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PIRI_HOSTNAME_SUFFIX=${PIRI_HOSTNAME_SUFFIX}
+      - INGOT_HOSTNAME=${INGOT_HOSTNAME}
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Issued certificates and ACME account keys, kept on the pool so a
+      # recreated container serves the same certificates.
+      - type: bind
+        source: /mnt/data/fil-one/control/caddy/data
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/data/fil-one/control/caddy/config
+        target: /config
+        bind:
+          create_host_path: false
+      # The node's status document, served at
+      # /.well-known/filone-node-status.json; the Caddyfile exposes that one
+      # file.
+      - type: bind
+        source: /mnt/data/fil-one/control/state
+        target: /srv/filone/.well-known
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:2019/config/"]
+      start_interval: 2s
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks: [filone]
+
+  # Ships journald, container logs, host metrics and the apps' OTLP metrics and
+  # traces to Grafana Cloud, with push-only credentials.
+  alloy:
+    image: ${ALLOY_IMAGE}
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      - GRAFANA_LOGS_URL=${GRAFANA_LOGS_URL}
+      - GRAFANA_LOGS_USER=${GRAFANA_LOGS_USER}
+      - GRAFANA_METRICS_URL=${GRAFANA_METRICS_URL}
+      - GRAFANA_METRICS_USER=${GRAFANA_METRICS_USER}
+      - GRAFANA_TRACES_URL=${GRAFANA_TRACES_URL}
+      - GRAFANA_TRACES_USER=${GRAFANA_TRACES_USER}
+      - GRAFANA_PUSH_TOKEN=${GRAFANA_PUSH_TOKEN}
+      - FILONE_NODE=${FILONE_NODE}
+      - REGION_LABEL=${REGION_LABEL}
+      - SERVICE_NAME_PREFIX=appliance-${STAGE}-${REGION_LABEL}
+      - APPLIANCE_LABEL=${STAGE}-${REGION_LABEL}
+    volumes:
+      - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      # Where deploy scripts stamp deploy_last_success_timestamp.
+      - type: bind
+        source: /mnt/data/fil-one/control/state/metrics
+        target: /metrics
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/data/fil-one/control/alloy
+        target: /var/lib/alloy/data
+        bind:
+          create_host_path: false
+      # The host's filesystems, processes and devices, for the node exporter.
+      # rslave so the datasets mounted on the host show up here.
+      - /:/host/root:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    restart: unless-stopped
+    networks: [filone]
+
+# Created by bootstrap, declared external by both projects, owned by neither.
+networks:
+  filone:
+    external: true

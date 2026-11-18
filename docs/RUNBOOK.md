@@ -25,8 +25,9 @@ that, and nothing in that one can read this node's keys.
 
 A node's host decides how it is built. Terraform creates the dev node's EC2 host, which you then
 provision over SSM. The eu-central-3 appliance is bare metal that already runs Lotus, Caddy and
-Alloy; Terraform only points DNS at it. Each stage has one node today, so step 3 names both — but
-hosting is what decides, not stage.
+Alloy; Terraform only points DNS at it. The prod/us-east-2 appliance is bare metal on the IST-1 host,
+with its state on a ZFS pool and Caddy and Alloy in its platform project. Each stage has one node
+today, so step 3 names all three, but hosting is what decides, not stage.
 
 Steps 1 and 2 are the same for any node. Step 3 is where they differ. Steps 4 to 7 are one
 procedure run with the values step 3 establishes.
@@ -131,6 +132,20 @@ to 2026-10-26. With the 5% root reserve
 and what was already there, it leaves the root filesystem about half used. The staging host is not
 the forge-perf box, so its own rate may be lower; the budget errs on the large side.
 
+Prod/us-east-2: Ingot's spool and cache have the `ingot/blobs` dataset to themselves, and its
+catalog log has `ingot/segments`. Bootstrap sets the blobs quota to 50% of the pool and prints the
+budget, 80% of that quota, which leaves room for bodies in flight and stays under the 10%-free
+alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB ten-minute peak.
+Commit the printed value in place of the 0 placeholder.
+
+`nodes/prod/us-east-2/node.env` was committed with these values still open, and each is refused
+until it is set: `PAYER_ADDRESS` (from central's prod stage), `INGOT_LOCAL_BLOB_MAX_BYTES` (from
+bootstrap), the three Grafana user ids (for the stack its URLs name), and `TARGET_PLATFORM` with
+the two tool checksums for the host's architecture. Ingot's `cors_allowed_origins` is empty, which
+turns CORS off, until a production console origin is recorded. Piri still uses the filesystem blob
+backend; the piri dataset's 50 GiB quota is not sized for blobs, so wire its object storage in
+before Piri takes uploads.
+
 Add `FILONE_TESTED=false` to a new node's node.env. `test-nodes.yml` tests every node under
 `nodes/` of a tested stage from the moment its node.env merges, and a node that is not serving yet
 would fail every hour. Step 7 removes the line once the node is up.
@@ -140,17 +155,17 @@ would fail every hour. Step 7 removes the line once the node is up.
 Everything before this step is the same for any node; everything after it is the same procedure run
 with this node's own values:
 
-| | dev | eu-central-3 |
-|---|---|---|
-| `STAGE` | `dev` | `staging` |
-| `REGION` | `us-east-9` | `eu-central-3` |
-| `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` |
-| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` |
-| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
-| Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
-| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
-| Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` |
-| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | the chain.love token; Alloy is the host's |
+| | dev | eu-central-3 | prod/us-east-2 |
+|---|---|---|---|
+| `STAGE` | `dev` | `staging` | `prod` |
+| `REGION` | `us-east-9` | `eu-central-3` | `us-east-2` |
+| `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` | the host's egress address, recorded at provisioning |
+| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` | SSH through the jump host |
+| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` | wherever it was cloned; bootstrap records it in `node.conf` |
+| Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy | Postgres 18, Caddy, Alloy |
+| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 | `piri-0`, in `piri-0/` on the `piri` dataset at `/mnt/data/fil-one/piri` |
+| Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` | `piri-0.us-east-2.fil-forge.com` |
+| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | the chain.love token; Alloy is the host's | the chain.love and Grafana Cloud tokens |
 
 #### The dev node on EC2
 
@@ -900,8 +915,12 @@ It then creates the datasets under `data/fil-one` with their quotas and reservat
 each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when there is none, and
 restarts Docker for it only when no container runs; an existing file that differs is shown as a
 diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
-systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value for
-the node's `node.env`.
+systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value;
+commit it in `nodes/prod/us-east-2/node.env` before step 6.
+
+`nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao and the state directory to their
+`control/` datasets, Caddy's and Alloy's state to directories in `control`, Piri to `piri-0/` on
+`piri`, and Ingot's data directory to `ingot/blobs` with `ingot/segments` over its `segments`.
 
 Reboot before anything holds state, and confirm the key loads, every dataset mounts and Docker
 starts:
