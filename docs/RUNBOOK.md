@@ -863,6 +863,35 @@ on the match. So switch in two steps, validating and restarting after each as in
 Saved queries, dashboards and alerts that select `job="piri"` stop matching once Piri reports the
 namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every Forge service.
 
+#### The prod/us-east-2 appliance on IST-1
+
+The host arrives with its ZFS pool, key unit and Docker drop-in built as
+[the storage record](decisions/2026-11-ist1-appliance-storage.md) describes, and with SSH
+admitted only from the jump host. The host has no out-of-band console, so keep a session open
+through every step here. Check out this repository on the host, then run, as root:
+
+```sh
+JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
+```
+
+Bootstrap first checks the pool, its encryption and key, the two units, Compose 2.40 or later, and
+the UFW rule admitting port 22 from `JUMP_HOST_ADDRESS`. It stops on the first check that fails,
+names it, and changes nothing. It never changes a firewall rule.
+
+It then creates the datasets under `data/fil-one` with their quotas and reservations, writes
+`/etc/docker/daemon.json` and restarts Docker (refusing while containers run), and creates the
+FilOne tmpfs paths, the `filone` network, `node.conf` and the systemd units. An existing dataset
+with other values is reported and left alone, and bootstrap exits non-zero. A second run changes
+nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value for the node's `node.env`.
+
+Reboot before anything holds state, and confirm the key loads, every dataset mounts and Docker
+starts:
+
+```sh
+zfs list -o name,quota,reservation,mounted -r data
+systemctl is-active docker.service
+```
+
 ### 4. The unseal token
 
 Central mints it, and only now: the token is bound to the node's address. For the appliance that is

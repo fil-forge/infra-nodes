@@ -35,7 +35,7 @@ check-tofu:
 # The CI scripts source nothing, so they need neither flag.
 .PHONY: check-shell
 check-shell:
-	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
+	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/host/tests/*.sh scripts/operator/*.sh
 	find nodes -name entrypoint.sh -exec shellcheck {} +
 	shellcheck scripts/ci/*.sh scripts/ci/*/*.sh
 
