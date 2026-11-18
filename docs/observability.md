@@ -402,6 +402,42 @@ it carries the `-host` service name with the unit on the `unit` label, as on dev
 {service_name="appliance-staging-eu-central-3-host", unit="filone-openbao-snapshot.service"}
 ```
 
+### The Postgres WAL archive
+
+On a node that takes backups and runs Postgres with archiving on, two textfile metrics files report
+the archive. Dev has neither, and staging has neither until it runs the Debian image.
+
+`postgres_basebackup_last_success_timestamp` is the Unix time of the last base backup that reached
+the backup bucket, written by `scripts/host/backup-postgres.sh`. The timer runs daily with up to 30
+minutes of random delay, so a stamp older than 26 hours means a day without one:
+
+```promql
+time() - postgres_basebackup_last_success_timestamp > 26 * 3600
+```
+
+Every reconcile pass reads `pg_stat_archiver` and writes the archiver's state:
+
+- `postgres_wal_archived_total` and `postgres_wal_archive_failed_total`: segments archived and
+  failed attempts, since the archiver's statistics were last reset;
+- `postgres_wal_last_archived_timestamp` and `postgres_wal_last_failed_timestamp`: when, or 0;
+- `postgres_wal_archive_pending`: segments waiting in `pg_wal`.
+
+Segments wait only while uploads fail, so the signal is a backlog that has lasted:
+
+```promql
+postgres_wal_archive_pending > 0
+  and time() - postgres_wal_last_failed_timestamp < 15 * 60
+```
+
+A quiet database cuts no segments, so the age of the last archived one says nothing on its own.
+
+The base backups log to the journal of `filone-postgres-backup.service`; WAL-G's per-segment errors
+go to the Postgres container's log:
+
+```logql
+{service_name="appliance-staging-eu-central-3-host", unit="filone-postgres-backup.service"}
+```
+
 ## Traces
 
 Piri and Ingot push their spans to the same Alloy receiver as their metrics. Alloy does not

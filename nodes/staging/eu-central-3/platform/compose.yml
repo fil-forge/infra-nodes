@@ -39,12 +39,40 @@ services:
       # Read only when the data directory is empty. C.UTF-8 sorts by code
       # point, the order the cluster had under the Alpine image's musl.
       POSTGRES_INITDB_ARGS: --locale=C.UTF-8 --encoding=UTF8
+    # Every WAL segment goes to the backup bucket by WAL-G, and a segment is
+    # cut at least every 60 seconds while anything writes, which bounds what a
+    # restore from the archive can lose. A segment that fails to upload stays
+    # in pg_wal and is retried; the archive metrics and their alerts watch for
+    # it. filone-postgres-backup.timer takes the base backups.
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=/usr/local/bin/wal-g --config /etc/wal-g/walg.json wal-push %p
+      - -c
+      - archive_timeout=60
     volumes:
       - type: bind
         source: ${POSTGRES_DATA_DIR}
         target: /var/lib/postgresql/data
         bind:
           create_host_path: false
+      # Installed on the host by install-tools.sh, at the pin in node.env.
+      - type: bind
+        source: /usr/local/bin/wal-g
+        target: /usr/local/bin/wal-g
+        read_only: true
+        bind:
+          create_host_path: false
+      # WAL-G's config, rendered from filone/backup-target in OpenBao on every
+      # reconcile pass. The directory rather than the file, and one Docker may
+      # create: tmpfs is empty after a reboot, and Postgres has to start
+      # before a pass renders the file again (scripts/host/lib/walg.sh).
+      - type: bind
+        source: /run/fil-one/walg
+        target: /etc/wal-g
+        read_only: true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U admin -d admin"]
       start_interval: 1s

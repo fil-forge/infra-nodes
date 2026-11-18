@@ -1,0 +1,16 @@
+[Unit]
+# Push a base backup of the node's Postgres to the backup target in central.
+Description=FilOne node Postgres base backup
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The checkout lives where /etc/fil-one/node.conf says: /opt/fil-one on the
+# cloud nodes, /root/fil-one on the bare-metal staging host. systemd will not
+# take a variable as the program itself, hence bash in front.
+EnvironmentFile=/etc/fil-one/node.conf
+ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/backup-postgres.sh
+# A base backup reads the whole data directory, which can take hours; a run
+# that has not finished in half a day has hung.
+TimeoutStartSec=12h

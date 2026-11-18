@@ -155,6 +155,13 @@ renew_bao_token
 # deploy_last_success_timestamp.
 renew_ingot_regionkey_token
 
+# Every pass on a node that takes backups: WAL-G's config lives on tmpfs, so
+# after a reboot nothing else would put it back until the next platform deploy,
+# and Postgres's archive_command fails without it.
+if node_takes_backups; then
+  write_walg_config
+fi
+
 # --- 5. Deploy --------------------------------------------------------------
 
 # From the checkout, not from the copy this script re-exec'd out of. A commit
@@ -188,4 +195,5 @@ stamp_deploy_success reconcile
 # does not ask for a snapshot itself, goes up within five minutes rather than
 # at the next daily run.
 request_openbao_snapshot
+stamp_postgres_archive
 echo "=== reconcile complete ==="

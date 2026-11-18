@@ -432,8 +432,8 @@ once it is — so this does not depend on anyone remembering to check.
 
 Give the reconcile journal source the same `service_name`, `node`, `region` and `appliance` as
 static labels, plus the shared journal relabel rules so the unit lands on its own label. The OpenBao
-snapshot unit gets a second source of the same shape, so the query for a failed snapshot is the
-same as on dev:
+snapshot unit and the Postgres base backup unit each get a source of the same shape, so the queries
+for a failed run are the same as on dev. The OpenBao one:
 
 ```alloy
 loki.source.journal "filone_openbao_snapshot" {
@@ -444,6 +444,25 @@ loki.source.journal "filone_openbao_snapshot" {
   labels = {
     hostname     = "curio",
     service      = "filone-openbao-snapshot",
+    service_name = "appliance-staging-eu-central-3-host",
+    node         = "staging/eu-central-3",
+    region       = "eu-central-3",
+    appliance    = "staging-eu-central-3",
+  }
+}
+```
+
+The Postgres one is the same with its own name, unit and `service` label:
+
+```alloy
+loki.source.journal "filone_postgres_backup" {
+  matches       = "_SYSTEMD_UNIT=filone-postgres-backup.service"
+  forward_to    = [loki.write.grafanacloud.receiver]
+  relabel_rules = loki.relabel.journal.rules
+
+  labels = {
+    hostname     = "curio",
+    service      = "filone-postgres-backup",
     service_name = "appliance-staging-eu-central-3-host",
     node         = "staging/eu-central-3",
     region       = "eu-central-3",
@@ -1288,6 +1307,41 @@ Each run stamps `openbao_snapshot_last_success_timestamp`, described in
 lost store back from one of these snapshots, checks a snapshot without downtime, and describes the
 quarterly restore drill.
 
+**The Postgres WAL archive and base backups.** On a node that takes backups and runs the Debian
+Postgres image, Postgres archives every WAL segment through WAL-G to `<region>/postgres/wal_005/` in
+the backup bucket, and cuts a segment at least once a minute while anything writes.
+`filone-postgres-backup.timer` adds a base backup to `<region>/postgres/basebackups_005/` once a day.
+A restore to a point in time needs a base backup from before that point and every segment after it,
+so the archive reaches back as far as the oldest base backup the bucket still holds: 35 days on
+staging, after which the bucket expires base backups and segments alike.
+
+- **WAL-G** is a binary on the host, pinned in `node.env` (`WALG_VERSION`, `WALG_SHA256`) and
+  installed by `install-tools.sh`, which the deploys never run. The container mounts it read-only.
+  A platform deploy refuses to run until it is installed at the pin, so run `install-tools.sh`
+  before a pin change reaches the node.
+- **Its config** is rendered from `filone/backup-target` to `/run/fil-one/walg/walg.json` on every
+  reconcile pass and every platform deploy, readable only by the container's `postgres` user (uid
+  999). Postgres starts without it after a reboot; archiving fails, keeping the segments in
+  `pg_wal`, until the first pass renders it, and then catches up.
+- **The timer** is enabled by the first platform deploy that runs with archiving on, which also
+  starts the first base backup. To take one now, as root:
+
+  ```sh
+  scripts/host/backup-postgres.sh
+  ```
+
+- **To check the archiver:**
+
+  ```sh
+  docker exec filone-platform-postgres-1 psql -U admin -d admin \
+    -c 'SELECT archived_count, failed_count, last_archived_time, last_failed_time FROM pg_stat_archiver'
+  ```
+
+Each pass stamps the archiver's state and each base backup its time, described in
+[observability.md](observability.md#the-postgres-wal-archive). WAL-G's uploads carry `Content-MD5`,
+which the bucket's Object Lock requires, and need no read access, so the write-only backup key
+serves for both.
+
 **Give a node a new host token.** The host token is the OpenBao token every deploy, reconcile pass
 and snapshot runs as, under the `filone-host` policy. A node provisioned before snapshots existed
 holds one under the older `filone-deploy` policy, which cannot take a snapshot, and its snapshot job
@@ -1550,6 +1604,22 @@ means the host token still holds `filone-deploy`: run `provision-host-token.sh`.
 `provision-backups.sh --replace`. Any other S3 error, or none at all, is easier to read from
 `check-backup-target.sh`, which tests the key and the bucket on their own. A timer that stopped
 firing shows in `systemctl list-timers filone-openbao-snapshot.timer`.
+
+**The Postgres base backup is stale.** The last base backup to reach the bucket is more than a day
+old. The unit's journal has the reason: `{service_name="appliance-staging-eu-central-3-host",
+unit="filone-postgres-backup.service"}` in Loki, or `journalctl -u filone-postgres-backup.service`
+on the host. An age of centuries means none has run: the timer is enabled by the first platform
+deploy with archiving on, so check that one finished (`systemctl list-timers
+filone-postgres-backup.timer`). A key or bucket error reads more plainly from
+`check-backup-target.sh`. Until a base backup lands, the WAL archive cannot be restored from.
+
+**The Postgres WAL archive is failing.** Segments are waiting in `pg_wal` because WAL-G cannot
+upload them. Postgres keeps every one and retries, so nothing is lost yet, but `pg_wal` grows on the
+control volume until archiving works again. `docker logs filone-platform-postgres-1` has WAL-G's
+error for each attempt. A missing `/etc/wal-g/walg.json` means no reconcile pass has rendered it
+since a boot: check that reconcile runs and that OpenBao is unsealed. A missing `wal-g` means the
+binary is not installed: run `install-tools.sh`. A key or bucket error reads more plainly from
+`check-backup-target.sh`.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key

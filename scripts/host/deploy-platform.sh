@@ -96,6 +96,13 @@ case "$postgres_dir" in
   *) die "compose.yml mounts $postgres_dir as Postgres's data directory, outside $FILONE_CONTROL_DIR" ;;
 esac
 
+# On a node that takes backups, Postgres archives its WAL through WAL-G, which
+# compose.yml mounts from the host along with its config.
+if node_takes_backups; then
+  require_walg_installed
+  write_walg_config
+fi
+
 echo "[3/7] Pulling images"
 # Before the gate, not after. Pulling can take minutes, and doing it inside the
 # safe window would spend the window on a download.
@@ -204,4 +211,5 @@ rm -f "$FILONE_STATE_DIR/platform.sha256"
 
 stamp_deploy_success platform
 request_openbao_snapshot
+start_postgres_backups
 echo "=== platform deploy complete ==="

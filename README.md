@@ -192,8 +192,9 @@ Linear.
 **A backup strategy.** Dev runs with none. Staging uploads a daily OpenBao raft snapshot to
 central's backup bucket, and another after each write to OpenBao.
 [Restore the appliance's OpenBao from a snapshot](docs/runbook/restore-openbao-from-snapshot.md)
-brings a lost store back, and [FIL-1166][] tracks the first restore drill on staging. Postgres
-replication and point-in-time recovery is [FIL-807][].
+brings a lost store back, and [FIL-1166][] tracks the first restore drill on staging. Staging
+also archives Postgres's WAL to the same bucket and takes a daily base backup there; replication,
+and the runbook and drills for a point-in-time restore, are [FIL-807][].
 
 **Piri and Ingot reading their secrets from OpenBao.** Ingot already reads the region key from
 OpenBao's transit engine over a unix socket; everything else is still a file rendered into a tmpfs

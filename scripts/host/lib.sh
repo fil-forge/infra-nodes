@@ -283,6 +283,11 @@ take_deploy_lock() {
 # shellcheck source=lib/openbao.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/openbao.sh"
 
+# --- The WAL archive ------------------------------------------------------------
+
+# shellcheck source=lib/walg.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/walg.sh"
+
 # --- Rendering -------------------------------------------------------------
 
 # Substitute ${NAME} in a template from the environment, writing the result into

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install the identity tooling: ucantool and cast, pinned in the node's
-# node.env.
+# Install the tools pinned in the node's node.env: ucantool and cast for the
+# identity tooling, and WAL-G on a node that takes backups.
 #
 # Run by provision-platform.sh, and directly for a version bump: upgrading a
 # tool is a new pin merged to this repository and a re-run of this script,
@@ -8,8 +8,11 @@
 # checksum-verified, and an installed copy that already matches its pin is
 # left alone, so re-runs are cheap and offline-safe.
 #
-# Only key generation uses these tools. The deploy scripts never call this,
-# so the unattended reconcile path gains no dependency on GitHub releases.
+# Key generation uses ucantool and cast. WAL-G runs inside the Postgres
+# container, which mounts it from here. The deploy scripts never call this, so
+# the unattended reconcile path gains no dependency on GitHub releases: a
+# platform deploy on a node that takes backups refuses to run until WAL-G is
+# installed at its pin.
 set -euo pipefail
 
 # SC2154: the *_VERSION and *_SHA256 pins come from the node's node.env, which
@@ -75,5 +78,15 @@ install_from_archive ucantool "$UCANTOOL_VERSION" "$UCANTOOL_SHA256" \
   "https://github.com/fil-forge/ucantool/releases/download/$UCANTOOL_VERSION/ucantool_${UCANTOOL_VERSION#v}_${TARGET_PLATFORM}.tar.gz" \
   ucantool
 ucantool --help >/dev/null
+
+# WAL-G publishes its Postgres builds by Ubuntu release and by architecture,
+# with aarch64 where the node says arm64.
+if node_takes_backups; then
+  walg_asset="wal-g-pg-22.04-$(case "$TARGET_PLATFORM" in linux_arm64) echo aarch64 ;; *) echo amd64 ;; esac)"
+  install_from_archive wal-g "$WALG_VERSION" "$WALG_SHA256" \
+    "https://github.com/wal-g/wal-g/releases/download/$WALG_VERSION/$walg_asset.tar.gz" \
+    "$walg_asset"
+  wal-g --version
+fi
 
 echo "=== tools installed ==="
