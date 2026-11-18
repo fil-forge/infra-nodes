@@ -141,6 +141,13 @@ if [ "$deploy_apps" -eq 0 ] && [ -e "$FILONE_STATE_DIR/rag-retry" ]; then
   echo "  Bucket Intelligence has a deploy to retry"
   retry_rag=1
 fi
+# The same for the import service, whose deploy-import.sh never starts, stops
+# or recreates any other container either.
+retry_import=0
+if [ "$deploy_apps" -eq 0 ] && [ -e "$FILONE_STATE_DIR/import-retry" ]; then
+  echo "  the import service has a deploy to retry"
+  retry_import=1
+fi
 
 # --- 4. Renew the local OpenBao token ---------------------------------------
 
@@ -168,14 +175,21 @@ fi
 if [ "$deploy_apps" -eq 1 ]; then
   echo "==> deploying apps"
   "$FILONE_CHECKOUT/scripts/host/deploy-apps.sh"
-elif [ "$retry_rag" -eq 1 ]; then
-  echo "==> retrying Bucket Intelligence"
+else
   # A failure is logged as a warning and leaves the marker for the next pass.
   # It does not fail this one: Piri and Ingot are not involved.
-  "$FILONE_CHECKOUT/scripts/host/deploy-rag.sh" || true
+  if [ "$retry_rag" -eq 1 ]; then
+    echo "==> retrying Bucket Intelligence"
+    "$FILONE_CHECKOUT/scripts/host/deploy-rag.sh" || true
+  fi
+  if [ "$retry_import" -eq 1 ]; then
+    echo "==> retrying the import service"
+    "$FILONE_CHECKOUT/scripts/host/deploy-import.sh" || true
+  fi
 fi
 
-if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ] && [ "$retry_rag" -eq 0 ]; then
+if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ] && [ "$retry_rag" -eq 0 ] &&
+  [ "$retry_import" -eq 0 ]; then
   echo "  nothing to deploy"
 fi
 

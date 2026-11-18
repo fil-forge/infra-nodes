@@ -1,7 +1,7 @@
 name: filone-apps
 
-# One Piri and Ingot. The Caddy in the platform project reaches both over the
-# filone network, so neither publishes a port.
+# One Piri and Ingot, and the import service. The Caddy in the platform project
+# reaches Piri and Ingot over the filone network, so neither publishes a port.
 #
 # One Piri. An appliance runs one Piri per storage volume
 # (docs/decisions/2026-10-multiple-piri-per-appliance.md), and this node has
@@ -151,6 +151,89 @@ services:
     cpus: 4
     restart: unless-stopped
     networks: [filone]
+
+  # The import service. scripts/host/deploy-import.sh deploys it on its own,
+  # after Piri and Ingot, and leaves it stopped while any of its settings in
+  # node.env or its image pin in versions.env is still PLACEHOLDER; deploy-apps.sh
+  # neither starts it nor waits for it. docs/RUNBOOK.md, under the prod/us-east-2
+  # appliance, has the provisioning steps.
+  #
+  # It terminates its own mutual TLS, because the client certificate's common
+  # name is the key of its allow-list and of every record it writes, so Caddy
+  # stays out of its path. Its port is published on IPv4 alone, and the host
+  # firewall in front of it is scripts/host/import-firewall.sh, since UFW does not
+  # filter a port Docker publishes. Boxes upload their packs to Ingot through
+  # Caddy, as any S3 client does.
+  #
+  # On the filone network rather than the host's. The service refuses to listen
+  # on the wildcard address, so it is given a fixed address there, which
+  # deploy-import.sh derives from the network and passes in as
+  # IMPORT_SERVICE_CONTAINER_ADDRESS. The ledger is in central's VPC, which it
+  # reaches over the node's database VPN: scripts/host/setup-vpn.sh source-NATs
+  # the filone network's traffic into the tunnels. It reads packs back from
+  # Ingot over the same network.
+  import-service:
+    image: ${IMPORT_SERVICE_IMAGE}
+    container_name: filone-import-service
+    # The image's own user, stated so a rebuilt image cannot change it.
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "0.0.0.0:${IMPORT_SERVICE_PORT}:8443"
+    environment:
+      SPIDEROAK_IMPORT_LISTEN_IP: ${IMPORT_SERVICE_CONTAINER_ADDRESS:-}
+      SPIDEROAK_IMPORT_PORT: "8443"
+      SPIDEROAK_IMPORT_TLS_CERT: /run/import/server.pem
+      SPIDEROAK_IMPORT_TLS_KEY: /run/import/server-key.pem
+      SPIDEROAK_IMPORT_CLIENT_CA: /run/import/client-ca.pem
+      SPIDEROAK_IMPORT_ALLOWED_CLIENTS: ${IMPORT_SERVICE_ALLOWED_CLIENTS}
+      PGPASSFILE: /run/import/pgpass
+      SPIDEROAK_PACK_LEASE_HOLDER: ${IMPORT_SERVICE_LEASE_HOLDER}
+      SPIDEROAK_PACK_S3_BUCKET: ${IMPORT_SERVICE_S3_BUCKET}
+      # Ingot over the filone network, as rag-engine reaches it on staging:
+      # SigV4 signs the host the client contacts, so the key still verifies.
+      SPIDEROAK_PACK_S3_ENDPOINT: http://ingot:9000
+      SPIDEROAK_PACK_S3_REGION: ${REGION_LABEL}
+      SPIDEROAK_PACK_S3_PREFIX: ${IMPORT_SERVICE_S3_PREFIX:-}
+      SPIDEROAK_PACK_S3_PATH_STYLE: "1"
+      SPIDEROAK_PACK_S3_SECRET_KEY_FILE: /run/import/s3-secret-key
+      SPIDEROAK_PACK_OPENBAO_ADDR: ${IMPORT_SERVICE_KEYS_ADDR}
+      SPIDEROAK_PACK_RECOVERY_PUBLIC_KEY: ${IMPORT_SERVICE_RECOVERY_PUBLIC_KEY}
+    # The ledger's DSN, the object store's access key id and the key service's
+    # AppRole id and secret id, rendered from OpenBao by deploy-import.sh. Not
+    # required here so CI can validate this file without it; the service does
+    # not start without them.
+    env_file:
+      - path: /run/fil-one/secrets/import-service.env
+        required: false
+    volumes:
+      # Its certificate, key and client CA, the ledger's password file and the
+      # object store's secret key, rendered by deploy-import.sh into the secrets
+      # tmpfs and owned by the service's user. create_host_path: false makes a
+      # start after a reboot fail until that deploy renders them, which it does
+      # only after loading the firewall table.
+      - type: bind
+        source: /run/fil-one/secrets/import-service
+        target: /run/import
+        read_only: true
+        bind:
+          create_host_path: false
+    # The image's own healthcheck, stated here as the other services' are: a
+    # TLS handshake with no client certificate, which the service refuses.
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/import-service-healthcheck"]
+      start_interval: 2s
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      filone:
+        ipv4_address: ${IMPORT_SERVICE_CONTAINER_ADDRESS:-}
 
 networks:
   filone:

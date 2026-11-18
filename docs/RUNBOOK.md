@@ -959,6 +959,129 @@ The node reaches its database in central's VPC over a site-to-site VPN, which
 `scripts/host/setup-vpn.sh` sets up. [Set up the database VPN](runbook/set-up-database-vpn.md)
 gives its inputs, how to run it, check it and take it off the node.
 
+##### The import service
+
+The import service is the `import-service` service in `nodes/prod/us-east-2/apps/compose.yml`.
+`scripts/host/deploy-import.sh` deploys it, run last by every apps deploy and retried on its own by
+reconcile while it is failing. Until every one of its settings is filled in, that script names the
+ones left, starts nothing and lets the rest of the apps deploy as usual. Bring it up after the
+database VPN above and after the apps (step 6), since it needs both: its ledger is in central's VPC,
+and it reads packs back from Ingot.
+
+How it is wired:
+
+- **Its own mutual TLS.** The client certificate's common name is the key of its allow-list and of
+  every record it writes, so it terminates TLS itself and Caddy stays out of its path. Its port is
+  published on IPv4 alone, on `IMPORT_SERVICE_PORT` (8443).
+- **No second port for Ingot.** Caddy already publishes Ingot on 443 at every host address, under
+  `INGOT_HOSTNAME` with a certificate it obtains itself, and nothing on the host filters that
+  port. Clients upload their packs there like any S3 client, path-style.
+- **The filone network, not the host's.** The VPN's table source-NATs the filone network's traffic
+  into the tunnels, so the service reaches the ledger from there, and it reaches Ingot at
+  `http://ingot:9000` as rag-engine does on staging. The service refuses to listen on the wildcard
+  address, so `deploy-import.sh` gives it the last usable address of the network's subnet and stops
+  if another container holds that address.
+- **The firewall.** UFW does not filter a port Docker publishes. `scripts/host/import-firewall.sh`
+  loads the nftables table `filone_import`, which drops every connection Docker translated to the
+  service's port unless it comes from an address in `/etc/fil-one/import-clients`. An empty or
+  missing list closes the port to everyone. `deploy-import.sh` applies the list on every run, before
+  it starts the service. After a reboot the service cannot start until that deploy renders its
+  certificates, so the port is never open without the table.
+
+Its settings:
+
+| Setting | Where | Value |
+|---|---|---|
+| `IMPORT_SERVICE_IMAGE` | `apps/versions.env` | `<image>:<release tag>@sha256:<digest>`, from the release notes of the repository that publishes it |
+| `IMPORT_SERVICE_ALLOWED_CLIENTS` | `node.env` | the client certificates' common names, comma-separated. This repository is public, so the names must say nothing about a client but which one it is |
+| `IMPORT_SERVICE_LEASE_HOLDER` | `node.env` | the site's name in its serving leases |
+| `IMPORT_SERVICE_S3_BUCKET`, `IMPORT_SERVICE_S3_PREFIX` | `node.env` | the Ingot bucket the clients upload packs to, and its key prefix if any |
+| `IMPORT_SERVICE_KEYS_ADDR` | `node.env` | the URL of the OpenBao that holds the site secret the pack keys derive from |
+| `IMPORT_SERVICE_RECOVERY_PUBLIC_KEY` | `node.env` | the estate recovery public key, hex |
+| the client addresses | `/etc/fil-one/import-clients` on the host | the source IPv4 addresses or networks of the clients, one per line |
+
+The key service has no address to give yet. The node's own OpenBao listens on its container's
+loopback and on a unix socket, and the service's client takes an HTTP(S) URL, so the service cannot
+reach it as the node stands. `IMPORT_SERVICE_KEYS_ADDR` stays a placeholder until that is settled,
+together with the AppRole the service logs in with.
+
+Its secrets, in the node's OpenBao at `filone/import-service`:
+
+| Field | What |
+|---|---|
+| `tls_cert`, `tls_key` | the service's certificate, with its chain, and its key, PEM |
+| `client_ca` | the CA that signs the clients' certificates, PEM |
+| `ledger_dsn` | the ledger's libpq DSN, without a password. `deploy-import.sh` refuses one that carries a password |
+| `ledger_password` | the ledger role's password, which goes into a libpq password file |
+| `s3_access_key_id`, `s3_secret_key` | the Ingot access key the service reads packs with |
+| `keys_role_id`, `keys_secret_id` | the key service's AppRole login |
+| `registry_username`, `registry_token` | a read-only pull credential for the image's private registry |
+
+No value may hold a quote or a line break, except the PEMs. Store them with the `bao_exec` helper
+defined under the eu-central-3 staging appliance above, `put` for the first field and `patch` for
+the rest, each from a root-only file or from a prompt so no value lands in the shell's history:
+
+```sh
+bao_exec kv put -mount=filone import-service tls_cert=- <server.pem
+bao_exec kv patch -mount=filone import-service tls_key=- <server-key.pem
+bao_exec kv patch -mount=filone import-service client_ca=- <client-ca.pem
+read -rsp 'ledger password: ' value; echo
+bao_exec kv patch -mount=filone import-service ledger_password=- <<<"$value"
+# ... and the same for each remaining field
+unset value
+```
+
+`deploy-import.sh` renders the files into `/run/fil-one/secrets/import-service/`, owned by the
+service's user (uid 10001) and read-only, and the rest into
+`/run/fil-one/secrets/import-service.env`, root-only. It pulls the image only when the host does not
+have it, logging in through a Docker configuration directory on the same tmpfs that it removes after
+the pull, so no registry credential is left on the disk.
+
+Write the client list, then load it and check it:
+
+```sh
+install -m 0600 /dev/null /etc/fil-one/import-clients   # once
+"${EDITOR:-vi}" /etc/fil-one/import-clients             # one address or network per line
+scripts/host/import-firewall.sh
+scripts/host/import-firewall.sh status
+```
+
+The script refuses a line that is not an IPv4 address or a network with no host bits set, an entry
+that overlaps another, and `0.0.0.0/0`, and a refused list changes nothing. It replaces the whole
+table in one load, so an address taken off the list loses its access, open connections included.
+It touches no other table and no UFW rule. A second run with the same list loads nothing.
+
+Commit the settings, then deploy and check the service:
+
+```sh
+scripts/host/deploy-import.sh
+docker ps --filter name=filone-import-service   # healthy
+```
+
+The healthcheck opens a TLS handshake with no client certificate, which the service refuses; that
+refusal is the healthy answer. A client with a certificate the CA signed, whose common name is in
+`IMPORT_SERVICE_ALLOWED_CLIENTS` and whose address is on the list, then reaches it at
+`https://<host's public address>:<IMPORT_SERVICE_PORT>`.
+
+To take the service off the node, remove it from `compose.yml` and its settings from `node.env` and
+`versions.env`, and once that is deployed:
+
+```sh
+docker rm -f filone-import-service
+nft delete table ip filone_import
+rm -rf /run/fil-one/secrets/import-service /run/fil-one/secrets/import-service.env /etc/fil-one/import-clients
+rm -f /mnt/data/fil-one/control/state/import-retry /mnt/data/fil-one/control/state/apps-import-service.sha256
+```
+
+What has not been run. The scripts are tested only against stubs
+(`scripts/host/tests/import-firewall.test.sh`, and the import service's cases in `lib.test.sh` and
+`reconcile.test.sh`). Not yet exercised: `deploy-import.sh` itself on a host, the `filone_import`
+table as `nft` parses it, the drop on real translated traffic, the fixed address on the filone
+network, the image and its healthcheck under this compose file, the ledger over the VPN, reads from
+Ingot over the filone network, the password file and certificate files as the service reads them,
+and the registry login and pull. No image has been released, and the key service is not reachable
+yet, so the service has never started on this node.
+
 ### 4. The unseal token
 
 Central mints it, and only now: the token is bound to the node's address. For the appliance that is

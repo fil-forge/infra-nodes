@@ -370,6 +370,27 @@ stops, as it does for every appliance container. Nothing alerts on an engine tha
 requests, or that a deploy never started or left unhealthy; the two queries above cover those. Add alerts for them
 before the engine runs on a node that serves customers.
 
+### The import service
+
+On prod/us-east-2, `import-service` ships its container logs and cAdvisor metrics like the other
+containers, under `service_name="appliance-prod-us-east-2-import-service"`. It is not on Piri's or
+Ingot's path: when it is down, imports stop and Piri and Ingot keep serving. The apps deploy hands
+it to `deploy-import.sh` after it has recorded the Piris and Ingot as deployed. While any of its
+settings is a placeholder, that script logs which ones, starts nothing and records no retry. When
+the service fails to deploy or to come up healthy, it logs a warning to the reconcile journal, and
+every reconcile pass retries it on its own until it comes up. The `apps` stamp does not cover it,
+so the warning is the signal:
+
+```logql
+{node="prod/us-east-2", unit="filone-reconcile.service"} |= "WARNING: the import service"
+```
+
+infra-central's "Appliance container is not running" alert fires when `import-service` stops, as
+it does for every appliance container. Nothing alerts on a service that runs and fails its imports,
+or on the firewall table going missing while it runs. `scripts/host/import-firewall.sh status`
+reports the second, and exits non-zero when the table is gone. Add alerts for both before the
+service takes production imports.
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with

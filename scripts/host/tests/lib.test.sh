@@ -429,6 +429,70 @@ while read -r _ name placeholder; do
   check "$name $placeholder: refuse" test "$result" = refuse
 done <<<"$refusals"
 
+echo "==> the import service"
+
+# Each case runs in a subshell with the node's node.env loaded, as filone_init
+# loads it, and the node directory copied so versions.env can be edited.
+import_case() { # import_case <name>
+  new_case "$1"
+  "$REAL_CP" -R "$NODES/prod/us-east-2" "$CASE/node"
+}
+placeholders() { # placeholders [NAME=value...]: what import_service_placeholders prints
+  # shellcheck disable=SC1091
+  (set -a; . "$CASE/node/node.env"; set +a; FILONE_NODE_DIR="$CASE/node"
+    for assignment in "$@"; do export "${assignment?}"; done
+    import_service_placeholders)
+}
+configured=(IMPORT_SERVICE_ALLOWED_CLIENTS=box-1 IMPORT_SERVICE_LEASE_HOLDER=site-a
+  IMPORT_SERVICE_S3_BUCKET=packs IMPORT_SERVICE_KEYS_ADDR=https://keys.example:8200
+  IMPORT_SERVICE_RECOVERY_PUBLIC_KEY=00ff)
+has_line() { grep -qxF -- "$1" <<<"$2"; }
+lacks_line() { ! has_line "$@"; }
+pin_image() { # pin_image <reference>
+  grep -v '^IMPORT_SERVICE_IMAGE=' "$CASE/node/apps/versions.env" >"$CASE/versions.env"
+  echo "IMPORT_SERVICE_IMAGE=$1" >>"$CASE/versions.env"
+  "$REAL_MV" "$CASE/versions.env" "$CASE/node/apps/versions.env"
+}
+
+import_case "prod/us-east-2 as committed"
+got="$(placeholders)"
+for name in IMPORT_SERVICE_IMAGE IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
+  IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_KEYS_ADDR IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
+  check "names $name" has_line "$name" "$got"
+done
+check "accepts the committed port" lacks_line IMPORT_SERVICE_PORT "$got"
+check "accepts the empty prefix" lacks_line IMPORT_SERVICE_S3_PREFIX "$got"
+
+import_case "every setting and the pin filled"
+pin_image "registry.example/import:v1@sha256:$(printf '%064d' 0)"
+check "names nothing" test -z "$(placeholders "${configured[@]}")"
+
+import_case "one setting left"
+pin_image "registry.example/import:v1@sha256:$(printf '%064d' 0)"
+check "names it" test "$(placeholders "${configured[@]}" IMPORT_SERVICE_LEASE_HOLDER=PLACEHOLDER)" = \
+  IMPORT_SERVICE_LEASE_HOLDER
+check "names an empty one too" test "$(placeholders "${configured[@]}" IMPORT_SERVICE_S3_BUCKET=)" = \
+  IMPORT_SERVICE_S3_BUCKET
+
+import_case "pin left"
+check "names the image" test "$(placeholders "${configured[@]}")" = IMPORT_SERVICE_IMAGE
+
+# The deploy that waits on Piri and Ingot leaves the service to deploy-import.sh.
+if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
+  import_case "the apps deploy's services"
+  core="$(FILONE_NODE_DIR="$CASE/node" FILONE_NODE=prod/us-east-2 apps_core_services)"
+  check "leave the import service out" lacks_line import-service "$core"
+  check "keep Ingot" has_line ingot "$core"
+  check "keep the Piri" has_line piri-0 "$core"
+else
+  echo "  skip the apps deploy's services: no docker compose here"
+fi
+
+current="deploy-apps.sh"
+# shellcheck disable=SC2016 # the literal line deploy-apps.sh holds
+check "hands the import service to deploy-import.sh, outside its own success" \
+  grep -qxF '"$SCRIPT_DIR/deploy-import.sh" || true' "$SCRIPTS/deploy-apps.sh"
+
 echo
 if [ "$failures" -ne 0 ]; then
   echo "$failures check(s) failed"

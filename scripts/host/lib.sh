@@ -606,16 +606,37 @@ piri_services() {
   printf '%s\n' "$services"
 }
 
-# The apps project's services other than Bucket Intelligence's two, one per
-# line. deploy-rag.sh deploys and waits for those on its own, so a deploy that
-# waits on these is never failed by them. Read without interpolation, as
-# piri_services does.
+# The apps project's services other than Bucket Intelligence's two and the
+# import service, one per line. deploy-rag.sh and deploy-import.sh deploy and
+# wait for those on their own, so a deploy that waits on these is never failed
+# by them. Read without interpolation, as piri_services does.
 apps_core_services() {
   local services
   services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
     config --no-interpolate --services)" ||
     die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
-  grep -vxE 'rag-embed|rag-engine' <<<"$services" || true
+  grep -vxE 'rag-embed|rag-engine|import-service' <<<"$services" || true
+}
+
+# --- The import service ----------------------------------------------------
+
+# The image the node's apps versions.env pins for the import service, or
+# nothing. Read from the file, which filone_init does not load.
+import_service_image() {
+  sed -n 's/^IMPORT_SERVICE_IMAGE=//p' "$FILONE_NODE_DIR/apps/versions.env" | tail -n 1
+}
+
+# The import service's settings still empty or PLACEHOLDER, one name per line,
+# or nothing once every one is set: its image pin and the node.env values
+# apps/compose.yml interpolates into it. deploy-import.sh leaves the service
+# stopped while this prints anything. IMPORT_SERVICE_S3_PREFIX may be empty.
+import_service_placeholders() {
+  local name
+  case "$(import_service_image)" in "" | PLACEHOLDER) echo IMPORT_SERVICE_IMAGE ;; esac
+  for name in IMPORT_SERVICE_PORT IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
+    IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_KEYS_ADDR IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
+    case "${!name:-}" in "" | PLACEHOLDER) echo "$name" ;; esac
+  done
 }
 
 # The URL a Piri service answers at and registers with sprue. A node that runs
