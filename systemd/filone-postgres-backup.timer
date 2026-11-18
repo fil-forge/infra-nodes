@@ -2,9 +2,9 @@
 Description=Push a Postgres base backup of the FilOne node daily
 
 [Timer]
-# Persistent catches up on a day the box was off. Enabled only by
-# deploy-platform.sh, on a node that takes backups, once Postgres runs with
-# archiving on.
+# Persistent catches up on a day the box was off. Enabled by the platform deploy
+# and the reconcile pass, on a node that takes backups, while Postgres runs with
+# archiving on, and disabled by them while it does not.
 OnCalendar=daily
 RandomizedDelaySec=30m
 Persistent=true

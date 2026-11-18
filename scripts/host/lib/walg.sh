@@ -129,22 +129,27 @@ postgres_backup_cluster_file() {
   printf '%s/postgres-basebackup-cluster\n' "$FILONE_STATE_DIR"
 }
 
-# At the end of a platform deploy: enable the daily base backup while Postgres
-# archives, and ask for the first one; disable it while Postgres does not, as
-# on a node taken back to the Alpine image, where every run would fail. A
-# setting that cannot be read leaves the timer as it is.
-start_postgres_backups() {
+# At the end of every platform deploy and every reconcile pass: enable the
+# daily base backup while Postgres archives, and ask for the first one; disable
+# it while Postgres does not, as on a node taken back to the Alpine image, where
+# every run would fail. A setting that cannot be read leaves the timer as it
+# is, and the next pass looks again. Failures only warn, since they come after
+# the work the caller is there for.
+sync_postgres_backups() {
   local mode
   node_takes_backups || return 0
+  container_running "$FILONE_POSTGRES_CONTAINER" || return 0
   mode="$(postgres_archive_mode)" || {
     echo "  WARNING: could not read archive_mode; $FILONE_POSTGRES_BACKUP_TIMER left as it is"
     return 0
   }
   if [ "$mode" != on ]; then
     if systemctl is-enabled --quiet "$FILONE_POSTGRES_BACKUP_TIMER" 2>/dev/null; then
-      systemctl disable --now "$FILONE_POSTGRES_BACKUP_TIMER" >/dev/null ||
-        die "could not disable $FILONE_POSTGRES_BACKUP_TIMER"
-      echo "  Postgres runs with archive_mode=$mode, so $FILONE_POSTGRES_BACKUP_TIMER is disabled"
+      if systemctl disable --now "$FILONE_POSTGRES_BACKUP_TIMER" >/dev/null; then
+        echo "  Postgres runs with archive_mode=$mode, so $FILONE_POSTGRES_BACKUP_TIMER is disabled"
+      else
+        echo "  WARNING: could not disable $FILONE_POSTGRES_BACKUP_TIMER"
+      fi
     fi
     return 0
   fi
@@ -152,8 +157,10 @@ start_postgres_backups() {
     # The unit may not be on the box yet when this runs by hand, before a
     # reconcile pass has installed the checkout's units.
     sync_systemd_units
-    systemctl enable --now "$FILONE_POSTGRES_BACKUP_TIMER" >/dev/null ||
-      die "could not enable $FILONE_POSTGRES_BACKUP_TIMER"
+    if ! systemctl enable --now "$FILONE_POSTGRES_BACKUP_TIMER" >/dev/null; then
+      echo "  WARNING: could not enable $FILONE_POSTGRES_BACKUP_TIMER; the next pass retries"
+      return 0
+    fi
     echo "  $FILONE_POSTGRES_BACKUP_TIMER enabled"
   fi
   request_postgres_backup

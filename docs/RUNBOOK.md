@@ -1342,8 +1342,8 @@ archives under a directory of its own, so the earlier cluster's archive stays wh
   one. A failure to render it warns and lets the deploys go on. Postgres starts without it after a
   reboot; archiving fails, keeping the segments in `pg_wal`, until the first pass renders it, and
   then catches up.
-- **The timer** is enabled by each platform deploy while Postgres archives, and disabled while it
-  does not. Until the running cluster has a base backup of its own, every reconcile pass starts
+- **The timer** is enabled by each platform deploy and reconcile pass while Postgres archives, and
+  disabled while it does not. Until the running cluster has a base backup of its own, every reconcile pass starts
   one, so the first follows within a pass of WAL-G being installed. To take one now, as root:
 
   ```sh
@@ -1638,21 +1638,21 @@ unit="filone-postgres-backup.service"}` in Loki, or `journalctl -u filone-postgr
 on the host. An age of centuries means none has finished yet. Every reconcile pass starts one
 until the running cluster has its first, so the journal shows each attempt: `WAL-G ... is not
 installed` means run `install-tools.sh`. With no attempts at all, check that the timer is enabled
-(`systemctl list-timers filone-postgres-backup.timer`). The platform deploy enables it while
+(`systemctl list-timers filone-postgres-backup.timer`). Each reconcile pass enables it while
 Postgres archives and disables it while it does not, so a disabled timer means the node's
-`versions.env` does not turn archiving on, or no platform deploy has finished since it did. A key
+`versions.env` does not turn archiving on; the pass's log warns when it could not tell. A key
 or bucket error reads more plainly from `check-backup-target.sh`. Until a base backup lands, the
 WAL archive cannot be restored from.
 
 **The Postgres WAL archive is failing.** A WAL segment has waited more than 15 minutes in `pg_wal`
 because WAL-G has not uploaded it. Postgres keeps every one and retries, so nothing is lost yet, but
 `pg_wal` grows on the control volume until archiving works again. `docker logs
-filone-platform-postgres-1` has WAL-G's error for each attempt. `no WAL-G config for cluster`
-means no pass has rendered this cluster's since a boot or since the cluster was initialised, and
-the reconcile journal says why: check that OpenBao is unsealed and that `filone/backup-target`
-holds the key. `wal-g: not found` (exit 127) means the
-pinned version is not installed: run `install-tools.sh`. A key or bucket error reads more plainly
-from `check-backup-target.sh`.
+filone-platform-postgres-1` has the error from WAL-G or `filone-wal-push` for each attempt. `no
+WAL-G config for cluster` means no pass has rendered this cluster's since a boot or since the
+cluster was initialised, and the reconcile journal says why: check that OpenBao is unsealed and
+that `filone/backup-target` holds the key. `wal-g: not found` (exit 127) means the pinned version
+is not installed: run `install-tools.sh`. A key or bucket error reads more plainly from
+`check-backup-target.sh`.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key

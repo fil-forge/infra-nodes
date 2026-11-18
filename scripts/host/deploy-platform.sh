@@ -212,5 +212,5 @@ rm -f "$FILONE_STATE_DIR/platform.sha256"
 
 stamp_deploy_success platform
 request_openbao_snapshot
-start_postgres_backups
+sync_postgres_backups
 echo "=== platform deploy complete ==="

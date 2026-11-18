@@ -18,9 +18,10 @@
 # and then expires it, so old base backups and the WAL after them age out
 # together.
 #
-# Runs from filone-postgres-backup.timer once a day. deploy-platform.sh enables
-# the timer once the platform runs with archiving on, and every reconcile pass
-# starts a run while the running cluster has no base backup of its own. Run it
+# Runs from filone-postgres-backup.timer once a day. The platform deploy and
+# every reconcile pass enable the timer while Postgres runs with archiving on,
+# and disable it while it does not; they also start a run while the running
+# cluster has no base backup of its own. Run it
 # by hand, as root, to take one now. Runs take a lock of their own,
 # so one started by hand waits for the timer's rather than overlapping it.
 #

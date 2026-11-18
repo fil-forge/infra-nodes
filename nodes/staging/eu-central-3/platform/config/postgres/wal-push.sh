@@ -17,7 +17,9 @@ set -eu
 version="$1"
 segment="$2"
 
-sysid="$(pg_controldata -D "$PGDATA" | sed -n 's/^Database system identifier: *//p')"
+# Postgres runs archive_command in the data directory. LC_ALL=C keeps the
+# label the sed matches in English.
+sysid="$(LC_ALL=C pg_controldata -D . | sed -n 's/^Database system identifier: *//p')"
 if [ -z "$sysid" ]; then
   echo "filone-wal-push: could not read this cluster's system identifier" >&2
   exit 1
