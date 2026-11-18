@@ -1,0 +1,13 @@
+[Unit]
+Description=Report the FilOne node's ZFS pool health every five minutes
+
+[Timer]
+# A scrub ends at most once a month and the error counters move only when
+# something goes wrong, so five minutes is plenty. Central's stale-report alert
+# allows thirty.
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

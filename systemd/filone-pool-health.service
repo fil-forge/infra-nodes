@@ -1,0 +1,18 @@
+[Unit]
+# Write the ZFS pools' scrub results and error counts for Alloy's textfile
+# collector. Started by filone-pool-health.timer, which the runbook enables on a
+# node whose state is on ZFS. The pool's state itself comes from Alloy's zfs
+# collector, not from here.
+Description=FilOne node ZFS pool health report
+# Inert on a node without ZFS, should the timer be enabled there.
+ConditionPathExists=/proc/spl/kstat/zfs
+
+[Service]
+Type=oneshot
+# The checkout lives where /etc/fil-one/node.conf says. systemd will not take a
+# variable as the program itself, hence bash in front.
+EnvironmentFile=/etc/fil-one/node.conf
+ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/report-pool-health.sh
+# zpool status returns in well under a second. A pool whose I/O is suspended
+# can block it, and the run gives up rather than pile up behind the timer.
+TimeoutStartSec=60
