@@ -488,6 +488,33 @@ else
   echo "  skip the apps deploy's services: no docker compose here"
 fi
 
+# deploy-import.sh's address, password file and DSN check. Documentation
+# networks and made-up values only.
+new_case "the import service's address on the filone network"
+check "is the last usable address of a /16" \
+  test "$(import_service_address 172.18.0.0/16)" = 172.18.255.254
+check "is the last usable address of a /30" \
+  test "$(import_service_address 192.0.2.0/30)" = 192.0.2.2
+check "refuses a network with no room" eval '! import_service_address 192.0.2.0/31 2>/dev/null'
+check "refuses an IPv6 network" eval '! import_service_address 2001:db8::/64 2>/dev/null'
+check "refuses something that is no network" eval '! import_service_address filone 2>/dev/null'
+
+new_case "the ledger's password file line"
+check "matches any host, port, database and user" \
+  test "$(import_pgpass_line 'plain')" = '*:*:*:*:plain'
+check "escapes a colon and a backslash" \
+  test "$(import_pgpass_line 'a:b\c')" = '*:*:*:*:a\:b\\c'
+
+new_case "a ledger DSN carrying a password"
+for dsn in 'host=db.example dbname=ledger password=x' 'host=db.example PASSWORD=x' \
+  'postgresql://import:x@db.example/ledger' 'postgresql://db.example/ledger?password=x'; do
+  check "is refused: $dsn" ledger_dsn_has_password "$dsn"
+done
+for dsn in 'host=db.example dbname=ledger user=import' 'postgresql://import@db.example/ledger' \
+  'postgresql://import@db.example:5432/ledger' 'postgresql://db.example:5432/ledger'; do
+  check "is accepted without one: $dsn" eval "! ledger_dsn_has_password '$dsn'"
+done
+
 current="deploy-apps.sh"
 # shellcheck disable=SC2016 # the literal line deploy-apps.sh holds
 check "hands the import service to deploy-import.sh, outside its own success" \

@@ -639,6 +639,40 @@ import_service_placeholders() {
   done
 }
 
+# The address deploy-import.sh gives the service on the filone network: the
+# last usable one of the network's subnet, which Docker's allocator, counting
+# up from the bottom, reaches last. Fails on anything but an IPv4 network with
+# room for it.
+import_service_address() { # import_service_address <subnet>
+  python3 -c '
+import ipaddress, sys
+try:
+    network = ipaddress.ip_network(sys.argv[1])
+except ValueError:
+    sys.exit("not a network: %s" % sys.argv[1])
+if network.version != 4 or network.num_addresses < 4:
+    sys.exit("not an IPv4 network with room for a container: %s" % network)
+print(network.broadcast_address - 1)
+' "$1"
+}
+
+# The line of libpq's password file that gives the ledger password for any
+# host, port, database and user, with backslash and colon escaped as the
+# format asks.
+import_pgpass_line() { # import_pgpass_line <password>
+  local password="${1//\\/\\\\}"
+  printf '*:*:*:*:%s\n' "${password//:/\\:}"
+}
+
+# Whether a ledger DSN carries a password, as a password keyword or parameter
+# or as user:password@ in a URI. libpq would use it ahead of the password file.
+ledger_dsn_has_password() { # ledger_dsn_has_password <dsn>
+  case "$(tr '[:upper:]' '[:lower:]' <<<"$1")" in
+    *password* | *://*:*@*) return 0 ;;
+  esac
+  return 1
+}
+
 # The URL a Piri service answers at and registers with sprue. A node that runs
 # one Piri per storage volume names them piri-<n>.$PIRI_HOSTNAME_SUFFIX; a node
 # with a single `piri` still has one PIRI_PUBLIC_URL.

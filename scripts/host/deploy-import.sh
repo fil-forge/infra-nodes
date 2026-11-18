@@ -100,20 +100,14 @@ echo "[1/5] Firewall"
 # --- 2. Address -------------------------------------------------------------
 
 # The service refuses the wildcard address, and its healthcheck dials the same
-# address, so the container gets a fixed one: the last usable address of the
-# filone network's subnet, which Docker's allocator, counting up from the
-# bottom, reaches last. Derived here rather than committed. A container that
-# already holds it stops the deploy rather than sharing it.
+# address, so the container gets a fixed one, import_service_address's.
+# Derived here rather than committed. A container that already holds it stops
+# the deploy rather than sharing it.
 echo "[2/5] Address on the filone network"
 subnet="$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' filone)" ||
   die "could not read the subnet of the filone network"
-IMPORT_SERVICE_CONTAINER_ADDRESS="$(python3 -c '
-import ipaddress, sys
-network = ipaddress.ip_network(sys.argv[1])
-if network.version != 4 or network.num_addresses < 4:
-    sys.exit("not an IPv4 network with room for a container: %s" % network)
-print(network.broadcast_address - 1)
-' "$subnet")" || die "could not derive the service's address from the filone network's $subnet"
+IMPORT_SERVICE_CONTAINER_ADDRESS="$(import_service_address "$subnet")" ||
+  die "could not derive the service's address from the filone network's $subnet"
 holders="$(docker network inspect \
   -f '{{range .Containers}}{{.Name}} {{.IPv4Address}}{{"\n"}}{{end}}' filone)" ||
   die "could not list the containers on the filone network"
@@ -157,13 +151,13 @@ mark rendered write_secret_file "$SERVICE_SECRETS/client-ca.pem" "$client_ca
 unset tls_cert tls_key client_ca
 
 # libpq's password file, matching any host, port, database and user, since the
-# DSN names them. Backslash and colon are escaped as the format asks.
+# DSN names them.
 ledger_password="$(bao_get "$BAO_PATH" ledger_password)"
 plain_value ledger_password "$ledger_password"
-ledger_password="${ledger_password//\\/\\\\}"
-mark rendered write_secret_file "$SERVICE_SECRETS/pgpass" "*:*:*:*:${ledger_password//:/\\:}
+pgpass="$(import_pgpass_line "$ledger_password")"
+mark rendered write_secret_file "$SERVICE_SECRETS/pgpass" "$pgpass
 "
-unset ledger_password
+unset ledger_password pgpass
 
 s3_secret_key="$(bao_get "$BAO_PATH" s3_secret_key)"
 mark rendered write_secret_file "$SERVICE_SECRETS/s3-secret-key" "$s3_secret_key"
@@ -184,11 +178,10 @@ plain_value keys_role_id "$IMPORT_SERVICE_KEYS_ROLE_ID"
 plain_value keys_secret_id "$IMPORT_SERVICE_KEYS_SECRET_ID"
 # The password lives in the password file; libpq would use one in the DSN
 # first, and the DSN is the less guarded of the two.
-case "$(tr '[:upper:]' '[:lower:]' <<<"$IMPORT_SERVICE_LEDGER_DSN")" in
-  *password* | *://*:*@*)
-    die "OpenBao's $FILONE_BAO_MOUNT/$BAO_PATH#ledger_dsn carries a password. Store the DSN
-       without it; the password goes in #ledger_password." ;;
-esac
+if ledger_dsn_has_password "$IMPORT_SERVICE_LEDGER_DSN"; then
+  die "OpenBao's $FILONE_BAO_MOUNT/$BAO_PATH#ledger_dsn carries a password. Store the DSN
+       without it; the password goes in #ledger_password."
+fi
 export IMPORT_SERVICE_LEDGER_DSN IMPORT_SERVICE_S3_ACCESS_KEY_ID \
   IMPORT_SERVICE_KEYS_ROLE_ID IMPORT_SERVICE_KEYS_SECRET_ID
 mark rendered render_template \
