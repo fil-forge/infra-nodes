@@ -27,12 +27,14 @@ data "aws_route53_zone" "content" {
 
 locals {
   server_ip = "23.83.66.244"
+  # How many Piris the node runs, piri-0 to piri-<piri_count - 1>. Must match
+  # the Piri services in nodes/staging/eu-central-3/apps/compose.yml.
+  piri_count = 3
 }
 
-# One record per Piri, piri-0 to piri-2, the services in
-# nodes/staging/eu-central-3/apps/compose.yml.
+# One record per Piri.
 resource "aws_route53_record" "piri" {
-  for_each = toset(["piri-0", "piri-1", "piri-2"])
+  for_each = toset([for n in range(local.piri_count) : "piri-${n}"])
 
   zone_id = data.aws_route53_zone.forge.zone_id
   name    = "${each.key}.eu-central-3.staging.fil-forge.com"
