@@ -43,7 +43,7 @@ new_case() {
   current="$1"
   failures=0
   local root="$WORK/$1"
-  mkdir -p "$root/bin" "$root/stub" "$root/state"
+  mkdir -p "$root/bin" "$root/stub" "$root/node/platform/config/caddy" "$root/state"
   STUB_STATE="$root/stub"
   FILONE_NODE_DIR="$root/node"
   FILONE_STATE_DIR="$root/state"
@@ -63,6 +63,8 @@ case "$1" in
     done
     ;;
   ps) cat "$STUB_STATE/container" ;;
+  inspect) cat "$STUB_STATE/running-image" ;;
+  image) cat "$STUB_STATE/desired-image" ;;
   exec)
     printf '%s' "${PGPASSWORD:-}" >"$STUB_STATE/exec-pgpassword"
     cat >"$STUB_STATE/exec-stdin"
@@ -72,7 +74,40 @@ STUB
   chmod +x "$root/bin/docker"
   PATH="$root/bin:$PATH"
 
+  printf 'any-image-id\n' >"$STUB_STATE/running-image"
+  printf 'any-image-id\n' >"$STUB_STATE/desired-image"
   printf 'any-container\n' >"$STUB_STATE/container"
+  printf 'https://piri-0.any-suffix {\n}\n' >"$FILONE_NODE_DIR/platform/config/caddy/Caddyfile"
+  write_caddy_definition 'PIRI_HOSTNAME_SUFFIX=any-suffix'
+}
+
+# The platform project's resolved definition: one caddy service with the given
+# environment entry and the Caddyfile bind-mounted from the node directory.
+write_caddy_definition() {
+  cat >"$STUB_STATE/config.json" <<JSON
+{"services": {"caddy": {
+  "image": "caddy@sha256:any",
+  "environment": ["$1"],
+  "volumes": [{"type": "bind",
+               "source": "$FILONE_NODE_DIR/platform/config/caddy/Caddyfile",
+               "target": "/etc/caddy/Caddyfile"}]
+}}}
+JSON
+}
+
+# Replaces lib.sh's compose_platform, which needs a node's env files.
+compose_platform() {
+  echo "compose $*" >>"$STUB_STATE/calls"
+  case "$1" in
+    config) cat "$STUB_STATE/config.json" ;;
+    ps) cat "$STUB_STATE/container" ;;
+  esac
+}
+
+# Record the Caddy definition as the last deploy would have.
+record_caddy_definition() {
+  config_hash_record platform-caddy-definition \
+    "$(compose_config_hash compose_platform caddy definition)"
 }
 
 # --- ensure_app_database ------------------------------------------------------
@@ -134,6 +169,67 @@ STUB
     pass "fails"
   fi
   check "runs nothing in Postgres" [ ! -e "$STUB_STATE/exec-stdin" ]
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+# --- caddy_only_caddyfile_changed ------------------------------------------
+
+(
+  new_case "reloads when only the Caddyfile changed"
+  record_caddy_definition
+  printf 'https://piri-3.any-suffix {\n}\n' >>"$FILONE_NODE_DIR/platform/config/caddy/Caddyfile"
+  check "reports a Caddyfile-only change" caddy_only_caddyfile_changed
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+(
+  new_case "recreates when Caddy's environment changed"
+  record_caddy_definition
+  write_caddy_definition 'PIRI_HOSTNAME_SUFFIX=other-suffix'
+  if caddy_only_caddyfile_changed; then flunk "reported a Caddyfile-only change"; else pass "does not report a Caddyfile-only change"; fi
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+(
+  new_case "recreates when Caddy's image changed"
+  record_caddy_definition
+  printf 'other-image-id\n' >"$STUB_STATE/desired-image"
+  if caddy_only_caddyfile_changed; then flunk "reported a Caddyfile-only change"; else pass "does not report a Caddyfile-only change"; fi
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+(
+  new_case "recreates when no Caddy definition was recorded"
+  if caddy_only_caddyfile_changed; then flunk "reported a Caddyfile-only change"; else pass "does not report a Caddyfile-only change"; fi
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+# --- reload_caddy ------------------------------------------------------------
+
+(
+  new_case "reloads the checkout's Caddyfile into the running Caddy"
+  printf 'https://piri-3.any-suffix {\n}\n' >"$FILONE_NODE_DIR/platform/config/caddy/Caddyfile"
+  reload_caddy
+  check "sends the checkout's Caddyfile on stdin" \
+    cmp -s "$STUB_STATE/exec-stdin" "$FILONE_NODE_DIR/platform/config/caddy/Caddyfile"
+  check "runs caddy reload in the Caddy container" \
+    grep -qF "docker exec -i any-container sh -c cat >/tmp/Caddyfile && caddy reload --config /tmp/Caddyfile --adapter caddyfile" \
+    "$STUB_STATE/calls"
   [ "$failures" -eq 0 ]
 ) || {
   failures=$((failures + 1))
