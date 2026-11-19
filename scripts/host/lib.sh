@@ -136,8 +136,9 @@ require_state_mount() {
 # Create the bind sources a compose project keeps on the control and data
 # volumes. compose.yml sets create_host_path: false on them, so Docker no longer
 # creates a missing one. Only under a mounted volume, so nothing lands on the
-# root disk. Never a Piri's data directory: bootstrap creates those, and a
-# missing one means the Piri's data is gone, which an empty directory would hide.
+# root disk. Never a Piri's data directory: provision-apps.sh and, on EC2,
+# mount-piri-volumes.sh create those on an empty volume only, and a missing one
+# means the Piri's data is gone, which an empty directory would hide.
 create_volume_dirs() {
   local project_dir="$1" root roots=() dirs
   for root in "$FILONE_CONTROL_DIR" "$FILONE_DATA_DIR"; do
