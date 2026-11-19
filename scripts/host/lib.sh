@@ -629,7 +629,10 @@ ensure_piri_database() {
   local database="${1//-/_}" container
   # The name goes into SQL unquoted by psql, so only names piri_services yields.
   [[ "$database" =~ ^piri(_[0-9]+)?$ ]] || die "'$1' is not a Piri service name"
-  container="$(compose_platform ps -q postgres)"
+  # By label rather than through compose_platform: after a reboot reconcile runs
+  # the apps deploy alone, and the platform's env files on the tmpfs are gone.
+  container="$(docker ps -q --filter label=com.docker.compose.project=filone-platform \
+    --filter label=com.docker.compose.service=postgres)"
   [ -n "$container" ] || die "Postgres is not running; deploy the platform first"
   printf '%s\n' \
     "SELECT 'CREATE DATABASE \"$database\" OWNER \"piri\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$database')" \
