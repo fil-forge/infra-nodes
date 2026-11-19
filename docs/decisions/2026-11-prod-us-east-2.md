@@ -131,7 +131,7 @@ stops one kind of state from growing into the space the others share. The quotas
 Ingot's byte budget for its spool and cache, `INGOT_LOCAL_BLOB_MAX_BYTES`, is 80% of the
 `ingot/blobs` quota. Request bodies in flight are written above the budget and need room there, and
 central pages when an Ingot volume has less than 10% free. Bootstrap prints the value, and
-`node.env` commits it before the node is provisioned: `provision-platform.sh` refuses to start
+`node.env` commits it before the apps are provisioned: `provision-apps.sh` refuses to start
 without it.
 
 ## Bootstrap changes nothing it did not create
@@ -170,9 +170,10 @@ therefore uses its S3 blob backend, and the node runs one Piri. Because the blob
 pool, the `piri` dataset holds only Piri's configuration and can be small.
 
 The endpoint and the bucket prefix are in `node.env`, and the credentials come from OpenBao.
-`provision-platform.sh` refuses to start while the endpoint or the prefix is missing, and
-`deploy-apps.sh` refuses to start a Piri without all three. `piri init` copies the credentials
-into the config file it writes on the `piri` dataset, which the pool's encryption covers.
+`provision-apps.sh` refuses to start while the endpoint or the prefix is missing and asks for the
+credentials, and `deploy-apps.sh` refuses a deploy while OpenBao lacks them. `piri init` copies the
+credentials into the config file it writes on the `piri` dataset, which the pool's encryption
+covers.
 
 ## Chain, telemetry and tests
 
