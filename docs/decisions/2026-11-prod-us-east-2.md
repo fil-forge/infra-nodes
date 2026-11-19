@@ -160,12 +160,15 @@ libc, and Alpine's musl is what dev and staging are moving away from. PostgreSQL
 checksums on by default and keeps its cluster one directory per major version below the directory
 the node binds, so a later version can be initialised beside this one.
 
-The cluster is initialised with `--locale=C.UTF-8 --encoding=UTF8`, the locale dev and staging get
-when they move to the Debian image
+The cluster is initialised with `--locale-provider=builtin --locale=C.UTF-8 --encoding=UTF8`,
+PostgreSQL's own `C.UTF-8` locale, available from version 17. It sorts by code point, the order dev
+and staging get from glibc's `C.UTF-8` when they move to the Debian image
 ([#293](https://github.com/fil-forge/infra-nodes/pull/293),
-[#294](https://github.com/fil-forge/infra-nodes/pull/294)). glibc sorts `C.UTF-8` by code point,
-so sort order is the same on every node and does not change with the image's language rules. The
-locale is fixed at `initdb`.
+[#294](https://github.com/fil-forge/infra-nodes/pull/294)), so text sorts the same on every node.
+The order is part of PostgreSQL, so it stays the same when the image's Debian release changes, on a
+standby and on a restore to another machine. Dev and staging keep glibc's `C.UTF-8` until they
+leave PostgreSQL 16, which has no builtin provider. `initdb` sets the locale new databases get, and
+a database keeps the one it was created with.
 
 **The four platform images are pinned by digest.** OpenBao, Postgres, Caddy and Alloy each carry
 `tag@sha256:…` in `platform/versions.env`. A tag can move to another image and a digest cannot, so
