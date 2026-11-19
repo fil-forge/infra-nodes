@@ -29,7 +29,8 @@ SSH reaches the host only through the jump host that infra-central runs, and the
 out-of-band console. A lost firewall rule for port 22, a broken sshd or a failed jump host
 therefore leaves a ticket with the provider as the only way back in. Bootstrap checks that a UFW
 rule admits port 22 from the jump host and stops when none does. It never adds, removes or
-reorders a firewall rule.
+reorders a firewall rule. The jump host's address stays private: this repository is public, so the
+operator passes it to bootstrap as `JUMP_HOST_ADDRESS` at run time.
 
 UFW does not filter the ports Docker publishes, so the node's Compose files decide which of them
 are reachable. Caddy publishes 80 and 443 on every host address. The host has one public address
@@ -154,6 +155,13 @@ libc, and Alpine's musl is what dev and staging are moving away from. PostgreSQL
 checksums on by default and keeps its cluster one directory per major version below the directory
 the node binds, so a later version can be initialised beside this one.
 
+The cluster is initialised with `--locale=C.UTF-8 --encoding=UTF8`, the locale dev and staging get
+when they move to the Debian image
+([#293](https://github.com/fil-forge/infra-nodes/pull/293),
+[#294](https://github.com/fil-forge/infra-nodes/pull/294)). glibc sorts `C.UTF-8` by code point,
+so sort order is the same on every node and does not change with the image's language rules. The
+locale is fixed at `initdb`.
+
 **The four platform images are pinned by digest.** OpenBao, Postgres, Caddy and Alloy each carry
 `tag@sha256:…` in `platform/versions.env`. A tag can move to another image and a digest cannot, so
 production runs only an image someone reviewed. Nothing bumps the pins automatically: a new one is
@@ -204,17 +212,10 @@ stopped while any of its settings is still a placeholder.
 
 ## Not decided yet
 
-- **The Postgres locale.** The node sets no `POSTGRES_INITDB_ARGS`, so the cluster would get the
-  image's default locale. The alternative is PostgreSQL's builtin provider
-  (`--locale-provider=builtin --builtin-locale=C.UTF-8`), with which sort order never depends on
-  the image's libc. The locale is fixed at `initdb`, so this has to be settled before
-  `provision-platform.sh` first runs on the host.
 - **The import service's key store.** The service takes an HTTP(S) URL for the key store its pack
   keys derive from. The node's OpenBao listens only on loopback inside its container and on a unix
   socket. Either OpenBao gains a listener the Docker network can reach, or the service learns to
   use a socket.
-- **The jump host's address.** Bootstrap reads it from `JUMP_HOST_ADDRESS` at run time because this
-  repository is public. Committing it would remove an input the operator can get wrong.
 - **OpenBao's store directory.** The store is the `control/openbao` dataset's own mount point, so
   a damaged store cannot be renamed aside and is copied aside and emptied. A store one directory
   below the mount point could be renamed, as on dev and staging.
