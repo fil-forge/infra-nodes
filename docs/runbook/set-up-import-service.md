@@ -22,7 +22,7 @@ How it is wired:
 - **No second port for Ingot.** Caddy already publishes Ingot on 443 at every host address, under
   `INGOT_HOSTNAME` with a certificate it obtains itself, and nothing on the host filters that
   port. Clients upload their packs there like any S3 client, path-style.
-- **The filone network, not the host's.** The VPN's table source-NATs the filone network's traffic
+- **The filone network.** The VPN's table source-NATs the filone network's traffic
   into the tunnels, so the service reaches the ledger from there, and it reaches Ingot at
   `http://ingot:9000` as rag-engine does on staging. The service refuses to listen on the wildcard
   address, so `deploy-import.sh` gives it the last usable address of the network's subnet and stops
@@ -67,8 +67,9 @@ exist makes them unreadable. Write it once, before the first import, and never a
 
 No value may hold a quote or a line break, except the PEMs. Store them with the `bao_exec` helper
 defined under
-[the eu-central-3 staging appliance](../RUNBOOK.md#the-eu-central-3-staging-appliance-on-serverscom), `put` for the first field and `patch` for
-the rest, each from a root-only file or from a prompt so no value lands in the shell's history:
+[the eu-central-3 staging appliance](../RUNBOOK.md#the-eu-central-3-staging-appliance-on-serverscom),
+`put` for the first field and `patch` for the rest, each from a root-only file or from a prompt so
+no value lands in the shell's history:
 
 ```sh
 bao_exec kv put -mount=filone import-service tls_cert=- <server.pem
@@ -85,16 +86,19 @@ tmpfs through the jump host, readable by root only, then write it only if the fi
 empty, and remove the copy:
 
 ```sh
-bao_exec kv get -mount=filone -field=site_secret import-service   # must fail: none yet
-base64 -w 0 </run/site-secret | bao_exec kv patch -mount=filone import-service site_secret=-
+if bao_exec kv get -mount=filone -field=site_secret import-service >/dev/null 2>&1; then
+  echo 'site_secret is already stored; leave it'
+else
+  base64 -w 0 </run/site-secret | bao_exec kv patch -mount=filone import-service site_secret=-
+fi
 rm /run/site-secret
 ```
 
 `deploy-import.sh` renders the files, the site secret's included, into
-`/run/fil-one/secrets/import-service/`, owned by the service's user (uid 10001) and read-only, and the rest into
-`/run/fil-one/secrets/import-service.env`, root-only. It pulls the image only when the host does not
-have it, logging in through a Docker configuration directory on the same tmpfs that it removes after
-the pull, so no registry credential is left on the disk.
+`/run/fil-one/secrets/import-service/`, owned by the service's user (uid 10001) and read-only,
+and the rest into `/run/fil-one/secrets/import-service.env`, root-only. It pulls the image only
+when the host does not have it, logging in through a Docker configuration directory on the same
+tmpfs that it removes after the pull, so no registry credential is left on the disk.
 
 ## The client list
 
@@ -151,6 +155,6 @@ The scripts are tested only against stubs
 `reconcile.test.sh`). Not yet exercised: `deploy-import.sh` itself on a host, the `filone_import`
 table as `nft` parses it, the drop on real translated traffic, the fixed address on the filone
 network, the image and its healthcheck under this compose file, the ledger over the VPN, reads from
-Ingot over the filone network, the password file, certificate files and site secret file as the service reads them,
-and the registry login and pull. No image has been released, so the service has never started on this
-node.
+Ingot over the filone network, the password file, certificate files and site secret file as the
+service reads them, and the registry login and pull. No image has been released, so the service
+has never started on this node.
