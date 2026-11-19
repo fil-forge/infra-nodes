@@ -42,16 +42,9 @@ wait_for_device() {
   done
 }
 
-for piri in $piris; do
-  volume_id="$(imds "tags/instance/PiriVolume:$piri")" || die "could not read the $piri volume tag"
-  [[ "$volume_id" =~ ^vol-[0-9a-f]+$ ]] || die "the $piri tag holds '$volume_id', not a volume id"
+mount_piri_volume() {
+  local piri="$1" volume_id="$2" mountpoint="$3" dev uuid
   dev="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${volume_id//-/}"
-  mountpoint="/mnt/fil-one/$piri"
-
-  if is_mounted "$mountpoint"; then
-    echo "  $piri: mounted at $mountpoint"
-    continue
-  fi
   wait_for_device "$dev"
 
   # Format once, ever. A volume that already carries a filesystem holds a
@@ -71,10 +64,24 @@ for piri in $piris; do
     echo "UUID=$uuid $mountpoint ext4 defaults,nofail 0 2" >>/etc/fstab
   mount "$mountpoint"
   echo "  $piri: mounted $volume_id at $mountpoint"
+}
+
+for piri in $piris; do
+  volume_id="$(imds "tags/instance/PiriVolume:$piri")" || die "could not read the $piri volume tag"
+  [[ "$volume_id" =~ ^vol-[0-9a-f]+$ ]] || die "the $piri tag holds '$volume_id', not a volume id"
+  mountpoint="/mnt/fil-one/$piri"
+
+  if is_mounted "$mountpoint"; then
+    echo "  $piri: mounted at $mountpoint"
+  else
+    mount_piri_volume "$piri" "$volume_id" "$mountpoint"
+  fi
 
   # The Piri's data directory, one level below the mount point, as
-  # provision-apps.sh creates it. Only on a volume holding nothing yet: a
-  # missing directory on a volume with data means that data sits elsewhere.
+  # provision-apps.sh creates it. Checked on every run, so a run that stopped
+  # after mounting is finished by the next one. Only on a volume holding
+  # nothing yet: a missing directory on a volume with data means that data
+  # sits elsewhere.
   if [ -z "$(find "$mountpoint" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit)" ]; then
     install -d -m 0755 "$mountpoint/$piri"
     echo "  $piri: created $mountpoint/$piri"
