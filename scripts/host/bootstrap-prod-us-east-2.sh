@@ -12,7 +12,7 @@
 #
 # The host arrives with its ZFS pool built, its key unit and Docker drop-in in
 # place, and SSH admitted from the jump host only, all as
-# docs/decisions/2026-11-ist1-appliance-storage.md records. Section 1 checks
+# docs/decisions/2026-11-prod-us-east-2.md records. Section 1 checks
 # all of that, and everything the later sections would refuse, before
 # anything changes; a failed check stops the run and names itself. Section 2
 # creates the node's datasets, section 3 sets Docker's log rotation, and
@@ -120,7 +120,7 @@ daemon_json() {
 JSON
 }
 
-# The Docker drop-in, as docs/decisions/2026-11-ist1-appliance-storage.md gives
+# The Docker drop-in, as docs/decisions/2026-11-prod-us-east-2.md gives
 # it: Docker waits for the pool to mount and refuses to start while the pool is
 # missing or any dataset on it is unmounted.
 docker_dropin() {

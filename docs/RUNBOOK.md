@@ -866,7 +866,7 @@ namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every 
 #### The prod/us-east-2 appliance on IST-1
 
 The host arrives with its ZFS pool, key unit and Docker drop-in built as
-[the storage record](decisions/2026-11-ist1-appliance-storage.md) describes, and with SSH
+[the storage record](decisions/2026-11-prod-us-east-2.md) describes, and with SSH
 admitted only from the jump host. The host has no out-of-band console, so keep a session open
 through every step here. Check out this repository on the host, then run, as root:
 
