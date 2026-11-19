@@ -7,7 +7,8 @@
 # Covers moving OpenBao's store aside and back, on a node where the raft
 # directory shares its parent's filesystem (dev, staging) and on one where it
 # is a mount point of its own (prod/us-east-2's control/openbao dataset); the
-# refusal of a Piri deploy while its object storage is unconfigured; and the
+# node.env values provision-platform.sh and deploy-apps.sh require for the
+# apps, and the OpenBao credentials a Piri on object storage needs; and the
 # node.env placeholders deploy-apps.sh and deploy-platform.sh refuse.
 #
 # No real mount is made. Stub stat, mv, cp and install come first on PATH: stat
@@ -232,54 +233,93 @@ check "its rollback script puts the store back with move_dir_back" \
   grep -qF 'move_dir_back $raft_dir $drill_dir/openbao $drill_dir/openbao.restored' \
   "$SCRIPTS/simulate-openbao-loss.sh"
 
-echo "==> a Piri on object storage"
+echo "==> node.env values the apps need"
 
 FILONE_NODE_DIR=nodes/test
 bao_has() { [ -e "$STUB_STATE/bao/$1/$2" ]; }
-s3_case() { # s3_case <name> <endpoint> <prefix> [OpenBao field...]
-  new_case "$1"
-  "$REAL_MKDIR" -p "$STUB_STATE/bao/external"
-  local field
-  for field in "${@:4}"; do : >"$STUB_STATE/bao/external/$field"; done
-  # SC2034: read by require_piri_s3.
+# set_inputs <budget> <endpoint> <prefix>: an endpoint of - leaves both object
+# storage settings unset, as on a node whose Piris keep their blobs locally.
+set_inputs() {
+  # SC2034: read by require_apps_inputs.
   # shellcheck disable=SC2034
-  PIRI_S3_ENDPOINT="$2" PIRI_S3_BUCKET_PREFIX="$3"
+  INGOT_LOCAL_BLOB_MAX_BYTES="$1"
+  if [ "$2" = - ]; then
+    unset PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX
+  else
+    # shellcheck disable=SC2034
+    PIRI_S3_ENDPOINT="$2" PIRI_S3_BUCKET_PREFIX="$3"
+  fi
 }
-both="piri_s3_access_key_id piri_s3_secret_access_key"
+
+# description | budget | endpoint | prefix | the name the refusal gives, or -
+# for a pass
+while IFS='|' read -r description budget endpoint prefix refused; do
+  new_case "require_apps_inputs, $description"
+  set_inputs "$budget" "$endpoint" "$prefix"
+  run require_apps_inputs
+  if [ "$refused" = - ]; then
+    check "passes" test "$status" -eq 0
+  else
+    # shellcheck disable=SC2016 # expanded by eval
+    check "refuses, naming $refused" eval '[ "$status" -ne 0 ] && said "$refused"'
+  fi
+done <<'CASES'
+budget 0|0|-||INGOT_LOCAL_BLOB_MAX_BYTES
+budget empty||-||INGOT_LOCAL_BLOB_MAX_BYTES
+budget with a unit|5GiB|-||INGOT_LOCAL_BLOB_MAX_BYTES
+budget negative|-1|-||INGOT_LOCAL_BLOB_MAX_BYTES
+budget set, no object storage|1000|-||-
+endpoint empty|1000||piri-|PIRI_S3_ENDPOINT
+bucket prefix empty|1000|https://objects.example||PIRI_S3_BUCKET_PREFIX
+object storage configured|1000|https://objects.example|piri-|-
+CASES
 
 new_case "node.env without object storage"
 (unset PIRI_S3_ENDPOINT; ! piri_uses_s3) && status=0 || status=1
 check "is not a node whose Piris use it" test "$status" -eq 0
 
-# shellcheck disable=SC2086
-s3_case "endpoint empty" "" "" $both
+new_case "object storage settings present but empty"
+set_inputs 1000 "" ""
 check "is a node whose Piris use it" piri_uses_s3
-run require_piri_s3
-check "refuses" test "$status" -ne 0
-check "names the endpoint" said "PIRI_S3_ENDPOINT"
 
-# shellcheck disable=SC2086
-s3_case "bucket prefix empty" "https://objects.example" "" $both
-run require_piri_s3
-check "refuses" test "$status" -ne 0
-check "names the bucket prefix" said "PIRI_S3_BUCKET_PREFIX"
+for field in piri_s3_access_key_id piri_s3_secret_access_key; do
+  new_case "require_piri_s3, OpenBao lacks $field"
+  "$REAL_MKDIR" -p "$STUB_STATE/bao/external"
+  for present in piri_s3_access_key_id piri_s3_secret_access_key; do
+    [ "$present" = "$field" ] || : >"$STUB_STATE/bao/external/$present"
+  done
+  run require_piri_s3
+  # shellcheck disable=SC2016 # expanded by eval
+  check "refuses, naming it" eval '[ "$status" -ne 0 ] && said "external#$field"'
+done
 
-s3_case "secret key missing" "https://objects.example" "piri-" piri_s3_access_key_id
-run require_piri_s3
-check "refuses" test "$status" -ne 0
-check "names the missing field" said "external#piri_s3_secret_access_key"
-
-# shellcheck disable=SC2086
-s3_case "all configured" "https://objects.example" "piri-" $both
+new_case "require_piri_s3, both credentials stored"
+"$REAL_MKDIR" -p "$STUB_STATE/bao/external"
+: >"$STUB_STATE/bao/external/piri_s3_access_key_id"
+: >"$STUB_STATE/bao/external/piri_s3_secret_access_key"
 run require_piri_s3
 check "passes" test "$status" -eq 0
 
+for node in dev staging/eu-central-3; do
+  current="$node"
+  # shellcheck disable=SC1090
+  check "passes require_apps_inputs" \
+    bash -c "set -a; . '$NODES/$node/node.env'; set +a; . '$SCRIPTS/lib.sh'; require_apps_inputs"
+done
+
+current="provision-platform.sh"
+# Before the seal token, the first thing it creates.
+check "checks the apps' inputs before it creates anything" \
+  test "$(grep -nx 'require_apps_inputs' "$SCRIPTS/provision-platform.sh" | cut -d: -f1)" \
+  -lt "$(grep -n '^# --- 1\. ' "$SCRIPTS/provision-platform.sh" | cut -d: -f1)"
 current="deploy-apps.sh"
-check "refuses a Piri deploy on such a node" \
+check "checks the apps' inputs" grep -qx 'require_apps_inputs' "$SCRIPTS/deploy-apps.sh"
+check "refuses a Piri deploy without the object storage credentials" \
   grep -qx '! piri_uses_s3 || require_piri_s3' "$SCRIPTS/deploy-apps.sh"
 current="prod/us-east-2"
 # shellcheck disable=SC1091
-check "is such a node" bash -c ". '$NODES/prod/us-east-2/node.env'; [ -n \"\${PIRI_S3_ENDPOINT+set}\" ]"
+check "is a node whose Piris use object storage" \
+  bash -c ". '$NODES/prod/us-east-2/node.env'; [ -n \"\${PIRI_S3_ENDPOINT+set}\" ]"
 template="$NODES/prod/us-east-2/apps/config/piri/piri-base-config.toml.tpl"
 for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX PIRI_S3_ACCESS_KEY_ID PIRI_S3_SECRET_ACCESS_KEY; do
   check "its Piri base config renders $name" grep -qF "\${$name}" "$template"

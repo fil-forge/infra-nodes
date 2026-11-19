@@ -146,23 +146,37 @@ piri_uses_s3() {
   [ -n "${PIRI_S3_ENDPOINT+set}" ]
 }
 
-# Refuse a Piri deploy on such a node while its object storage is not
-# configured. A Piri started without it would keep its blobs on its own
-# dataset, which is sized for its config and state, and fill it. The endpoint
-# and bucket prefix come from node.env, where they are committed empty until
-# they are known; the credentials come from OpenBao, which
-# provision-platform.sh stores once the endpoint is set.
+# Fail on a node.env that lacks a value the apps need and only the host or the
+# storage provider can supply: Ingot's byte budget, and on a node whose Piris
+# keep their blobs in object storage, its endpoint and bucket prefix. A node's
+# platform and apps are provisioned together, so provision-platform.sh checks
+# these before it creates anything, and deploy-apps.sh on every deploy.
+require_apps_inputs() {
+  # Ingot reads 0 as no budget, and then its cache keeps every body until the
+  # disk fills.
+  [[ "${INGOT_LOCAL_BLOB_MAX_BYTES:-}" =~ ^[1-9][0-9]*$ ]] ||
+    die "INGOT_LOCAL_BLOB_MAX_BYTES in $FILONE_NODE_DIR/node.env is '${INGOT_LOCAL_BLOB_MAX_BYTES:-}', not a
+       positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
+  # A Piri started without its object storage would keep its blobs on its own
+  # dataset, which is sized for its config and state, and fill it.
+  if piri_uses_s3; then
+    local name
+    for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX; do
+      [ -n "${!name:-}" ] ||
+        die "$name in $FILONE_NODE_DIR/node.env is empty. This node's Piris keep their blobs in
+       object storage; commit its endpoint and bucket prefix."
+    done
+  fi
+}
+
+# Refuse a Piri deploy on a node whose Piris use object storage while OpenBao
+# lacks its credentials, which provision-platform.sh asks for.
 require_piri_s3() {
   local name
-  for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX; do
-    [ -n "${!name:-}" ] ||
-      die "$name in $FILONE_NODE_DIR/node.env is empty. This node's Piris keep their blobs in
-       object storage, and none starts until it is configured."
-  done
   for name in piri_s3_access_key_id piri_s3_secret_access_key; do
     bao_has external "$name" ||
       die "OpenBao has no $FILONE_BAO_MOUNT/external#$name. Run provision-platform.sh,
-       which asks for the object storage credentials once PIRI_S3_ENDPOINT is set."
+       which asks for the object storage credentials."
   done
 }
 
