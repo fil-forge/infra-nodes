@@ -76,8 +76,9 @@ STUB
 
   # Links are directories under $STUB_STATE/links holding type, if_id, mtu
   # and up files, and each link's addresses are lines in its addrs file. The
-  # main routing table is $STUB_STATE/routes, one route per line as ip prints
-  # it. Every call that changes something is logged.
+  # main routing table is $STUB_STATE/routes, one route per line. ip ends each
+  # route line it prints with a space, and so does the stub. Every call that
+  # changes something is logged.
   cat >"$bin/ip" <<'STUB'
 #!/usr/bin/env bash
 echo "ip $*" >>"$STUB_STATE/calls"
@@ -110,14 +111,14 @@ details=""
 [ "$1" != -o ] || shift
 case "$1 $2" in
   "route show")
-    if [ "$3" = default ]; then echo "default via 192.0.2.1 dev eth0 proto static"; exit 0; fi
+    if [ "$3" = default ]; then echo "default via 192.0.2.1 dev eth0 proto static "; exit 0; fi
     if [ -z "${3:-}" ]; then
-      echo "default via 192.0.2.1 dev eth0 proto static"
-      cat "$routes"
+      echo "default via 192.0.2.1 dev eth0 proto static "
+      sed 's/$/ /' "$routes"
       exit 0
     fi
     case "$3" in
-      exact) awk -v p="$4" '($1 == p) || ($1 == "unreachable" && $2 == p)' "$routes" ;;
+      exact) awk -v p="$4" '($1 == p) || ($1 == "unreachable" && $2 == p) { print $0 " " }' "$routes" ;;
       # Every route whose prefix is the one given or a longer one inside it.
       root)
         to_int() { local IFS=. a b c d; read -r a b c d <<<"$1"; echo $(((a << 24) + (b << 16) + (c << 8) + d)); }
@@ -131,7 +132,7 @@ case "$1 $2" in
           [ "${destination#*/}" -ge "$bits" ] || continue
           size=$((1 << (32 - bits)))
           address="$(to_int "${destination%/*}")"
-          [ "$address" -ge "$base" ] && [ "$address" -lt $((base + size)) ] && echo "$line"
+          [ "$address" -ge "$base" ] && [ "$address" -lt $((base + size)) ] && echo "$line "
         done <"$routes"
         ;;
       *) exit 2 ;;
@@ -1119,6 +1120,25 @@ rm "$STATE/mv-fails"
 run_vpn
 check "a re-run succeeds" succeeded
 check "and renders the new address" in_file "$SWAN" "remote_addrs = $TUNNEL3"
+
+new_case "a failed rename after an earlier one"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+echo "$SECRETS" >"$STATE/mv-fails"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "could not move $SECRETS.new into place"
+check "keeps the connections it renamed" in_file "$SWAN" "remote_addrs = $TUNNEL3"
+check "leaves the keys as they were" in_file "$SECRETS" "id-2 = $TUNNEL2"
+check "leaves no new copy" test -z "$(find "$ROOT" -name '*.new')"
+check "never shows a key" key_never_shown
+rm "$STATE/mv-fails"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and renders the new keys" in_file "$SECRETS" "id-2 = $TUNNEL3"
 
 new_case "a copy left by a run that stopped while writing"
 run_vpn

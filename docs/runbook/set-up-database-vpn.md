@@ -70,9 +70,9 @@ missing, without prompting. On Debian 12 and Ubuntu 24.04 the AES-GCM and DH gro
 support is in `libstrongswan-standard-plugins`, a recommended package that an install without
 recommends leaves out, so the script names it. It then checks strongSwan's unit, UFW, IP
 forwarding, the public address against the host's addresses, any existing route for the VPC's
-CIDR or a part of it other than the script's own `unreachable` fallback, and that no subnet of the Docker networks overlaps the VPC's CIDR either way
-round. A failed check names itself and changes nothing; a failed input check also installs
-nothing. It never prints a key.
+CIDR or a part of it other than the script's own `unreachable` fallback, and that no subnet of
+the Docker networks overlaps the VPC's CIDR either way round. A failed check names itself and
+changes nothing; a failed input check also installs nothing. It never prints a key.
 
 It then admits UDP 500 and 4500 and ESP from the two tunnel addresses in UFW, and no other address,
 and creates the interfaces, the route and the nftables table. Only then does it write the
@@ -164,10 +164,10 @@ scripts/host/setup-vpn.sh down
 It takes the same two locks, stops and disables the health timer, the boot unit and strongSwan,
 deletes the nftables table, removes the tunnel and `unreachable` routes and the three interfaces,
 deletes the UFW rules for the tunnel addresses in `vpn.conf` and for any address whose rules carry
-the `filone-vpn` comment, and removes any `.new` copies a stopped run left, strongSwan's three files, the
-ruleset, the restart marker and `vpn.conf`, in that order. It never prints a key. A second run changes nothing. The packages stay
-installed, and so do the unit files, which every node's checkout installs and which do nothing
-without `vpn.conf`.
+the `filone-vpn` comment, and removes any `.new` copies a stopped run left, strongSwan's three
+files, the ruleset, the restart marker and `vpn.conf`, in that order. It never prints a key. A
+second run changes nothing. The packages stay installed, and so do the unit files, which every
+node's checkout installs and which do nothing without `vpn.conf`.
 
 ## Not yet run against a real gateway
 
