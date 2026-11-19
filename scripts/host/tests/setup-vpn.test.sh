@@ -25,6 +25,7 @@ REAL_CAT="$(command -v cat)"
 REAL_CMP="$(command -v cmp)"
 REAL_RM="$(command -v rm)"
 REAL_MKTEMP="$(command -v mktemp)"
+REAL_MV="$(command -v mv)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/setup-vpn-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -34,6 +35,7 @@ PUBLIC=192.0.2.10
 TUNNEL1=198.51.100.1
 TUNNEL2=198.51.100.2
 TUNNEL3=198.51.100.3
+TUNNEL4=198.51.100.4
 INSIDE1_LOCAL=169.254.200.2/30
 INSIDE1_REMOTE=169.254.200.1
 INSIDE2_LOCAL=169.254.200.6/30
@@ -114,8 +116,26 @@ case "$1 $2" in
       cat "$routes"
       exit 0
     fi
-    [ "$3" = exact ] || exit 2
-    awk -v p="$4" '($1 == p) || ($1 == "unreachable" && $2 == p)' "$routes"
+    case "$3" in
+      exact) awk -v p="$4" '($1 == p) || ($1 == "unreachable" && $2 == p)' "$routes" ;;
+      # Every route whose prefix is the one given or a longer one inside it.
+      root)
+        to_int() { local IFS=. a b c d; read -r a b c d <<<"$1"; echo $(((a << 24) + (b << 16) + (c << 8) + d)); }
+        base="$(to_int "${4%/*}")"
+        bits="${4#*/}"
+        while read -r line; do
+          [ -n "$line" ] || continue
+          destination="${line%% *}"
+          [ "$destination" != unreachable ] || { destination="${line#unreachable }"; destination="${destination%% *}"; }
+          case "$destination" in */*) ;; *) destination="$destination/32" ;; esac
+          [ "${destination#*/}" -ge "$bits" ] || continue
+          size=$((1 << (32 - bits)))
+          address="$(to_int "${destination%/*}")"
+          [ "$address" -ge "$base" ] && [ "$address" -lt $((base + size)) ] && echo "$line"
+        done <"$routes"
+        ;;
+      *) exit 2 ;;
+    esac
     ;;
   "route replace")
     if [ "$3" = unreachable ]; then
@@ -342,7 +362,7 @@ STUB
 
   # Writes land under $STUB_ROOT instead of on this machine. A file's mode and
   # owner go under $STUB_STATE/meta, where the stat stub reads them. A write to
-  # the path named in install-fails fails.
+  # the path named in install-fails, or to that path with a suffix, fails.
   cat >"$bin/install" <<'STUB'
 #!/usr/bin/env bash
 echo "install $*" >>"$STUB_STATE/calls"
@@ -351,7 +371,8 @@ owner=0
 case " $* " in *" -m "*) mode="$(printf '%s\n' "$*" | sed 's/.*-m \([0-7]*\).*/\1/')" ;; esac
 case " $* " in *" -o root "*) ;; *" -o "*) owner=1000 ;; esac
 destination="${*: -1}"
-if [ -f "$STUB_STATE/install-fails" ] && [ "$(cat "$STUB_STATE/install-fails")" = "$destination" ]; then
+# The path itself, or the path with a suffix, as the copy written beside it.
+if [ -f "$STUB_STATE/install-fails" ] && case "$destination" in "$(cat "$STUB_STATE/install-fails")"*) true ;; *) false ;; esac; then
   echo "install: cannot create regular file '$destination': No space left on device" >&2
   exit 1
 fi
@@ -383,6 +404,25 @@ STUB
 #!/usr/bin/env bash
 [ -f "$STUB_STATE/meta${*: -1}" ] || exit 1
 cat "$STUB_STATE/meta${*: -1}"
+STUB
+
+  # mv renames on the moved paths, and moves the recorded mode and owner with
+  # the file.
+  cat >"$bin/mv" <<'STUB'
+#!/usr/bin/env bash
+echo "mv $*" >>"$STUB_STATE/calls"
+[ "$1" != -f ] || shift
+map() {
+  case "$1" in
+    /etc/*|/run/*|/mnt/*|/var/lib/*|/root/*) printf '%s%s' "$STUB_ROOT" "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+"$REAL_MV" -f "$(map "$1")" "$(map "$2")" || exit
+if [ -f "$STUB_STATE/meta$1" ]; then
+  mkdir -p "$(dirname "$STUB_STATE/meta$2")"
+  "$REAL_MV" -f "$STUB_STATE/meta$1" "$STUB_STATE/meta$2"
+fi
 STUB
 
   # cat, cmp, rm and mktemp run the real command on the moved paths.
@@ -466,7 +506,7 @@ run_vpn() {
   env -i HOME="$CASE" PATH="$CASE/bin:$PATH" \
     STUB_STATE="$STATE" STUB_ROOT="$ROOT" ${tmpdir[@]+"${tmpdir[@]}"} \
     FILONE_DEPLOY_LOCK_FILE="$CASE/deploy.lock" VPN_LOCK_FILE="$CASE/vpn.lock" \
-    REAL_CAT="$REAL_CAT" REAL_CMP="$REAL_CMP" REAL_RM="$REAL_RM" REAL_MKTEMP="$REAL_MKTEMP" \
+    REAL_CAT="$REAL_CAT" REAL_CMP="$REAL_CMP" REAL_RM="$REAL_RM" REAL_MKTEMP="$REAL_MKTEMP" REAL_MV="$REAL_MV" \
     "${INPUTS[@]}" bash "$SCRIPT" "$@" >"$CASE/stdout" 2>"$CASE/stderr"
   status=$?
   set -e
@@ -595,6 +635,10 @@ new_case "something else routes the VPC"
 echo "$VPC via 192.0.2.1 dev eth0" >"$STATE/routes"
 expect_input_failure routes "something else routes $VPC"
 
+new_case "something else routes part of the VPC"
+echo "10.20.200.0/24 via 192.0.2.1 dev eth0" >"$STATE/routes"
+expect_input_failure routes "something else routes $VPC: 10.20.200.0/24"
+
 new_case "no strongSwan"
 touch "$STATE/no-strongswan"
 expect_input_failure strongswan "libstrongswan-standard-plugins"
@@ -644,7 +688,7 @@ check "writes tunnel 1's key, base64-encoded" \
   in_file "$SECRETS" "secret = 0s$(printf '%s' "$PSK1_VALUE" | base64)"
 check "writes tunnel 2's key, base64-encoded" \
   in_file "$SECRETS" "secret = 0s$(printf '%s' "$PSK2_VALUE" | base64)"
-check "writes the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS$"
+check "writes the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS(\.new)?$"
 check "writes vpn.conf at 0600" called '^install -m 0600 -o root -g root [^ ]+ /etc/fil-one/vpn.conf$'
 check "turns off charon's own routes" in_file /etc/strongswan.d/zz-filone-vpn.conf "install_routes = no"
 check "creates tunnel 1's xfrm interface" called '^ip link add filone-tun1 type xfrm dev eth0 if_id 1$'
@@ -903,7 +947,7 @@ echo "644 0 0" >"$STATE/meta$SECRETS"
 : >"$STATE/calls"
 run_vpn
 check "succeeds" succeeded
-check "reinstalls the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS$"
+check "reinstalls the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS(\.new)?$"
 check "leaves the file root-only" test "$(cat "$STATE/meta$SECRETS")" = "600 0 0"
 check "does not restart strongSwan" not_called '^systemctl restart'
 check "never shows a key" key_never_shown
@@ -978,6 +1022,26 @@ check "a re-run succeeds" succeeded
 check "and renders the new address" in_file "$SWAN" "remote_addrs = $TUNNEL3"
 check "and restarts strongSwan" called '^systemctl restart strongswan.service$'
 
+new_case "a second address change after a run that stopped"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+set_input VPN_TUNNEL_MTU 1400
+touch "$STATE/nft-refuses"
+run_vpn
+check "the first change stops at nft" failed
+check "after admitting its address" called "^ufw-change allow proto udp from $TUNNEL3 to any port 500,4500$"
+rm "$STATE/nft-refuses"
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL4"
+: >"$STATE/calls"
+run_vpn
+check "the corrected run succeeds" succeeded
+check "removes the stopped run's IKE rule" called "^ufw-change delete proto udp from $TUNNEL3 to any port 500,4500$"
+check "and its ESP rule" called "^ufw-change delete proto esp from $TUNNEL3 to any$"
+check "leaves rules for the current addresses alone" \
+  test -z "$(grep -vE " from ($TUNNEL1|$TUNNEL4) " "$STATE/ufw-rules")"
+check "keeps the current addresses' rules" not_called "^ufw-change delete .* from ($TUNNEL1|$TUNNEL4) "
+
 new_case "strongSwan fails to restart after a change"
 run_vpn
 check "provisions" succeeded
@@ -1019,6 +1083,8 @@ echo "$SECRETS" >"$STATE/install-fails"
 run_vpn
 check "exits non-zero" failed
 check "says so" said "could not write $SECRETS"
+check "leaves strongSwan's connections as they were" in_file "$SWAN" "remote_addrs = $TUNNEL2"
+check "leaves no new copy beside them" test ! -e "$ROOT$SWAN.new"
 check "does not restart strongSwan" not_called '^systemctl restart'
 check "does not say it provisioned" not_printed "VPN provisioned"
 check "never shows a key" key_never_shown

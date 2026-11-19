@@ -458,6 +458,16 @@ remove_vpn_routes() { # remove_vpn_routes [<CIDR to keep>]
     { for (i = 2; i < NF; i++) if ($i == "dev" && $(i + 1) ~ /^filone-tun[12]$/) { print $1, $(i + 1); next } }')
 }
 
+# The tunnel addresses vpn.conf names, and any other address whose UFW rules
+# carry this script's comment. Not every word is an address; callers check.
+admitted_addresses() {
+  {
+    sed -n 's/^VPN_TUNNEL[12]_OUTSIDE_ADDRESS=//p' < <(cat "$VPN_CONF" 2>/dev/null || true)
+    ufw status | awk '/# filone-vpn/ {
+      for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print $i; break } }'
+  } | sort -u
+}
+
 # ufw skips a rule it already has, and says so. A delete of a rule that is
 # already gone is fine; any other failure stops the run.
 ufw_rule() { # ufw_rule allow|delete <rule words...>
@@ -565,13 +575,7 @@ down() {
     ip link del dev "$link" || die "could not remove $link"
   done
 
-  # The tunnel addresses vpn.conf names, and any other address whose rules
-  # carry this script's comment.
-  addresses="$({
-    sed -n 's/^VPN_TUNNEL[12]_OUTSIDE_ADDRESS=//p' < <(cat "$VPN_CONF" 2>/dev/null || true)
-    ufw status | awk '/# filone-vpn/ {
-      for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print $i; break } }'
-  } | sort -u)" || die "could not read ufw status"
+  addresses="$(admitted_addresses)" || die "could not read ufw status"
   for address in $addresses; do
     ipv4_to_int "$address" >/dev/null || continue
     ufw_rule delete proto udp from "$address" to any port 500,4500
@@ -790,8 +794,9 @@ elif [ "$VPN_BEHIND_NAT" = true ] && [ "$on_host" = 1 ]; then
   fail "public address" "VPN_BEHIND_NAT is true but $VPN_SITE_PUBLIC_ADDRESS is on this host"
 fi
 
-# Nothing else may route the VPC, and no address on the host may sit inside it.
-existing_route="$(ip -4 route show exact "$VPN_VPC_CIDR" | grep -v '^unreachable ' |
+# Nothing else may route the VPC or any part of it, and no address on the host
+# may sit inside it. 'root' lists the VPC's own prefix and every longer one in it.
+existing_route="$(ip -4 route show root "$VPN_VPC_CIDR" | grep -v '^unreachable ' |
   grep -v ' dev filone-tun[12] ' || true)"
 [ -z "$existing_route" ] ||
   fail routes "something else routes $VPN_VPC_CIDR: $existing_route"
@@ -819,13 +824,10 @@ for network in ${VPN_DOCKER_NETWORKS:-filone}; do
 done
 [ -n "$VPN_CLIENT_SOURCES" ] || fail "docker networks" "no IPv4 subnet on ${VPN_DOCKER_NETWORKS:-filone}"
 
-# The outside addresses a previous run admitted, whose rules go if they changed.
-# vpn.conf is written only once the firewall and the host network are applied,
-# so a run that stops before then leaves them here for the next.
-previous_outside=""
-if previous="$(cat "$VPN_CONF" 2>/dev/null)"; then
-  previous_outside="$(sed -n 's/^VPN_TUNNEL[12]_OUTSIDE_ADDRESS=//p' <<<"$previous")"
-fi
+# The outside addresses a previous run admitted, whose rules go if they changed:
+# those vpn.conf names and any other whose rules carry this script's comment, so
+# an address a stopped run admitted goes too though vpn.conf never recorded it.
+previous_outside="$(admitted_addresses)" || die "could not read ufw status"
 
 # --- 2. strongSwan's configuration, rendered --------------------------------
 # Compared with what is installed here, and written only in section 4, once the
@@ -935,6 +937,7 @@ done
 # --- 3. Firewall -----------------------------------------------------------
 
 for old in $previous_outside; do
+  ipv4_to_int "$old" >/dev/null || continue
   [ "$old" != "$VPN_TUNNEL1_OUTSIDE_ADDRESS" ] && [ "$old" != "$VPN_TUNNEL2_OUTSIDE_ADDRESS" ] ||
     continue
   ufw_rule delete proto udp from "$old" to any port 500,4500
@@ -951,10 +954,28 @@ done
 bring_up
 
 # strongSwan's files, next to vpn.conf so that a reboot after a failed run
-# finds either both new or, short of a failed write of vpn.conf, both old. A
-# file whose mode or owner alone drifted is written again without a restart.
+# finds either both new or, short of a failed write of vpn.conf, both old. They
+# go in as one set: each changed file is written beside itself as <file>.new,
+# which no include pattern matches, and only once all are written are they
+# renamed into place, so a failed write leaves every one as it was. A file whose
+# mode or owner alone drifted is written again without a restart.
+staged_files=""
 for file in $STRONGSWAN_FILES; do
-  install_if_changed "$(strongswan_mode "$file")" "$file" < <(render_strongswan "$file")
+  mode="$(strongswan_mode "$file")"
+  stage_file "$mode" "$file" < <(render_strongswan "$file")
+  if [ "$FILE_STATE" != same ]; then
+    if ! install -m "$mode" -o root -g root "$STAGED" "$file.new"; then
+      rm -f "$STAGED" "$file.new"
+      for staged in $staged_files; do rm -f "$staged.new"; done
+      die "could not write $file"
+    fi
+    staged_files="${staged_files:+$staged_files }$file"
+  fi
+  rm -f "$STAGED"
+done
+for file in $staged_files; do
+  mv -f "$file.new" "$file" || die "could not move $file.new into place"
+  echo "  wrote $file"
 done
 unset PSK1 PSK2
 
