@@ -169,7 +169,8 @@ with this node's own values:
 | Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy | Postgres 18, Caddy, Alloy |
 | Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 | `piri-0`, in `piri-0/` on the `piri` dataset at `/mnt/data/fil-one/piri` |
 | Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` | `piri-0.us-east-2.fil-forge.com` |
-| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | the chain.love token; Alloy is the host's | the chain.love and Grafana Cloud tokens |
+| `provision-platform.sh` also asks for | the Grafana Cloud token | nothing; Alloy is the host's | the Grafana Cloud token |
+| `provision-apps.sh` asks for | the chain.love token | the chain.love token | the chain.love token and the object storage credentials |
 
 #### The dev node on EC2
 
@@ -1076,8 +1077,9 @@ scripts/host/provision-apps.sh
 
 It first checks that `node.env` holds what the apps need from step 2, Ingot's byte budget and, on
 a node whose Piris keep their blobs in object storage, its endpoint and bucket prefix, and stops
-before it asks for anything if one is missing. On such a node it then asks for the object storage
-access key id and secret key, unless OpenBao holds them already.
+before it asks for anything if one is missing. It then asks for the chain.love token and, on such a
+node, the object storage access key id and secret key, skipping any OpenBao holds already.
+`deploy-apps.sh` refuses to start the apps while OpenBao lacks one of them, and names it.
 
 A second onboarding run at central is safe. It performs only what is missing and returns the same
 delegation byte for byte, so a node that lost its copy can ask for it again.

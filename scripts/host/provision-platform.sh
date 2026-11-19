@@ -4,8 +4,8 @@
 # Interactive and run once, by an operator in an SSM session. It,
 # provision-backups.sh, which it calls, and provision-apps.sh are the only
 # scripts that create secrets, and the only points at which anything is typed
-# into this node by a human. provision-apps.sh asks for the object storage
-# credentials of a node whose Piris keep their blobs there.
+# into this node by a human. This one asks for what the platform needs, and
+# provision-apps.sh for what only the apps read.
 #
 # Safe to re-run: OpenBao is initialised only if it is not already, and every
 # secret is written only if absent, so a run that fails halfway can be repeated.
@@ -159,8 +159,6 @@ done
 # --- 8. Operator-supplied secrets -------------------------------------------
 
 echo "[8/9] Operator-supplied secrets"
-prompt_secret external chain_rpc_token "chain.love access token"
-
 if node_ships_telemetry; then
   prompt_secret external grafana_push_token "Grafana Cloud push token"
 else

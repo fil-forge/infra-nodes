@@ -169,14 +169,17 @@ require_apps_inputs() {
   fi
 }
 
-# Refuse a Piri deploy on a node whose Piris use object storage while OpenBao
-# lacks its credentials, which provision-apps.sh asks for.
-require_piri_s3() {
-  local name
-  for name in piri_s3_access_key_id piri_s3_secret_access_key; do
+# Refuse an apps deploy while OpenBao lacks a secret provision-apps.sh asks
+# for: the chain.love token, and on a node whose Piris use object storage its
+# credentials. A store restored from a snapshot taken before provision-apps.sh
+# ran holds none of them.
+require_apps_secrets() {
+  local names=(chain_rpc_token) name
+  ! piri_uses_s3 || names+=(piri_s3_access_key_id piri_s3_secret_access_key)
+  for name in "${names[@]}"; do
     bao_has external "$name" ||
       die "OpenBao has no $FILONE_BAO_MOUNT/external#$name. Run provision-apps.sh,
-       which asks for the object storage credentials."
+       which asks for it."
   done
 }
 

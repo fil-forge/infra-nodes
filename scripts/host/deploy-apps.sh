@@ -48,7 +48,7 @@ require_configured FWSS_VIEW_ADDRESS 0x0000000000000000000000000000000000000000
 require_configured LOTUS_RPC_URL PLACEHOLDER
 require_configured OPERATOR_EMAIL PLACEHOLDER
 
-! piri_uses_s3 || require_piri_s3
+require_apps_secrets
 
 piri_services="$(piri_services)"
 # A Piri whose volume is not mounted is left out of this deploy, and the rest go

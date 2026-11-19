@@ -69,13 +69,14 @@ done
 
 # --- 2. Operator-supplied secrets -------------------------------------------
 
-# deploy-apps.sh refuses to start a Piri without them.
+# deploy-apps.sh refuses to start the apps without them.
 echo "[2/4] Operator-supplied secrets"
+prompt_secret external chain_rpc_token "chain.love access token"
 if piri_uses_s3; then
   prompt_secret external piri_s3_access_key_id "Piri object storage access key id"
   prompt_secret external piri_s3_secret_access_key "Piri object storage secret access key"
 else
-  echo "  node.env names no object storage, so none are needed"
+  echo "  node.env names no object storage, so no object storage credentials are needed"
 fi
 
 # --- 3. Start ---------------------------------------------------------------

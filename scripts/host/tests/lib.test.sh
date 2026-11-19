@@ -8,7 +8,7 @@
 # directory shares its parent's filesystem (dev, staging) and on one where it
 # is a mount point of its own (prod/us-east-2's control/openbao dataset); the
 # node.env values provision-apps.sh and deploy-apps.sh require for the
-# apps, and the OpenBao credentials a Piri on object storage needs; and the
+# apps, and the secrets they need in OpenBao; and the
 # node.env placeholders deploy-apps.sh and deploy-platform.sh refuse.
 #
 # No real mount is made. Stub stat, mv, cp and install come first on PATH: stat
@@ -282,23 +282,34 @@ new_case "object storage settings present but empty"
 set_inputs 1000 "" ""
 check "is a node whose Piris use it" piri_uses_s3
 
-for field in piri_s3_access_key_id piri_s3_secret_access_key; do
-  new_case "require_piri_s3, OpenBao lacks $field"
+# description | object storage, yes or no | the external fields OpenBao holds,
+# or - | the field the refusal names, or - for a pass
+while IFS='|' read -r description object_storage stored refused; do
+  new_case "require_apps_secrets, $description"
+  if [ "$object_storage" = yes ]; then
+    set_inputs 1000 https://objects.example piri-
+  else
+    set_inputs 1000 -
+  fi
   "$REAL_MKDIR" -p "$STUB_STATE/bao/external"
-  for present in piri_s3_access_key_id piri_s3_secret_access_key; do
-    [ "$present" = "$field" ] || : >"$STUB_STATE/bao/external/$present"
-  done
-  run require_piri_s3
-  # shellcheck disable=SC2016 # expanded by eval
-  check "refuses, naming it" eval '[ "$status" -ne 0 ] && said "external#$field"'
-done
-
-new_case "require_piri_s3, both credentials stored"
-"$REAL_MKDIR" -p "$STUB_STATE/bao/external"
-: >"$STUB_STATE/bao/external/piri_s3_access_key_id"
-: >"$STUB_STATE/bao/external/piri_s3_secret_access_key"
-run require_piri_s3
-check "passes" test "$status" -eq 0
+  if [ "$stored" != - ]; then
+    for field in $stored; do : >"$STUB_STATE/bao/external/$field"; done
+  fi
+  run require_apps_secrets
+  if [ "$refused" = - ]; then
+    check "passes" test "$status" -eq 0
+  else
+    # shellcheck disable=SC2016 # expanded by eval
+    check "refuses, naming $refused" eval '[ "$status" -ne 0 ] && said "external#$refused"'
+  fi
+done <<'CASES'
+no object storage, nothing stored|no|-|chain_rpc_token
+no object storage, chain.love token stored|no|chain_rpc_token|-
+object storage, access key id missing|yes|chain_rpc_token piri_s3_secret_access_key|piri_s3_access_key_id
+object storage, secret key missing|yes|chain_rpc_token piri_s3_access_key_id|piri_s3_secret_access_key
+object storage, chain.love token missing|yes|piri_s3_access_key_id piri_s3_secret_access_key|chain_rpc_token
+object storage, all three stored|yes|chain_rpc_token piri_s3_access_key_id piri_s3_secret_access_key|-
+CASES
 
 for node in dev staging/eu-central-3; do
   current="$node"
@@ -313,12 +324,12 @@ check "checks the apps' inputs before it asks for anything" \
   test "$(grep -nx 'require_apps_inputs' "$SCRIPTS/provision-apps.sh" | cut -d: -f1)" \
   -lt "$(grep -n '^# --- 1\. ' "$SCRIPTS/provision-apps.sh" | cut -d: -f1)"
 current="provision-platform.sh"
-check "leaves the apps' inputs to provision-apps.sh" \
-  bash -c "! grep -q 'require_apps_inputs\|piri_s3_' '$SCRIPTS/provision-platform.sh'"
+check "leaves the apps' inputs and secrets to provision-apps.sh" \
+  bash -c "! grep -q 'require_apps_inputs\|piri_s3_\|chain_rpc_token' '$SCRIPTS/provision-platform.sh'"
 current="deploy-apps.sh"
 check "checks the apps' inputs" grep -qx 'require_apps_inputs' "$SCRIPTS/deploy-apps.sh"
-check "refuses a Piri deploy without the object storage credentials" \
-  grep -qx '! piri_uses_s3 || require_piri_s3' "$SCRIPTS/deploy-apps.sh"
+check "refuses a deploy without the apps' secrets" \
+  grep -qx 'require_apps_secrets' "$SCRIPTS/deploy-apps.sh"
 current="prod/us-east-2"
 # shellcheck disable=SC1091
 check "is a node whose Piris use object storage" \
