@@ -5,8 +5,8 @@
 # those nodes are about to run, not a pipeline that pushes to them.
 #
 # Every job runs one Makefile target and nothing else, so `make check` on a
-# laptop runs the same commands these jobs do. The three stay separate jobs
-# because they run in parallel and each says which check failed.
+# laptop runs the same commands these jobs do. They stay separate jobs because
+# they run in parallel and each says which check failed.
 
 name: check
 
@@ -51,6 +51,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - run: make check-shell
+
+  script-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - run: make check-script-tests
 
   compose:
     runs-on: ubuntu-latest

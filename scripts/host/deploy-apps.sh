@@ -192,6 +192,13 @@ mark ingot_changed config_changed apps-ingot "$ingot_config_hash"
 # --- 3. Piri ----------------------------------------------------------------
 
 echo "[3/5] Piri"
+# Every Piri's database, before any Piri starts. A new Piri gets its own here.
+POSTGRES_ADMIN_PASSWORD="$(bao_get postgres admin_password)"
+for service in "${piris[@]}"; do
+  ensure_piri_database "$service"
+done
+unset POSTGRES_ADMIN_PASSWORD
+
 # A Piri gone from compose.yml first, behind its own gate. The --remove-orphans
 # below would otherwise remove it in whatever minute it reaches it. Stopped here
 # rather than left to that call, so the gate's answer is still true when the

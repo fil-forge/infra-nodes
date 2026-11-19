@@ -134,12 +134,9 @@ services:
             '\gexec' \
           | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet
         }
-        # One role for every Piri, and one database each, named after its
-        # compose service with _ for - so a one-off query needs no quoting.
+        # One role for every Piri. Each Piri's database is created by
+        # deploy-apps.sh, so adding a Piri changes nothing here.
         ensure_role piri "$$PIRI_POSTGRES_PASSWORD" &&
-        ensure_database piri_0 piri &&
-        ensure_database piri_1 piri &&
-        ensure_database piri_2 piri &&
         ensure_role ingot "$$INGOT_POSTGRES_PASSWORD" &&
         ensure_database ingot ingot &&
         echo "postgres roles + databases ready"
