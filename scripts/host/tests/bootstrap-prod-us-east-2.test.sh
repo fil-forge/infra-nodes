@@ -124,6 +124,10 @@ case "$1" in
     for pair in $props; do
       printf '%s\n' "${pair#*=}" >"$root/$(key "$ds")/${pair%%=*}"
     done ;;
+  load-key)
+    [ "$2" = -n ] || { echo "stub zfs: load-key without -n" >&2; exit 2; }
+    [ ! -f "$STUB_STATE/load-key-fails" ] || { echo "Key load error: Failed to open key material file." >&2; exit 255; }
+    exit 0 ;;
   *)
     exit 0 ;;
 esac
@@ -274,8 +278,29 @@ new_case() {
 
   echo enabled >"$STATE/enabled-zfs-load-key-data.service"
   echo /etc/systemd/system/docker.service.d/10-zfs-mounted.conf >"$STATE/docker-dropins"
+  write_docker_dropin
 
   write_ufw_status "22/tcp                     ALLOW       $JUMP"
+  ROOT_BEFORE="$(root_tree)"
+}
+
+# The Docker drop-in as the storage record gives it, or with the given
+# contents instead.
+write_docker_dropin() { # write_docker_dropin [contents]
+  local dir="$ROOT/etc/systemd/system/docker.service.d"
+  mkdir -p "$dir"
+  if [ $# -gt 0 ]; then
+    printf '%s' "$1" >"$dir/10-zfs-mounted.conf"
+    return
+  fi
+  cat >"$dir/10-zfs-mounted.conf" <<'INI'
+[Unit]
+Wants=zfs-mount.service
+After=zfs-mount.service
+
+[Service]
+ExecStartPre=/bin/sh -c 'zfs list -H -o name data >/dev/null && ! zfs get -H -r -t filesystem -o value mounted data | grep -vqx yes'
+INI
 }
 case_count=0
 
@@ -343,18 +368,21 @@ printed() { grep -qF -- "$1" "$CASE/stdout"; }
 prop_is() { # prop_is <dataset> <property> <value>
   [ "$(cat "$STATE/zfs/$(printf '%s' "$1" | tr / %)/$2" 2>/dev/null)" = "$3" ]
 }
-root_empty() { [ -z "$(ls -A "$ROOT")" ]; }
 tmp_empty() { [ -z "$(ls -A "$CASE/tmp")" ]; }
 
 # Every file under the case's root with its checksum.
 root_files() { (cd "$ROOT" && find . -type f -exec cksum {} + | sort); }
+# Every path under the case's root, then every file with its checksum.
+root_tree() { (cd "$ROOT" && find . | sort) && root_files; }
+# Whether the case's root is as new_case left it.
+root_unchanged() { [ "$(root_tree)" = "$ROOT_BEFORE" ]; }
 
 # Anything that would change the host. Only calls the stubs saw count, so a
-# write the stubs did not absorb would show up in root_empty instead. A file
-# install is `install -m`; `install -d` on a directory that exists changes
-# nothing, and root_empty catches one that does not.
+# write the stubs did not absorb would show up in root_unchanged instead. A
+# file install is `install -m`; `install -d` on a directory that exists
+# changes nothing, and root_unchanged catches one that does not.
 CHANGES='^(zfs (create|set|destroy|inherit|rename)|zpool (set|export|import)|docker network (create|rm)|systemctl (restart|start|stop|enable|disable|daemon-reload)|install -m|rm .*/etc/)'
-changed_nothing() { not_called "$CHANGES" && root_empty; }
+changed_nothing() { not_called "$CHANGES" && root_unchanged; }
 
 # The script must never change a firewall rule: only `ufw status` is allowed.
 only_ufw_status() { ! grep -E '^ufw ' "$STATE/calls" | grep -qvx 'ufw status'; }
@@ -453,9 +481,27 @@ new_case "key unit not enabled"
 echo disabled >"$STATE/enabled-zfs-load-key-data.service"
 expect_check_failure "key unit"
 
+new_case "key file does not unlock the pool"
+touch "$STATE/load-key-fails"
+expect_check_failure "pool key file"
+
 new_case "Docker drop-in missing"
 : >"$STATE/docker-dropins"
 expect_check_failure "docker drop-in"
+
+new_case "Docker drop-in file gone while systemd still lists it"
+rm "$ROOT/etc/systemd/system/docker.service.d/10-zfs-mounted.conf"
+ROOT_BEFORE="$(root_tree)"
+expect_check_failure "docker drop-in"
+
+new_case "Docker drop-in without the mount guard"
+write_docker_dropin '[Unit]
+Wants=zfs-mount.service
+After=zfs-mount.service
+'
+ROOT_BEFORE="$(root_tree)"
+expect_check_failure "docker drop-in"
+check "shows how the drop-in differs" said '+ExecStartPre='
 
 new_case "jump host address unset"
 JUMP_HOST_ADDRESS_UNSET=1 expect_check_failure "jump host address"
@@ -526,6 +572,7 @@ check "creates ingot/segments with its quota" \
   prop_is data/fil-one/ingot/segments quota "$EXPECT_SEGMENTS_QUOTA"
 check "creates ingot/blobs with its quota" \
   prop_is data/fil-one/ingot/blobs quota "$EXPECT_BLOBS_QUOTA"
+check "tries the key file without loading it" called '^zfs load-key -n data$'
 check "creates exactly six datasets" \
   test "$(grep -c '^zfs create' "$STATE/calls")" -eq 6
 check "checks where the blobs dataset mounted" called '^zfs get .*mountpoint data/fil-one/ingot/blobs$'

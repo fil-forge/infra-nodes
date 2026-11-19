@@ -120,6 +120,20 @@ daemon_json() {
 JSON
 }
 
+# The Docker drop-in, as docs/decisions/2026-11-ist1-appliance-storage.md gives
+# it: Docker waits for the pool to mount and refuses to start while the pool is
+# missing or any dataset on it is unmounted.
+docker_dropin() {
+  cat <<'INI'
+[Unit]
+Wants=zfs-mount.service
+After=zfs-mount.service
+
+[Service]
+ExecStartPre=/bin/sh -c 'zfs list -H -o name data >/dev/null && ! zfs get -H -r -t filesystem -o value mounted data | grep -vqx yes'
+INI
+}
+
 # --- 1. Verify, changing nothing ---------------------------------------------
 
 [ "$(id -u)" -eq 0 ] || fail root "must run as root"
@@ -197,6 +211,11 @@ value="$(pool_value "pool key status" keystatus)"
 value="$(pool_value "pool key location" keylocation)"
 [ "$value" = "$POOL_KEYLOCATION" ] ||
   fail "pool key location" "$POOL key location is '$value', expected $POOL_KEYLOCATION; the key would not load at boot"
+# The key status stays available when the key file goes after the pool is
+# unlocked. A dry-run load reads the file and tests it against the pool
+# without loading anything.
+zfs load-key -n "$POOL" >/dev/null ||
+  fail "pool key file" "${POOL_KEYLOCATION#file://} does not unlock $POOL, so the pool would stay locked after a reboot"
 
 # Sizes come from the pool's size, which `zpool get size` reports as a fixed
 # number of bytes for a mirror, so every run computes the same values.
@@ -206,6 +225,17 @@ pool_size="$(zpool get -Hp -o value size "$POOL")" ||
 
 systemctl is-enabled "$KEY_UNIT" >/dev/null 2>&1 ||
   fail "key unit" "$KEY_UNIT is not enabled, so the pool would stay locked after a reboot"
+# The drop-in must hold exactly what the storage record gives, and systemd
+# must have loaded it.
+case "$(docker_dropin | compare_file "$DOCKER_DROPIN")" in
+  absent)
+    fail "docker drop-in" "$DOCKER_DROPIN is missing, so Docker could start before the pool mounts"
+    ;;
+  differs)
+    docker_dropin | diff -u "$DOCKER_DROPIN" - >&2 || true
+    fail "docker drop-in" "$DOCKER_DROPIN differs from the storage record's drop-in above, so Docker could start before the pool mounts"
+    ;;
+esac
 grep -qxF "$DOCKER_DROPIN" <<<"$(systemctl show -p DropInPaths --value docker.service | tr ' ' '\n')" ||
   fail "docker drop-in" "systemd does not load $DOCKER_DROPIN for docker.service, so Docker could start before the pool mounts"
 

@@ -874,7 +874,8 @@ through every step here. Check out this repository on the host, then run, as roo
 JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
 ```
 
-Bootstrap first checks the pool, its encryption and key, the two units, Compose 2.40 or later, the
+Bootstrap first checks the pool, its encryption, that the key file unlocks it, the key unit, that
+the Docker drop-in holds exactly what the storage record gives, Compose 2.40 or later, the
 UFW rule admitting port 22 from `JUMP_HOST_ADDRESS`, the `filone` network's subnet if it exists,
 `/etc/docker/daemon.json`, and any datasets already under `data/fil-one`. It stops on the first
 check that fails, names it, and changes nothing. It never changes a firewall rule. Existing
