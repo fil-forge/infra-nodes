@@ -288,13 +288,19 @@ done
 echo "==> node.env placeholders"
 
 # Each require_configured line in the deploy scripts, run against each node's
-# node.env: dev and staging pass, prod/us-east-2 refuses every placeholder.
+# node.env: dev and staging pass every one; prod/us-east-2 refuses those still
+# at their placeholder and passes the ones named after the node.
 refusals="$(grep -hE '^ *require_configured ' "$SCRIPTS/deploy-apps.sh" "$SCRIPTS/deploy-platform.sh" |
   sed 's/^ *//')"
-check_placeholders() { # check_placeholders <node> pass|refuse
-  local node="$1" want="$2" line result
+check_placeholders() { # check_placeholders <node> pass|refuse [name that passes...]
+  local node="$1" default="$2" line result want name
+  shift 2
   current="$node"
   while read -r line; do
+    want="$default"
+    for name in "$@"; do
+      [[ "$line" != "require_configured $name "* ]] || want=pass
+    done
     # deploy-platform.sh checks the Grafana values only on a node that ships
     # its own telemetry, which staging does not.
     if [[ "$line" == *GRAFANA_* ]] && ! grep -q '^GRAFANA_LOGS_URL=' "$NODES/$node/node.env"; then
@@ -309,7 +315,8 @@ check_placeholders() { # check_placeholders <node> pass|refuse
 }
 check_placeholders dev pass
 check_placeholders staging/eu-central-3 pass
-check_placeholders prod/us-east-2 refuse
+check_placeholders prod/us-east-2 refuse LOTUS_RPC_URL GRAFANA_LOGS_URL GRAFANA_LOGS_USER \
+  GRAFANA_METRICS_URL GRAFANA_METRICS_USER GRAFANA_TRACES_URL GRAFANA_TRACES_USER
 
 echo
 if [ "$failures" -ne 0 ]; then

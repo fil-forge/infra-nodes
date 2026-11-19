@@ -141,9 +141,7 @@ Commit the printed value in place of the 0 placeholder.
 `nodes/prod/us-east-2/node.env` was committed with these values still open, and each is refused
 until it is set: `PAYER_ADDRESS` (from central's prod stage), `INGOT_LOCAL_BLOB_MAX_BYTES` (from
 bootstrap), `PDP_VERIFIER_ADDRESS` and `FWSS_VIEW_ADDRESS` (central's prod files name neither),
-`LOTUS_RPC_URL`, `OPERATOR_EMAIL`, the three Grafana URLs and user ids, and `TARGET_PLATFORM` with
-the two tool checksums for the host's architecture. Ingot's `cors_allowed_origins` is empty, which
-turns CORS off, until a production console origin is recorded.
+`OPERATOR_EMAIL`, and `TARGET_PLATFORM` with the two tool checksums for the host's architecture.
 
 Prod/us-east-2's Piri keeps its blobs in S3-compatible object storage, through the `[repo.s3]`
 section of its base config, because the piri dataset's 50 GiB quota is sized for its config and
