@@ -72,7 +72,7 @@ STUB
   # each property is a file in its directory. An unset quota or reservation
   # reads 0, which is what `zfs get -p` prints for none, and an unset
   # mountpoint is inherited from the nearest ancestor that sets one. An unset
-# encryptionroot reads data, as for a dataset that inherits the pool's key.
+  # encryptionroot reads data, as for a dataset that inherits the pool's key.
   # A file get-fails-<property> makes reading that property fail.
   cat >"$bin/zfs" <<'STUB'
 #!/usr/bin/env bash
@@ -373,8 +373,8 @@ write_pool_status() { # write_pool_status <member>...
     printf '  scan: scrub repaired 0B in 00:00:01 with 0 errors on Sun Nov  8 00:24:02 2026\n'
     printf 'config:\n\n'
     printf '\tNAME                    STATE     READ WRITE CKSUM\n'
-    printf '\tdata                    ONLINE       0     0     0\n'
-    printf '\t  mirror-0              ONLINE       0     0     0\n'
+    printf '\tdata                    ONLINE       %s\n' "${POOL_ROW_COUNTS:-0     0     0}"
+    printf '\t  mirror-0              ONLINE       %s\n' "${VDEV_ROW_COUNTS:-0     0     0}"
     for member in "$@"; do
       name="${member%%:*}"
       state=ONLINE
@@ -515,6 +515,20 @@ write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE:ONLINE:3
 expect_check_failure "pool errors"
 check "names the member and its counts" said "nvme-SECOND_DRIVE=0/0/3"
 
+new_case "pool row counting write errors"
+POOL_ROW_COUNTS="0     2     0"
+write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE
+POOL_ROW_COUNTS=""
+expect_check_failure "pool errors"
+check "names the pool and its counts" said "data=0/2/0"
+
+new_case "vdev row counting read errors"
+VDEV_ROW_COUNTS="1.2K     0     0"
+write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE
+VDEV_ROW_COUNTS=""
+expect_check_failure "pool errors"
+check "names the vdev and its counts" said "mirror-0=1.2K/0/0"
+
 new_case "pool reporting data errors"
 POOL_DATA_ERRORS='1 data errors, use '"'"'-v'"'"' for a list'
 write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE
@@ -616,6 +630,13 @@ printf '%s\n' /etc/systemd/system/docker.service.d/10-zfs-mounted.conf \
 : >"$STATE/docker-execstartpre"
 expect_check_failure "docker drop-in"
 
+new_case "a later drop-in ignores the guard's failure"
+printf '%s\n' /etc/systemd/system/docker.service.d/10-zfs-mounted.conf \
+  /etc/systemd/system/docker.service.d/99-override.conf >"$STATE/docker-dropins"
+printf '%s\n' "{ path=/bin/sh ; argv[]=/bin/sh -c $GUARD ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }" \
+  >"$STATE/docker-execstartpre"
+expect_check_failure "docker drop-in"
+
 new_case "jump host address unset"
 JUMP_HOST_ADDRESS_UNSET=1 expect_check_failure "jump host address"
 
@@ -645,6 +666,11 @@ expect_check_failure "ssh rule"
 
 new_case "SSH denied on a port range before the rule admitting it"
 write_ufw_status "20:30/tcp                  DENY        192.0.2.0/24" "22/tcp                     ALLOW       $JUMP"
+expect_check_failure "ssh rule"
+
+new_case "SSH denied by a rule whose comment holds an action word"
+write_ufw_status "22/tcp                     DENY        $JUMP                       # was ALLOW 22" \
+  "22/tcp                     ALLOW       $JUMP"
 expect_check_failure "ssh rule"
 
 new_case "rule for another port"
@@ -705,6 +731,10 @@ expect_success
 
 new_case "SSH rule by profile on one interface"
 write_ufw_status "OpenSSH on eth0            ALLOW       $JUMP/32"
+expect_success
+
+new_case "SSH rule with a comment"
+write_ufw_status "22/tcp                     ALLOW       $JUMP                       # jump host DENY nothing"
 expect_success
 
 # --- A clean first run, then a second ----------------------------------------

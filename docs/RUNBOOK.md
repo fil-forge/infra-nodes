@@ -883,6 +883,16 @@ datasets with other quotas, reservations or mount points, that are unmounted, or
 encryption root other than the pool are all reported before it stops, and are left for you to
 change by hand.
 
+SSH depends on the UFW rule admitting port 22 from the jump host's address, the one passed as
+`JUMP_HOST_ADDRESS`. Keep that rule through every firewall change. Before any change to UFW or
+sshd, keep a session open, and close it only after a second login through the jump host succeeds.
+A broken jump host is repaired through AWS Session Manager, as
+[infra-central's jump host guide](https://github.com/fil-forge/infra-central/blob/main/docs/jump-host.md)
+describes. A lost rule or a broken sshd leaves a ticket with the provider as the only way back in.
+While nobody can log in, the containers keep running, and once step 7 enables the timers,
+reconcile still deploys merged changes every five minutes and the seal token still renews daily.
+On a node that takes backups, the OpenBao snapshot still uploads daily.
+
 It then creates the datasets under `data/fil-one` with their quotas and reservations and checks
 each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when there is none, and
 restarts Docker for it only when no container runs; an existing file that differs is shown as a

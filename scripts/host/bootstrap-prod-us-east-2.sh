@@ -305,10 +305,11 @@ case "$(docker_dropin | compare_file "$DOCKER_DROPIN")" in
 esac
 grep -qxF "$DOCKER_DROPIN" <<<"$(systemctl show -p DropInPaths --value docker.service | tr ' ' '\n')" ||
   fail "docker drop-in" "systemd does not load $DOCKER_DROPIN for docker.service, so Docker could start before the pool mounts"
-# A later drop-in can empty ExecStartPre and drop the guard with it, so the
-# guard must be among the commands systemd will run.
+# A later drop-in can empty ExecStartPre and drop the guard with it, or add it
+# back with a "-" prefix that ignores its failure, so the guard must be among
+# the commands systemd will run, with its failure stopping the start.
 guard="$(docker_dropin | sed -n "s/^ExecStartPre=\/bin\/sh -c '\(.*\)'\$/\1/p")"
-grep -qF -- "$guard" <<<"$(systemctl show -p ExecStartPre --value docker.service)" ||
+grep -qF -- "argv[]=/bin/sh -c $guard ; ignore_errors=no" <<<"$(systemctl show -p ExecStartPre --value docker.service)" ||
   fail "docker drop-in" "docker.service does not run the mount guard before it starts, so another drop-in overrides $DOCKER_DROPIN"
 
 command -v ufw >/dev/null || fail "ufw active" "ufw is not installed"
@@ -347,6 +348,8 @@ may_cover_ssh() { # may_cover_ssh <To column>
 ssh_admitted=0
 ssh_denied=""
 while IFS= read -r line; do
+  # A rule's comment can hold any word, an action among them.
+  line="${line%% # *}"
   if [[ "$line" =~ $ssh_rule ]]; then
     if in_network "$JUMP_HOST_ADDRESS" "${BASH_REMATCH[7]}"; then
       ssh_admitted=1
