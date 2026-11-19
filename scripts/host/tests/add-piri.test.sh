@@ -77,6 +77,7 @@ STUB
   printf 'any-image-id\n' >"$STUB_STATE/running-image"
   printf 'any-image-id\n' >"$STUB_STATE/desired-image"
   printf 'any-container\n' >"$STUB_STATE/container"
+  printf 'any-container\n' >"$STUB_STATE/running-container"
   printf 'https://piri-0.any-suffix {\n}\n' >"$FILONE_NODE_DIR/platform/config/caddy/Caddyfile"
   write_caddy_definition 'PIRI_HOSTNAME_SUFFIX=any-suffix'
 }
@@ -100,7 +101,8 @@ compose_platform() {
   echo "compose $*" >>"$STUB_STATE/calls"
   case "$1" in
     config) cat "$STUB_STATE/config.json" ;;
-    ps) cat "$STUB_STATE/container" ;;
+    # `ps -aq` lists a stopped container too; `ps -q` only a running one.
+    ps) if [ "$2" = -aq ]; then cat "$STUB_STATE/container"; else cat "$STUB_STATE/running-container"; fi ;;
   esac
 }
 
@@ -190,6 +192,19 @@ record_caddy_definition() {
   new_case "recreates when Caddy's image changed"
   record_caddy_definition
   printf 'other-image-id\n' >"$STUB_STATE/desired-image"
+  if caddy_only_caddyfile_changed; then flunk "reported a Caddyfile-only change"; else pass "does not report a Caddyfile-only change"; fi
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+(
+  # The container exists but is stopped, so there is no Caddy to reload into.
+  new_case "recreates when Caddy is stopped"
+  record_caddy_definition
+  printf 'https://piri-3.any-suffix {\n}\n' >>"$FILONE_NODE_DIR/platform/config/caddy/Caddyfile"
+  : >"$STUB_STATE/running-container"
   if caddy_only_caddyfile_changed; then flunk "reported a Caddyfile-only change"; else pass "does not report a Caddyfile-only change"; fi
   [ "$failures" -eq 0 ]
 ) || {
