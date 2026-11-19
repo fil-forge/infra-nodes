@@ -10,9 +10,11 @@ data_dir: /data
 # ingot/blobs dataset; node.env says how it is sized.
 local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
 log_level: info
-# Browser origins the S3 listener answers CORS for. None yet: no production
-# console origin is recorded for this node, and an empty list turns CORS off.
-cors_allowed_origins: []
+# Browser origins the S3 listener answers CORS for. 
+cors_allowed_origins: 
+  - "https://app.filone.com"
+  - "https://app.filone.ai"
+  - "https://app.fil.one"
 identity:
   key_file: /keys/ingot.pem
   service_id: ${INGOT_DID}
