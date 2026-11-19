@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Bring a new node's platform up for the first time.
 #
-# Interactive and run once, by an operator in an SSM session. It and
-# provision-backups.sh, which it calls, are the only scripts that create
-# secrets, and the only points at which anything is typed into this node by a
-# human.
+# Interactive and run once, by an operator in an SSM session. It,
+# provision-backups.sh, which it calls, and provision-apps.sh are the only
+# scripts that create secrets, and the only points at which anything is typed
+# into this node by a human. provision-apps.sh asks for the object storage
+# credentials of a node whose Piris keep their blobs there.
 #
 # Safe to re-run: OpenBao is initialised only if it is not already, and every
 # secret is written only if absent, so a run that fails halfway can be repeated.
@@ -22,10 +23,6 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 filone_init
 
 echo "=== provision platform ($FILONE_NODE) ==="
-
-# provision-apps.sh follows this script on the same node, so stop here, before
-# anything is created, if node.env lacks a value the apps need.
-require_apps_inputs
 
 # --- 1. The seal token ------------------------------------------------------
 
@@ -162,25 +159,7 @@ done
 # --- 8. Operator-supplied secrets -------------------------------------------
 
 echo "[8/9] Operator-supplied secrets"
-prompt_secret() {
-  local path="$1" field="$2" description="$3" value
-  if bao_has "$path" "$field"; then
-    echo "  $description already stored"
-    return 0
-  fi
-  read -rsp "  $description: " value
-  echo
-  [ -n "$value" ] || die "no value given for $description"
-  bao_put_if_absent "$path" "$field" "$value"
-}
-
 prompt_secret external chain_rpc_token "chain.love access token"
-
-# deploy-apps.sh refuses to start a Piri without them.
-if piri_uses_s3; then
-  prompt_secret external piri_s3_access_key_id "Piri object storage access key id"
-  prompt_secret external piri_s3_secret_access_key "Piri object storage secret access key"
-fi
 
 if node_ships_telemetry; then
   prompt_secret external grafana_push_token "Grafana Cloud push token"

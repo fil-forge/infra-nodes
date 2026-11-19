@@ -6,6 +6,10 @@
 # approval and gets a 403 for any DID that is not on the delegator's allow list,
 # so running this before central has registered the node produces a crash loop
 # that names nothing useful.
+#
+# Interactive: it asks for the secrets only the apps read, the ones OpenBao
+# does not hold yet. Safe to re-run, because a stored secret is kept and not
+# asked for again.
 set -euo pipefail
 
 # SC2154: INGOT_DID and INGOT_HOSTNAME come from the node's node.env,
@@ -21,9 +25,13 @@ filone_init
 
 echo "=== provision apps ($FILONE_NODE) ==="
 
+# Stop before anything is asked for or started if node.env lacks a value the
+# apps need.
+require_apps_inputs
+
 # --- 1. What onboarding was supposed to leave behind ------------------------
 
-echo "[1/3] Checking onboarding completed"
+echo "[1/4] Checking onboarding completed"
 bao_is_unsealed || die "OpenBao is sealed; run provision-platform.sh first"
 
 piri_services="$(piri_services)"
@@ -59,7 +67,18 @@ for service in "${piris[@]}"; do
   echo "  created $dir"
 done
 
-# --- 2. Start ---------------------------------------------------------------
+# --- 2. Operator-supplied secrets -------------------------------------------
+
+# deploy-apps.sh refuses to start a Piri without them.
+echo "[2/4] Operator-supplied secrets"
+if piri_uses_s3; then
+  prompt_secret external piri_s3_access_key_id "Piri object storage access key id"
+  prompt_secret external piri_s3_secret_access_key "Piri object storage secret access key"
+else
+  echo "  node.env names no object storage, so none are needed"
+fi
+
+# --- 3. Start ---------------------------------------------------------------
 
 # True on a node where some Piri has never finished `piri init`. Mirrors the
 # first two conditions of the entrypoint's skip test, read from the host so this
@@ -144,7 +163,7 @@ drain_piri_log() {
   done
 }
 
-echo "[2/3] Starting"
+echo "[3/4] Starting"
 # Everything here is the ordinary deploy path. Provisioning apps adds no step of
 # its own, which is the point: the first start and every later one run the same
 # code.
@@ -158,9 +177,9 @@ else
   "$SCRIPT_DIR/deploy-apps.sh"
 fi
 
-# --- 3. Acceptance ----------------------------------------------------------
+# --- 4. Acceptance ----------------------------------------------------------
 
-echo "[3/3] Acceptance checks"
+echo "[4/4] Acceptance checks"
 
 check() {
   local description="$1"

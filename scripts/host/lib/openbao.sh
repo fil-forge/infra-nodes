@@ -439,6 +439,21 @@ bao_put_if_absent() {
   bao_write_fields "$path" "$@"
 }
 
+# Ask the operator for a secret OpenBao lacks, without echoing it, and store it.
+# A secret already stored is kept and not asked for, so a provisioning script
+# that failed halfway can be re-run.
+prompt_secret() {
+  local path="$1" field="$2" description="$3" value
+  if bao_has "$path" "$field"; then
+    echo "  $description already stored"
+    return 0
+  fi
+  read -rsp "  $description: " value
+  echo
+  [ -n "$value" ] || die "no value given for $description"
+  bao_put_if_absent "$path" "$field" "$value"
+}
+
 # Write one or more field/value pairs unconditionally, overwriting any that are
 # already there. For rotating a value bao_put_if_absent would otherwise leave
 # alone, such as a delegation whose audience has changed underneath it.

@@ -136,8 +136,8 @@ Prod/us-east-2: Ingot's spool and cache have the `ingot/blobs` dataset to themse
 catalog log has `ingot/segments`. Bootstrap sets the blobs quota to 50% of the pool and prints the
 budget, 80% of that quota, which leaves room for bodies in flight and stays under the 10%-free
 alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB ten-minute peak.
-Commit the printed value before step 5. `provision-platform.sh` and `deploy-apps.sh` refuse
-anything but a positive byte count.
+Commit the printed value before step 6. `provision-apps.sh` and `deploy-apps.sh` refuse anything
+but a positive byte count.
 
 Central's prod files name no PDP verifier or FWSS view address, so the node's two come from the
 FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` return them.
@@ -145,8 +145,8 @@ FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` r
 Prod/us-east-2's Piri keeps its blobs in S3-compatible object storage, through the `[repo.s3]`
 section of its base config, because the piri dataset's 50 GiB quota is sized for its config and
 state. Commit `PIRI_S3_ENDPOINT` and `PIRI_S3_BUCKET_PREFIX` from the storage provider's details
-before step 5: `provision-platform.sh` refuses to start while either is empty, and asks for the
-access key id and secret key, which it stores as `filone/external`'s `piri_s3_access_key_id` and
+before step 6: `provision-apps.sh` refuses to start while either is empty, and asks for the access
+key id and secret key, which it stores as `filone/external`'s `piri_s3_access_key_id` and
 `piri_s3_secret_access_key`. `deploy-apps.sh` refuses to start a Piri without all four.
 `piri init` copies the credentials into the config it writes on the piri dataset.
 
@@ -930,7 +930,7 @@ restarts Docker for it only when no container runs; an existing file that differ
 diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
 systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value;
 commit it in `nodes/prod/us-east-2/node.env`, with the object storage endpoint and bucket prefix,
-before step 5.
+before step 6.
 
 `nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao, the state directory, Caddy's
 state and Alloy's write-ahead log to their `control/` datasets (Caddy's to `data/` and `config/`
@@ -981,11 +981,6 @@ the bring-up runs in this shell.
 ```sh
 scripts/host/provision-platform.sh
 ```
-
-It first checks that `node.env` holds what the apps need from step 2, Ingot's byte budget and, on
-a node whose Piris keep their blobs in object storage, its endpoint and bucket prefix, and stops
-before it creates anything if one is missing. The platform and the apps are provisioned in one
-sitting, steps 5 and 6.
 
 It asks for the unseal-token wrapping token, exchanges it at central for the unseal token,
 initialises OpenBao, and prints **one recovery key and one root token**.
@@ -1078,6 +1073,11 @@ script strips whitespace, so the extra newline does no harm. Then start the apps
 ```sh
 scripts/host/provision-apps.sh
 ```
+
+It first checks that `node.env` holds what the apps need from step 2, Ingot's byte budget and, on
+a node whose Piris keep their blobs in object storage, its endpoint and bucket prefix, and stops
+before it asks for anything if one is missing. On such a node it then asks for the object storage
+access key id and secret key, unless OpenBao holds them already.
 
 A second onboarding run at central is safe. It performs only what is missing and returns the same
 delegation byte for byte, so a node that lost its copy can ask for it again.

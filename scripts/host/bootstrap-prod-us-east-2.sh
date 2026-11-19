@@ -587,7 +587,7 @@ fi
 
 # node.env commits this value, so it is printed rather than written: 80% of
 # the blobs quota, leaving room above the budget for bodies in flight and under
-# the 10%-free alert. provision-platform.sh refuses to start until it is set.
+# the 10%-free alert. provision-apps.sh refuses to start until it is set.
 echo "prod/us-east-2 bootstrap complete"
 echo "Set this in nodes/$NODE/node.env:"
 echo "  INGOT_LOCAL_BLOB_MAX_BYTES=$((blobs_quota * 80 / 100))"

@@ -148,9 +148,9 @@ piri_uses_s3() {
 
 # Fail on a node.env that lacks a value the apps need and only the host or the
 # storage provider can supply: Ingot's byte budget, and on a node whose Piris
-# keep their blobs in object storage, its endpoint and bucket prefix. A node's
-# platform and apps are provisioned together, so provision-platform.sh checks
-# these before it creates anything, and deploy-apps.sh on every deploy.
+# keep their blobs in object storage, its endpoint and bucket prefix.
+# provision-apps.sh checks these before it asks for anything, and deploy-apps.sh
+# on every deploy.
 require_apps_inputs() {
   # Ingot reads 0 as no budget, and then its cache keeps every body until the
   # disk fills.
@@ -170,12 +170,12 @@ require_apps_inputs() {
 }
 
 # Refuse a Piri deploy on a node whose Piris use object storage while OpenBao
-# lacks its credentials, which provision-platform.sh asks for.
+# lacks its credentials, which provision-apps.sh asks for.
 require_piri_s3() {
   local name
   for name in piri_s3_access_key_id piri_s3_secret_access_key; do
     bao_has external "$name" ||
-      die "OpenBao has no $FILONE_BAO_MOUNT/external#$name. Run provision-platform.sh,
+      die "OpenBao has no $FILONE_BAO_MOUNT/external#$name. Run provision-apps.sh,
        which asks for the object storage credentials."
   done
 }

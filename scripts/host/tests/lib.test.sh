@@ -7,7 +7,7 @@
 # Covers moving OpenBao's store aside and back, on a node where the raft
 # directory shares its parent's filesystem (dev, staging) and on one where it
 # is a mount point of its own (prod/us-east-2's control/openbao dataset); the
-# node.env values provision-platform.sh and deploy-apps.sh require for the
+# node.env values provision-apps.sh and deploy-apps.sh require for the
 # apps, and the OpenBao credentials a Piri on object storage needs; and the
 # node.env placeholders deploy-apps.sh and deploy-platform.sh refuse.
 #
@@ -307,11 +307,14 @@ for node in dev staging/eu-central-3; do
     bash -c "set -a; . '$NODES/$node/node.env'; set +a; . '$SCRIPTS/lib.sh'; require_apps_inputs"
 done
 
+current="provision-apps.sh"
+# Before its first step, ahead of every prompt and the deploy.
+check "checks the apps' inputs before it asks for anything" \
+  test "$(grep -nx 'require_apps_inputs' "$SCRIPTS/provision-apps.sh" | cut -d: -f1)" \
+  -lt "$(grep -n '^# --- 1\. ' "$SCRIPTS/provision-apps.sh" | cut -d: -f1)"
 current="provision-platform.sh"
-# Before the seal token, the first thing it creates.
-check "checks the apps' inputs before it creates anything" \
-  test "$(grep -nx 'require_apps_inputs' "$SCRIPTS/provision-platform.sh" | cut -d: -f1)" \
-  -lt "$(grep -n '^# --- 1\. ' "$SCRIPTS/provision-platform.sh" | cut -d: -f1)"
+check "leaves the apps' inputs to provision-apps.sh" \
+  bash -c "! grep -q 'require_apps_inputs\|piri_s3_' '$SCRIPTS/provision-platform.sh'"
 current="deploy-apps.sh"
 check "checks the apps' inputs" grep -qx 'require_apps_inputs' "$SCRIPTS/deploy-apps.sh"
 check "refuses a Piri deploy without the object storage credentials" \
