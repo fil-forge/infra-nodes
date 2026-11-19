@@ -226,7 +226,7 @@ make check
 That is `check-tofu`, `check-shell`, `check-script-tests`, `check-compose` and
 `check-bind-mounts`, the targets the jobs in [`check.yml`](.github/workflows/check.yml) run; the
 jobs run nothing else, so CI checks what a laptop does. `check-script-tests` runs every
-`scripts/*/tests/*.test.sh`.
+`*.test.sh` in the repository, wherever it sits, and `check-shell` lints them.
 
 Every OpenTofu root is OpenTofu-only, enforced by a `versions.tf` that no Terraform release
 satisfies. Running `terraform` in one of these directories stops at that constraint rather than
