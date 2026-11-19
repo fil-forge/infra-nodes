@@ -810,8 +810,9 @@ fi
 
 # Nothing else may route the VPC or any part of it, and no address on the host
 # may sit inside it. 'root' lists the VPC's own prefix and every longer one in it.
-# This script's own unreachable routes, at the fallback metric, are exempt.
-existing_route="$(ip -4 route show root "$VPN_VPC_CIDR" | grep -v "^unreachable [^ ]* metric $FALLBACK_METRIC\$" |
+# This script's own unreachable routes, at the fallback metric, are exempt. ip
+# ends each route line with a space, so the pattern allows trailing spaces.
+existing_route="$(ip -4 route show root "$VPN_VPC_CIDR" | grep -v "^unreachable [^ ]* metric $FALLBACK_METRIC *\$" |
   grep -v ' dev filone-tun[12] ' || true)"
 [ -z "$existing_route" ] ||
   fail routes "something else routes $VPN_VPC_CIDR: $existing_route"
@@ -992,15 +993,17 @@ for file in $STAGED_FILES; do
   fi
   rm -f "$STAGED"
 done
+# A copy rm cannot remove is left for the next run's remove_staged_copies; the
+# error that matters is the rename.
 unmoved=""
 for file in $staged_files; do
   if [ -n "$unmoved" ]; then
-    rm -f "$file.new"
+    rm -f "$file.new" || true
   elif mv -f "$file.new" "$file"; then
     echo "  wrote $file"
   else
     unmoved="$file"
-    rm -f "$file.new"
+    rm -f "$file.new" || true
   fi
 done
 [ -z "$unmoved" ] || die "could not move $unmoved.new into place"
