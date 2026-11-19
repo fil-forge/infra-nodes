@@ -2000,9 +2000,12 @@ period needs [Recover an expired unseal token](runbook/recover-expired-unseal-to
 
 If a volume did not mount, nothing starts on it. Docker refuses every container whose data lives
 there (`bind source path does not exist` in `docker start` output). Without the control volume,
-every host script stops with `the control volume is not mounted`. Without a Piri's volume, the apps
-deploy leaves that Piri stopped, deploys the rest and fails, so reconcile retries every pass. Mount
-the volume; for the control volume, then run `scripts/host/deploy-platform.sh`.
+every host script stops with `the control volume is not mounted`. On a node whose `node.env` sets
+`FILONE_STATE_DIR_IS_MOUNT=true`, as prod/us-east-2's does for its `control/state` dataset, every
+host script also stops with `the state directory ... is not a mount point` while that dataset is
+unmounted. Without a Piri's volume, the apps deploy leaves that Piri stopped, deploys the rest and
+fails, so reconcile retries every pass. Mount the volume; for the control volume or the state
+dataset, then run `scripts/host/deploy-platform.sh`.
 
 Reconcile starts the apps on every boot, including in the middle of a manual recovery where you
 stopped them on purpose. Before rebooting during one, disable the timer, so it stays off across the

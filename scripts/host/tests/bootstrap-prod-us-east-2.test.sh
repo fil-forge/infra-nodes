@@ -985,6 +985,8 @@ node_value() { sed -nE "s/^$1=(.*)$/\\1/p" "$NODE_DIR/node.env" | tail -1; }
 
 check "node.env's control directory is the control datasets' parent" \
   test "$(node_value FILONE_CONTROL_DIR)" = /mnt/data/fil-one/control
+check "node.env has filone_init require control/state to be mounted" \
+  test "$(node_value FILONE_STATE_DIR_IS_MOUNT)" = true
 check "node.env's data directory is the Ingot datasets' parent" \
   test "$(node_value FILONE_DATA_DIR)" = /mnt/data/fil-one/ingot
 check "Postgres is bound to control/postgres" \

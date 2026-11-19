@@ -4,6 +4,9 @@
 #
 #   scripts/host/tests/lib.test.sh
 #
+# Starts with the check filone_init makes before it creates the state
+# directory, on a node whose node.env says it is a mount point of its own.
+#
 # Covers moving OpenBao's store aside and back, on a node where the raft
 # directory shares its parent's filesystem (dev, staging) and on one where it
 # is a mount point of its own (prod/us-east-2's control/openbao dataset); the
@@ -338,6 +341,51 @@ template="$NODES/prod/us-east-2/apps/config/piri/piri-base-config.toml.tpl"
 for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX PIRI_S3_ACCESS_KEY_ID PIRI_S3_SECRET_ACCESS_KEY; do
   check "its Piri base config renders $name" grep -qF "\${$name}" "$template"
 done
+
+echo "==> the state directory's mount"
+
+# description | FILONE_STATE_DIR_IS_MOUNT, or - to leave it unset | the state
+# directory: mount, plain or absent | what the refusal says, or - for a pass
+while IFS='|' read -r description setting state_dir refused; do
+  new_case "require_state_mount, $description"
+  if [ "$setting" = - ]; then
+    unset FILONE_STATE_DIR_IS_MOUNT
+  else
+    # SC2034: read by require_state_mount.
+    # shellcheck disable=SC2034
+    FILONE_STATE_DIR_IS_MOUNT="$setting"
+  fi
+  FILONE_STATE_DIR="$CONTROL/state"
+  case "$state_dir" in
+    mount)
+      "$REAL_MKDIR" "$FILONE_STATE_DIR"
+      echo "$FILONE_STATE_DIR" >>"$STUB_STATE/mounts"
+      ;;
+    plain) "$REAL_MKDIR" "$FILONE_STATE_DIR" ;;
+  esac
+  run require_state_mount
+  if [ "$refused" = - ]; then
+    check "passes" test "$status" -eq 0
+  else
+    # shellcheck disable=SC2016 # expanded by eval
+    check "refuses, saying '$refused'" eval '[ "$status" -ne 0 ] && said "$refused"'
+  fi
+done <<'CASES'
+required, state directory a mount point|true|mount|-
+required, state directory on the control directory's filesystem|true|plain|is not a mount point
+required, state directory missing|true|absent|is not a mount point
+not required, state directory on the control directory's filesystem|false|plain|-
+left out, state directory missing|-|absent|-
+empty|||must be true or false
+not true or false|yes|mount|must be true or false
+CASES
+unset FILONE_STATE_DIR_IS_MOUNT FILONE_STATE_DIR
+
+current="filone_init"
+# shellcheck disable=SC2016 # the literal line grep looks for
+check "checks the state directory's mount before it creates the directory" \
+  test "$(grep -nx '  require_state_mount' "$SCRIPTS/lib.sh" | cut -d: -f1)" \
+  -lt "$(grep -n '^  mkdir -p "\$FILONE_STATE_DIR"' "$SCRIPTS/lib.sh" | cut -d: -f1)"
 
 echo "==> node.env placeholders"
 

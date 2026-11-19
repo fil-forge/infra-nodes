@@ -68,8 +68,9 @@ filone_init() {
     die "node.env says node '$FILONE_NODE' but this box is '$host_node'"
 
   # Before the mkdir below, which would otherwise create the state directory on
-  # the root disk under an empty mountpoint. Only the control volume: every
-  # script needs it, while a missing data volume only stops its own services.
+  # the root disk under an empty mountpoint. Only the control volume and the
+  # state directory: every script needs them, while a missing data volume only
+  # stops its own services.
   is_mounted "$FILONE_CONTROL_DIR" ||
     die "the control volume is not mounted at $FILONE_CONTROL_DIR; refusing to run.
        'findmnt $FILONE_CONTROL_DIR' and 'lsblk -f' show what is attached."
@@ -77,6 +78,8 @@ filone_init() {
   FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
   FILONE_METRICS_DIR="$FILONE_STATE_DIR/metrics"
   FILONE_REVISIONS_DIR="$FILONE_STATE_DIR/revisions"
+
+  require_state_mount
 
   mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
   install -d -m 0700 -o root -g root "$FILONE_SECRETS_DIR"
@@ -103,6 +106,31 @@ filone_init() {
 is_mounted() {
   local dev
   dev="$(stat -c %d "$1" 2>/dev/null)" && [ "$dev" != "$(stat -c %d /)" ]
+}
+
+# Refuse to run on a node whose node.env sets FILONE_STATE_DIR_IS_MOUNT=true
+# while the state directory is not a mount point of its own. On prod/us-east-2
+# the control directory is a parent ZFS dataset and the state directory the
+# control/state dataset under it. filone_init's check on the control directory
+# passes while control/state is unmounted, and its mkdir would then create the
+# state directory on the parent.
+#
+# Declared in node.env, because a state directory that is missing because its
+# dataset is not mounted looks the same as one that was never created. Left out,
+# it is false, as on dev and staging, where the state directory is a plain
+# directory on the control volume.
+require_state_mount() {
+  case "${FILONE_STATE_DIR_IS_MOUNT-false}" in
+    false) return 0 ;;
+    true) ;;
+    *)
+      die "FILONE_STATE_DIR_IS_MOUNT is '$FILONE_STATE_DIR_IS_MOUNT' in $FILONE_NODE_DIR/node.env;
+       it must be true or false." ;;
+  esac
+  { [ -d "$FILONE_STATE_DIR" ] && is_mount_root "$FILONE_STATE_DIR"; } ||
+    die "the state directory $FILONE_STATE_DIR is not a mount point; refusing to run.
+       'findmnt $FILONE_STATE_DIR' shows what is mounted there, and
+       'zfs list -o name,mounted,mountpoint' which dataset is not."
 }
 
 # Create the bind sources a compose project keeps on the control and data

@@ -447,8 +447,9 @@ esac
 # Two things there depend on this layout. Its node.env sets
 # FILONE_CONTROL_DIR=/mnt/data/fil-one/control and
 # FILONE_DATA_DIR=/mnt/data/fil-one/ingot, because lib.sh's defaults are the
-# cloud nodes' /mnt/fil-one paths and filone_init refuses to run when the
-# control directory is not a mount. And Ingot keeps segments, spool and cache
+# cloud nodes' /mnt/fil-one paths, and FILONE_STATE_DIR_IS_MOUNT=true, so that
+# filone_init refuses to run while control/state is unmounted as well as while
+# the control directory is. And Ingot keeps segments, spool and cache
 # under one data directory, so its compose file binds ingot/blobs as that
 # directory, for the spool and cache, and ingot/segments over its segments.
 percent() { echo $((pool_size * $1 / 100 / MIB * MIB)); }
