@@ -138,9 +138,8 @@ budget, 80% of that quota, which leaves room for bodies in flight and stays unde
 alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB ten-minute peak.
 Commit the printed value in place of the 0 placeholder.
 
-`nodes/prod/us-east-2/node.env` was committed with these values still open, and each is refused
-until it is set: `INGOT_LOCAL_BLOB_MAX_BYTES` (from bootstrap), and `TARGET_PLATFORM` with the two
-tool checksums for the host's architecture.
+`nodes/prod/us-east-2/node.env` was committed with `INGOT_LOCAL_BLOB_MAX_BYTES` still open, to be
+set from bootstrap's output, and `deploy-apps.sh` refuses it until then.
 
 Central's prod files name no PDP verifier or FWSS view address, so the node's two come from the
 FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` return them.
