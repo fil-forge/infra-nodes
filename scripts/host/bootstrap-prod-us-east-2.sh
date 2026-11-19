@@ -8,7 +8,13 @@
 # Run as root from the node's checkout, once before anything holds state and
 # again whenever in doubt. A second run changes nothing:
 #
+#   cd /opt/fil-one/infra-nodes
 #   JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
+#
+# The checkout is at /opt/fil-one/infra-nodes on the OS disk, as on the cloud
+# nodes, and section 1 refuses to run from anywhere else. It holds no state, so
+# it needs nothing the pool gives, and on the OS disk the scripts are still
+# there for whoever repairs a pool that is locked or missing.
 #
 # The host arrives with its ZFS pool built, its key unit and Docker drop-in in
 # place, and SSH admitted from the jump host only, all as
@@ -34,7 +40,9 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-CHECKOUT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
+CHECKOUT=/opt/fil-one/infra-nodes
+# Where this script runs from, which section 1 checks is $CHECKOUT.
+RUNNING_FROM="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 NODE=prod/us-east-2
 POOL=data
 POOL_MOUNTPOINT=/mnt/data
@@ -162,7 +170,13 @@ INI
 # --- 1. Verify, changing nothing ---------------------------------------------
 
 [ "$(id -u)" -eq 0 ] || fail root "must run as root"
-[ -e "$CHECKOUT/.git" ] || fail checkout "expected a git checkout at $CHECKOUT"
+# git prints the real path, so a symlink at $CHECKOUT that leads to the pool
+# is refused as well. Its own message stays visible: it also refuses a
+# checkout another user owns.
+toplevel="$(git -C "$RUNNING_FROM" rev-parse --show-toplevel)" ||
+  fail checkout "expected a git checkout at $RUNNING_FROM"
+[ "$toplevel" = "$CHECKOUT" ] ||
+  fail checkout "this script runs from the checkout at $toplevel; the node's checkout belongs at $CHECKOUT, on the OS disk. Clone the repository there and run it from there"
 
 # The address SSH is admitted from. Read at run time rather than committed:
 # this repository is public.
@@ -563,7 +577,7 @@ FILONE_CHECKOUT=$CHECKOUT
 FILONE_GIT_REF=main
 CONF
 
-FILONE_CHECKOUT="$CHECKOUT"
+FILONE_CHECKOUT="$RUNNING_FROM"
 sync_systemd_units
 
 # When bootstrap first finished. Written once, so a later run changes nothing.

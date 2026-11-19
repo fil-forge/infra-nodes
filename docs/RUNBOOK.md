@@ -167,7 +167,7 @@ with this node's own values:
 | `REGION` | `us-east-9` | `eu-central-3` | `us-east-2` |
 | `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` | the host's egress address, recorded at provisioning |
 | Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` | SSH through the jump host |
-| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` | wherever it was cloned; bootstrap records it in `node.conf` |
+| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` | `/opt/fil-one/infra-nodes`, on the OS disk |
 | Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy | Postgres 18, Caddy, Alloy |
 | Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 | `piri-0`, in `piri-0/` on the `piri` dataset at `/mnt/data/fil-one/piri` |
 | Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` | `piri-0.us-east-2.fil-forge.com` |
@@ -889,11 +889,20 @@ namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every 
 The host arrives with its ZFS pool, key unit and Docker drop-in built as
 [the storage record](decisions/2026-11-prod-us-east-2.md) describes, and with SSH
 admitted only from the jump host. The host has no out-of-band console, so keep a session open
-through every step here. Check out this repository on the host, then run, as root:
+through every step here.
+
+Clone this repository to `/opt/fil-one/infra-nodes`, on the OS disk, then run bootstrap from
+there, as root:
 
 ```sh
+git clone --branch main https://github.com/fil-forge/infra-nodes.git /opt/fil-one/infra-nodes
+cd /opt/fil-one/infra-nodes
 JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
 ```
+
+Bootstrap refuses to run from a checkout anywhere else.
+[The storage record](decisions/2026-11-prod-us-east-2.md#the-checkout) says why the
+checkout is not on the pool.
 
 Bootstrap first checks the pool, its encryption, that the key file unlocks it, the key unit, that
 the Docker drop-in holds exactly what the storage record gives, Compose 2.40 or later, the
@@ -1113,7 +1122,8 @@ starts testing the node after every merge and every hour.
 ## Day-to-day operations
 
 Commands in this section run from the infra-nodes checkout: `/opt/fil-one/infra-nodes` on the
-cloud nodes and `/root/fil-one/infra-nodes` on staging, the `FILONE_CHECKOUT` value in
+cloud nodes and on prod/us-east-2, and `/root/fil-one/infra-nodes` on staging, the
+`FILONE_CHECKOUT` value in
 `/etc/fil-one/node.conf`.
 
 ### Open a shell on a node.

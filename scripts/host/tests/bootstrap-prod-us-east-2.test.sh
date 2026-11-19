@@ -4,7 +4,7 @@
 #   scripts/host/tests/bootstrap-prod-us-east-2.test.sh
 #
 # The script runs as root against a real pool, so here it runs against stubs.
-# Each case puts stub zfs, zpool, docker, ufw, systemctl and id commands first
+# Each case puts stub zfs, zpool, docker, ufw, systemctl, git and id commands first
 # on PATH. They answer from files in a temporary directory and append every
 # call to a log the assertions read. Stub install, cmp, diff and rm commands
 # absorb the file reads and writes: a path under /etc, /run, /mnt, /var/lib or
@@ -68,6 +68,15 @@ write_stubs() {
 echo "id $*" >>"$STUB_STATE/calls"
 [ "$1" = -u ] && { cat "$STUB_STATE/uid"; exit 0; }
 exit 1
+STUB
+
+  # Where git says the checkout the script runs from is. No file means the
+  # script is not in a checkout.
+  cat >"$bin/git" <<'STUB'
+#!/usr/bin/env bash
+echo "git $*" >>"$STUB_STATE/calls"
+[ "$*" = "-C $STUB_RUNNING_FROM rev-parse --show-toplevel" ] || exit 1
+cat "$STUB_STATE/checkout" 2>/dev/null
 STUB
 
   # Datasets are directories under $STUB_STATE/zfs, named with % for /, and
@@ -280,6 +289,7 @@ new_case() {
   : >"$STATE/calls"
 
   echo 0 >"$STATE/uid"
+  echo /opt/fil-one/infra-nodes >"$STATE/checkout"
   echo 2.40.3 >"$STATE/compose-version"
   : >"$STATE/containers"
 
@@ -415,6 +425,7 @@ run_bootstrap() {
   set +e
   env "${jump[@]}" PATH="$CASE/bin:$PATH" \
     STUB_STATE="$STATE" STUB_ROOT="$ROOT" TMPDIR="$CASE/tmp" \
+    STUB_RUNNING_FROM="$(cd "$HERE/../../.." && pwd -P)" \
     REAL_CMP="$REAL_CMP" REAL_DIFF="$REAL_DIFF" REAL_RM="$REAL_RM" \
     bash "$SCRIPT" >"$CASE/stdout" 2>"$CASE/stderr"
   status=$?
@@ -476,6 +487,17 @@ echo "bootstrap-prod-us-east-2.sh"
 new_case "not root"
 echo 1000 >"$STATE/uid"
 expect_check_failure root
+
+new_case "not in a git checkout"
+rm "$STATE/checkout"
+expect_check_failure checkout
+
+for elsewhere in /root/fil-one/infra-nodes /mnt/data/fil-one/infra-nodes; do
+  new_case "checkout at $elsewhere"
+  echo "$elsewhere" >"$STATE/checkout"
+  expect_check_failure checkout
+  check "names the expected location" said "belongs at /opt/fil-one/infra-nodes"
+done
 
 new_case "old Compose"
 echo 2.39.1 >"$STATE/compose-version"
@@ -799,7 +821,7 @@ check "restarts Docker for the new daemon.json" called '^systemctl restart docke
 check "creates the filone network" called '^docker network create --subnet 172\.18\.0\.0/16 filone'
 check "writes node.conf for prod/us-east-2" grep -qx 'FILONE_NODE=prod/us-east-2' "$ROOT/etc/fil-one/node.conf"
 check "node.conf tracks main" grep -qx 'FILONE_GIT_REF=main' "$ROOT/etc/fil-one/node.conf"
-check "node.conf names the checkout" grep -q '^FILONE_CHECKOUT=/' "$ROOT/etc/fil-one/node.conf"
+check "node.conf names the checkout" grep -qx 'FILONE_CHECKOUT=/opt/fil-one/infra-nodes' "$ROOT/etc/fil-one/node.conf"
 check "writes the tmpfiles.d entries" grep -qx 'd /run/fil-one/secrets 0700 root root -' "$ROOT/etc/tmpfiles.d/filone.conf"
 check "creates the secrets tmpfs directory" test -d "$ROOT/run/fil-one/secrets"
 check "installs the systemd units" test -f "$ROOT/etc/systemd/system/filone-reconcile.timer"
