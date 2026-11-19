@@ -12,7 +12,8 @@
 # Kept: the control volume's OpenBao and its unseal token at
 # /etc/fil-one/seal-token, every key, wallet and DID in the node's OpenBao, and
 # the stored hilt-to-ingot delegation. The databases come back empty with the
-# same roles and passwords, so nothing has to be rendered again.
+# same roles and passwords, so nothing has to be rendered again: postgres-init
+# recreates ingot here, and the next deploy-apps.sh each Piri's.
 #
 # This is the node half of an app reset. Central is reset after it, and the apps
 # stay stopped here until then, with filone-reconcile.timer disabled so no pass
@@ -225,7 +226,7 @@ while read -r database; do
   echo "  dropped $database"
 done <<<"$databases"
 
-echo "[3/4] Recreating them with postgres-init"
+echo "[3/4] Recreating ingot's with postgres-init; deploy-apps.sh recreates each Piri's"
 # --no-deps so a platform change the checkout has not deployed yet cannot
 # recreate Postgres underneath the reset. --force-recreate so the one-shot runs
 # again even when its definition has not changed.
