@@ -13,7 +13,7 @@ bare-metal node. `scripts/host/bootstrap-prod-us-east-2.sh` prepares the host.
 The node's label is `us-east-2`. The
 [initial design](2026-08-initial-design.md#the-region-label-is-us-east-9) gave each appliance a
 region name that does not exist in AWS. That rule now applies to non-production stages only, and a
-production node carries the real name of its region.
+production node carries a real AWS region name.
 
 The label is the string Ingot is configured with, the one central registers the node under and the
 one a client signs requests with. Piri answers at `piri-0.us-east-2.fil-forge.com` and Ingot at
@@ -151,8 +151,7 @@ data yet starts on 18 so that it needs no major-version upgrade for a while, and
 Pandora's move to 18. The image is Debian's because a cluster's sort order depends on the image's
 libc, and Alpine's musl is what dev and staging are moving away from. PostgreSQL 18 turns data
 checksums on by default and keeps its cluster one directory per major version below the directory
-the node binds, so a later version can be initialised beside this one. Nothing else in the fleet
-has run 18, so Piri's and Ingot's migrations first meet it on this node.
+the node binds, so a later version can be initialised beside this one.
 
 **The four platform images are pinned by digest.** OpenBao, Postgres, Caddy and Alloy each carry
 `tag@sha256:…` in `platform/versions.env`. A tag can move to another image and a digest cannot, so
@@ -170,9 +169,9 @@ therefore uses its S3 blob backend, and the node runs one Piri. Because the blob
 pool, the `piri` dataset holds only Piri's configuration and can be small.
 
 The endpoint and the bucket prefix are in `node.env`, and the credentials come from OpenBao.
-`deploy-apps.sh` refuses to start a Piri while any of them is missing. `piri init` copies the
-credentials into the config file it writes on the `piri` dataset, which the pool's encryption
-covers.
+`provision-platform.sh` refuses to start while the endpoint or the prefix is missing, and
+`deploy-apps.sh` refuses to start a Piri without all three. `piri init` copies the credentials
+into the config file it writes on the `piri` dataset, which the pool's encryption covers.
 
 ## Chain, telemetry and tests
 

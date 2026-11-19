@@ -98,8 +98,7 @@ each appliance has a virtual region name that is deliberately not a real AWS reg
 mistakes a dev or staging endpoint for an AWS one and no client's region-guessing heuristics
 accidentally work. The dev node is **`us-east-9`**.
 
-UPDATE: Region names that do not exist in AWS are used for non-production stages only. A production
-node carries the real region name, as `prod/us-east-2` does; see
+UPDATE: A production node carries a real AWS region name; see
 [The first production appliance, `prod/us-east-2`, runs on the IST-1 host](2026-11-prod-us-east-2.md#the-region-label-is-a-real-aws-region-name).
 
 This string has to be identical in three places or requests fail in ways that do not name the cause:
