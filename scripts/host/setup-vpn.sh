@@ -16,10 +16,15 @@
 #   setup-vpn.sh health     probe both tunnels and move the route off one that
 #                           is down; run by filone-vpn-health.timer
 #   setup-vpn.sh status     print the tunnels' state for an operator
+#   setup-vpn.sh down       take the VPN off the node: stop and disable its
+#                           units and strongSwan, and remove the interfaces,
+#                           routes, nftables table, UFW rules and files that
+#                           provisioning made
 #
 # Provisioning runs as root from the node's checkout, by hand, and again
-# whenever a value changes. Every site-specific value is a provisioning-time
-# input, read from the environment, because this repository is public:
+# whenever a value changes. It installs strongSwan's packages when they are
+# missing. Every site-specific value is a provisioning-time input, read from
+# the environment, because this repository is public:
 #
 #   VPN_SITE_PUBLIC_ADDRESS     the site's static public IPv4 address, which
 #                               central's customer gateway names; also the IKE
@@ -54,15 +59,21 @@
 # argument, never printed, and written only into the root-only (0600) file
 # strongSwan reads them from, /etc/swanctl/conf.d/filone-vpn-secrets.conf.
 #
-# Section 1 checks every input and the host and changes nothing; a failed check
-# stops the run and names itself. A second run with the same inputs changes
+# Provisioning and down hold the deploy lock, so a reconcile pass cannot reset
+# the checkout under them, and the VPN lock, which the health check also takes,
+# so a check that read the previous vpn.conf cannot put back a route the run
+# removes. A health check that finds the VPN lock held skips its turn.
+#
+# Section 1 checks every input and the host and changes nothing, apart from
+# installing strongSwan's packages once the inputs pass; a failed check stops
+# the run and names itself. A second run with the same inputs changes
 # nothing. A changed configuration restarts strongSwan, which takes both
 # tunnels down for a few seconds; a change to only a file's mode or owner
 # rewrites the file without the restart. strongSwan's files are written only
 # after the firewall and the host network, next to vpn.conf, and a run that
 # changes them first leaves a marker under /run/fil-one that only a restart and
-# a passing connection check clear, so a re-run after a run that stopped on the
-# way always restarts strongSwan.
+# passing algorithm and connection checks clear, so a re-run after a run that
+# stopped on the way always restarts strongSwan.
 #
 # The firewall: UFW admits UDP 500 and 4500 and ESP from the two tunnel
 # addresses and nothing else. The rules for addresses a previous run admitted
@@ -78,7 +89,8 @@
 #
 # Files under /etc and /run are read only through cat, cmp and stat and written
 # only through install and rm, which is what lets the test in tests/ run it
-# against stubs.
+# against stubs. The two lock files are the exception, and the test moves them
+# with FILONE_DEPLOY_LOCK_FILE and VPN_LOCK_FILE.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -91,6 +103,7 @@ SWANCTL_CONF=/etc/swanctl/conf.d/filone-vpn.conf
 SWANCTL_SECRETS=/etc/swanctl/conf.d/filone-vpn-secrets.conf
 CHARON_CONF=/etc/strongswan.d/zz-filone-vpn.conf
 NFT_RULESET=/run/fil-one/vpn-nftables.conf
+STRONGSWAN_FILES="$CHARON_CONF $SWANCTL_CONF $SWANCTL_SECRETS"
 # Set while strongSwan has yet to be restarted onto a changed configuration. A
 # reboot clears it, and strongSwan then loads the files as they stand.
 RESTART_PENDING=/run/fil-one/vpn-restart-pending
@@ -98,6 +111,11 @@ NFT_TABLE=filone_vpn
 STRONGSWAN_UNIT=strongswan.service
 BOOT_UNIT=filone-vpn.service
 HEALTH_TIMER=filone-vpn-health.timer
+HEALTH_UNIT=filone-vpn-health.service
+VPN_LOCK_FILE="${VPN_LOCK_FILE:-/run/fil-one/vpn.lock}"
+# How long provisioning waits for a health check to finish; the check's unit
+# gives it 30 seconds at most.
+VPN_LOCK_WAIT=60
 SITE_LINK=filone-site
 # A route that loses to the tunnel's and remains when the tunnel's is gone, so
 # database traffic is refused rather than sent out the default route in clear.
@@ -111,11 +129,32 @@ VPN_TUNNEL_MTU VPN_CLIENT_SOURCES VPN_HEALTH_PING"
 # The VPC's side of the tunnel, as central's docs/pandora-vpn.md states it.
 STATED_VPC_CIDR=10.20.192.0/18
 
+# strongSwan's packages. On Debian 12 and Ubuntu 24.04 the openssl and gcm
+# plugins, which provide the AES-GCM and DH groups 20 and 21 central pins, are
+# in libstrongswan-standard-plugins, a recommended package that an install
+# without recommends leaves out, so it is named.
+STRONGSWAN_PACKAGES="charon-systemd strongswan-swanctl libstrongswan-standard-plugins"
+
 # The proposals central pins on both tunnels.
 IKE_PROPOSALS=aes256gcm16-prfsha384-ecp384-ecp521
 ESP_PROPOSALS=aes256gcm16-ecp384-ecp521
 
 fail() { die "check '$1' failed: $2"; }
+
+# Taken before vpn.conf is read and held until the routes match it. wait: give
+# up after VPN_LOCK_WAIT seconds; skip: return non-zero at once when held.
+take_vpn_lock() { # take_vpn_lock wait|skip
+  install -d -m 0700 -o root -g root /run/fil-one
+  exec 8>"$VPN_LOCK_FILE"
+  if [ "$1" = skip ]; then
+    flock -n 8
+  else
+    flock -w "$VPN_LOCK_WAIT" 8 ||
+      die "something has held $VPN_LOCK_FILE for ${VPN_LOCK_WAIT}s; 'fuser -v $VPN_LOCK_FILE' names it"
+  fi
+}
+
+release_vpn_lock() { exec 8>&-; }
 
 tunnel_link() { echo "filone-tun$1"; }
 
@@ -400,22 +439,38 @@ bring_up() {
   fi
 }
 
-# The routes a previous run made for another VPC CIDR: into a tunnel, other
-# than the inside /30s the kernel adds, or unreachable at the fallback metric.
-remove_stale_routes() {
-  local destination device
+# The routes this script made for any CIDR but the one given, or for every CIDR
+# with none: into a tunnel, other than the inside /30s the kernel adds, or
+# unreachable at the fallback metric.
+remove_vpn_routes() { # remove_vpn_routes [<CIDR to keep>]
+  local keep="${1:-}" destination device
   while read -r destination device; do
     [ -n "$destination" ] || continue
-    echo "  removing the route to $destination, which is not $VPN_VPC_CIDR"
+    echo "  removing the route to $destination"
     if [ "$device" = unreachable ]; then
       ip route del unreachable "$destination" metric "$FALLBACK_METRIC"
     else
       ip route del "$destination" dev "$device"
     fi || die "could not remove the route to $destination"
-  done < <(ip -4 route show | awk -v cidr="$VPN_VPC_CIDR" -v metric="$FALLBACK_METRIC" '
+  done < <(ip -4 route show | awk -v cidr="$keep" -v metric="$FALLBACK_METRIC" '
     $1 == "unreachable" { if ($2 != cidr && $NF == metric && $(NF - 1) == "metric") print $2, "unreachable"; next }
     $1 == cidr || / proto kernel / { next }
     { for (i = 2; i < NF; i++) if ($i == "dev" && $(i + 1) ~ /^filone-tun[12]$/) { print $1, $(i + 1); next } }')
+}
+
+# ufw skips a rule it already has, and says so. A delete of a rule that is
+# already gone is fine; any other failure stops the run.
+ufw_rule() { # ufw_rule allow|delete <rule words...>
+  local verb="$1" output
+  shift
+  if [ "$verb" = allow ]; then
+    output="$(ufw allow "$@")" || die "ufw refused: allow $*"
+    grep -q '^Skipping' <<<"$output" || echo "  ufw allow $*"
+  else
+    output="$(ufw delete allow "$@" 2>&1)" || grep -q 'non-existent' <<<"$output" ||
+      die "ufw refused: delete allow $*: $(tr '\n' ' ' <<<"$output")"
+    grep -q 'non-existent' <<<"$output" || echo "  ufw delete allow $*"
+  fi
 }
 
 # --- health and status -----------------------------------------------------
@@ -479,28 +534,103 @@ status() {
   return "$status"
 }
 
+# --- down ------------------------------------------------------------------
+
+# Undo what provisioning did, from whatever is left of it, so a second run and a
+# run after a provisioning that stopped half-way both work. vpn.conf goes last:
+# a down that stops on the way still finds the tunnel addresses in it. The
+# packages stay installed, and so do the unit files, which every node's
+# checkout installs and which do nothing without vpn.conf.
+down() {
+  local unit link file addresses address
+  # The health timer first, so nothing puts a route back.
+  for unit in "$HEALTH_TIMER" "$HEALTH_UNIT" "$BOOT_UNIT" "$STRONGSWAN_UNIT"; do
+    if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+      echo "  disabling and stopping $unit"
+      systemctl disable --now "$unit" >/dev/null 2>&1 || die "could not disable $unit"
+    elif systemctl is-active --quiet "$unit"; then
+      echo "  stopping $unit"
+      systemctl stop "$unit" || die "could not stop $unit"
+    fi
+  done
+
+  if nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+    echo "  deleting nftables table $NFT_TABLE"
+    nft delete table ip "$NFT_TABLE" || die "could not delete nftables table $NFT_TABLE"
+  fi
+  remove_vpn_routes
+  for link in "$(tunnel_link 1)" "$(tunnel_link 2)" "$SITE_LINK"; do
+    ip link show dev "$link" >/dev/null 2>&1 || continue
+    echo "  removing $link"
+    ip link del dev "$link" || die "could not remove $link"
+  done
+
+  # The tunnel addresses vpn.conf names, and any other address whose rules
+  # carry this script's comment.
+  addresses="$({
+    sed -n 's/^VPN_TUNNEL[12]_OUTSIDE_ADDRESS=//p' < <(cat "$VPN_CONF" 2>/dev/null || true)
+    ufw status | awk '/# filone-vpn/ {
+      for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print $i; break } }'
+  } | sort -u)" || die "could not read ufw status"
+  for address in $addresses; do
+    ipv4_to_int "$address" >/dev/null || continue
+    ufw_rule delete proto udp from "$address" to any port 500,4500
+    ufw_rule delete proto esp from "$address" to any
+  done
+
+  for file in $STRONGSWAN_FILES "$NFT_RULESET" "$RESTART_PENDING" "$VPN_CONF"; do
+    cat "$file" >/dev/null 2>&1 || continue
+    rm -f "$file" || die "could not remove $file"
+    echo "  removed $file"
+  done
+  echo "VPN removed. strongSwan's packages stay installed."
+}
+
 case "${1:-}" in
-  up | health | status)
+  up | health | status | down)
     [ "$(id -u)" -eq 0 ] || die "must run as root"
-    load_conf
     case "$1" in
-      up) bring_up ;;
-      health) health ;;
-      status) status ;;
+      up)
+        take_vpn_lock wait
+        load_conf
+        bring_up
+        ;;
+      health)
+        if ! take_vpn_lock skip; then
+          echo "a provisioning run holds $VPN_LOCK_FILE; skipping this check"
+          exit 0
+        fi
+        load_conf
+        health
+        ;;
+      status)
+        load_conf
+        status
+        ;;
+      down)
+        take_deploy_lock
+        take_vpn_lock wait
+        down
+        ;;
     esac
     exit
     ;;
   "") ;;
   -h | --help)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
-  *) die "unknown command '$1'; expected up, health, status or nothing" ;;
+  *) die "unknown command '$1'; expected up, health, status, down or nothing" ;;
 esac
 
 # --- 1. Verify, changing nothing -------------------------------------------
 
 [ "$(id -u)" -eq 0 ] || fail root "must run as root"
+
+# Before anything else is read: the checkout this script runs from, and
+# vpn.conf, which the health check reads under the VPN lock.
+take_deploy_lock
+take_vpn_lock wait
 
 require_address() { # require_address <name>
   [ -n "${!1:-}" ] || fail inputs "set $1"
@@ -619,13 +749,26 @@ for n in 1 2; do
 done
 [ "$PSK1" != "$PSK2" ] || fail "pre-shared keys" "the two tunnels have the same key"
 
+# strongSwan's packages, once the inputs pass, and only the missing ones.
+missing_packages=""
+for package in $STRONGSWAN_PACKAGES; do
+  # shellcheck disable=SC2016 # dpkg-query's own field syntax
+  dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' ||
+    missing_packages="${missing_packages:+$missing_packages }$package"
+done
+if [ -n "$missing_packages" ]; then
+  echo "  installing $missing_packages"
+  # shellcheck disable=SC2086 # one word per package
+  { DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null &&
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $missing_packages >/dev/null; } ||
+    fail packages "could not install $missing_packages"
+fi
+
 for tool in swanctl ip nft ufw sysctl ping docker base64; do
   command -v "$tool" >/dev/null || fail tools "$tool is not installed"
 done
 [ "$(systemctl show -p LoadState --value "$STRONGSWAN_UNIT" 2>/dev/null)" = loaded ] ||
-  fail strongswan "$STRONGSWAN_UNIT is not installed. Install charon-systemd and strongswan-swanctl,
-       and on Debian 12 or Ubuntu 24.04 also libstrongswan-standard-plugins, for AES-GCM and
-       DH groups 20 and 21"
+  fail strongswan "$STRONGSWAN_UNIT is not installed, though $STRONGSWAN_PACKAGES are"
 ! systemctl is-active --quiet strongswan-starter.service ||
   fail strongswan "strongswan-starter.service, the legacy ipsec.conf daemon, is running and would
        compete for the tunnels. Stop and disable it"
@@ -666,8 +809,11 @@ for network in ${VPN_DOCKER_NETWORKS:-filone}; do
     fail "docker networks" "there is no Docker network '$network'"
   for subnet in $subnets; do
     is_cidr "$subnet" || continue # an IPv6 subnet
-    ! in_network "${subnet%/*}" "$VPN_VPC_CIDR" ||
+    # Either way round: a subnet wider than the VPC holds it whole, and the
+    # tunnel's more specific route would take its containers' own addresses.
+    if in_network "${subnet%/*}" "$VPN_VPC_CIDR" || in_network "${VPN_VPC_CIDR%/*}" "$subnet"; then
       fail "docker networks" "network '$network' uses $subnet, which overlaps $VPN_VPC_CIDR"
+    fi
     VPN_CLIENT_SOURCES="${VPN_CLIENT_SOURCES:+$VPN_CLIENT_SOURCES }$subnet"
   done
 done
@@ -758,8 +904,6 @@ EOF
   echo "}"
 }
 
-STRONGSWAN_FILES="$CHARON_CONF $SWANCTL_CONF $SWANCTL_SECRETS"
-
 strongswan_mode() { # strongswan_mode <file>
   if [ "$1" = "$CHARON_CONF" ]; then echo 0644; else echo 0600; fi
 }
@@ -790,21 +934,6 @@ done
 
 # --- 3. Firewall -----------------------------------------------------------
 
-# ufw skips a rule it already has, and says so. A delete of a rule that is
-# already gone is fine; any other failure stops the run.
-ufw_rule() { # ufw_rule allow|delete <rule words...>
-  local verb="$1" output
-  shift
-  if [ "$verb" = allow ]; then
-    output="$(ufw allow "$@")" || die "ufw refused: allow $*"
-    grep -q '^Skipping' <<<"$output" || echo "  ufw allow $*"
-  else
-    output="$(ufw delete allow "$@" 2>&1)" || grep -q 'non-existent' <<<"$output" ||
-      die "ufw refused: delete allow $*: $(tr '\n' ' ' <<<"$output")"
-    grep -q 'non-existent' <<<"$output" || echo "  ufw delete allow $*"
-  fi
-}
-
 for old in $previous_outside; do
   [ "$old" != "$VPN_TUNNEL1_OUTSIDE_ADDRESS" ] && [ "$old" != "$VPN_TUNNEL2_OUTSIDE_ADDRESS" ] ||
     continue
@@ -832,7 +961,7 @@ unset PSK1 PSK2
 # What boot and the health check apply from now on, then the routes they no
 # longer own.
 install_if_changed 0600 "$VPN_CONF" < <(for key in $CONF_KEYS; do printf '%s=%s\n' "$key" "${!key}"; done)
-remove_stale_routes
+remove_vpn_routes "$VPN_VPC_CIDR"
 
 # --- 5. Units and strongSwan -----------------------------------------------
 
@@ -857,10 +986,17 @@ for algorithm in AES_GCM_16 PRF_HMAC_SHA2_384 ECP_384 ECP_521; do
   grep -q "$algorithm\[" <<<"$algorithms" ||
     die "charon offers no $algorithm. Install libstrongswan-standard-plugins (Debian 12, Ubuntu 24.04)"
 done
-swanctl --list-conns | grep -q '^tunnel2: ' ||
-  die "charon did not load $SWANCTL_CONF; 'journalctl -u $STRONGSWAN_UNIT' says why"
-# charon runs the configuration on disk.
+connections="$(swanctl --list-conns)" || die "could not list charon's connections"
+for n in 1 2; do
+  grep -q "^tunnel$n: " <<<"$connections" ||
+    die "charon did not load both tunnels from $SWANCTL_CONF; 'journalctl -u $STRONGSWAN_UNIT' says why"
+done
+# charon runs the configuration on disk, so the marker goes. Any failed check
+# above has already stopped the run with the marker in place.
 if restart_pending; then rm -f "$RESTART_PENDING"; fi
+
+# The boot unit's 'up' takes the VPN lock, and the enable below starts it.
+release_vpn_lock
 
 for unit in "$BOOT_UNIT" "$HEALTH_TIMER"; do
   systemctl is-enabled --quiet "$unit" || {

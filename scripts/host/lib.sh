@@ -333,7 +333,8 @@ sync_systemd_units() {
 # The wait is long because a deploy waiting on Piri's proving window legitimately
 # takes most of an hour. Past that, something is stuck and saying so beats a
 # timer that hangs forever.
-FILONE_DEPLOY_LOCK_FILE=/run/fil-one/deploy.lock
+# A test of a script that runs against stubs moves the lock file elsewhere.
+FILONE_DEPLOY_LOCK_FILE="${FILONE_DEPLOY_LOCK_FILE:-/run/fil-one/deploy.lock}"
 FILONE_DEPLOY_LOCK_WAIT=3600
 
 # flock does not nest, so a deploy script called by reconcile.sh would wait for

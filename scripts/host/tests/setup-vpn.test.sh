@@ -169,6 +169,7 @@ STUB
 echo "nft $*" >>"$STUB_STATE/calls"
 case "$1" in
   list) [ -e "$STUB_STATE/nft-loaded" ] ;;
+  delete) [ -e "$STUB_STATE/nft-loaded" ] && rm "$STUB_STATE/nft-loaded" ;;
   # Like nft, refuses a ruleset file that is not there, and any ruleset while
   # nft-refuses exists.
   -f)
@@ -188,12 +189,23 @@ echo "ufw $*" >>"$STUB_STATE/calls"
 rules="$STUB_STATE/ufw-rules"
 touch "$rules"
 case "$1" in
-  status) cat "$STUB_STATE/ufw-status" ;;
+  # The settings, then a line per rule as ufw lists it, its comment after a #.
+  status)
+    cat "$STUB_STATE/ufw-status"
+    while read -r rule; do
+      [ -n "$rule" ] || continue
+      from="$(printf '%s\n' "$rule" | sed 's/.* from \([^ ]*\) .*/\1/')"
+      comment="$(grep -F "$rule|" "$STUB_STATE/ufw-comments" 2>/dev/null | sed 's/.*|//' | head -1)"
+      echo "Anywhere ALLOW IN $from${comment:+ # $comment}"
+    done <"$rules"
+    ;;
   allow)
     shift
     rule="$(printf '%s\n' "$*" | sed 's/ comment .*//')"
     if grep -qxF "$rule" "$rules"; then echo "Skipping adding existing rule"; exit 0; fi
     echo "$rule" >>"$rules"
+    words="$*"
+    case "$words" in *" comment "*) echo "$rule|${words##* comment }" >>"$STUB_STATE/ufw-comments" ;; esac
     echo "ufw-change allow $rule" >>"$STUB_STATE/calls"
     echo "Rule added"
     ;;
@@ -226,7 +238,8 @@ case "$1" in
     echo "  $name: #$n, reqid $n, INSTALLED, TUNNEL, ESP:AES_GCM_16-256/ECP_384"
     ;;
   --list-algs) cat "$STUB_STATE/algs" ;;
-  --list-conns) printf 'tunnel1: IKEv2, no reauthentication\ntunnel2: IKEv2, no reauthentication\n' ;;
+  # The connections charon loaded, one name per line in conns.
+  --list-conns) sed 's/$/: IKEv2, no reauthentication/' "$STUB_STATE/conns" ;;
 esac
 STUB
 
@@ -270,6 +283,11 @@ case "$1" in
     if [ "$2" = --now ]; then touch "$STUB_STATE/enabled-$3" "$STUB_STATE/active-$3"
     else touch "$STUB_STATE/enabled-$2"; fi
     ;;
+  disable)
+    if [ "$2" = --now ]; then rm -f "$STUB_STATE/enabled-$3" "$STUB_STATE/active-$3"
+    else rm -f "$STUB_STATE/enabled-$2"; fi
+    ;;
+  stop) rm -f "$STUB_STATE/active-$2" ;;
   # While restart-fails exists, a restart fails and leaves the unit as it was.
   restart) [ ! -e "$STUB_STATE/restart-fails" ] || exit 1; touch "$STUB_STATE/active-$2" ;;
 esac
@@ -296,6 +314,30 @@ STUB
   cat >"$bin/sleep" <<'STUB'
 #!/usr/bin/env bash
 exit 0
+STUB
+
+  # A file flock-busy-<fd> makes the lock on that descriptor held elsewhere.
+  cat >"$bin/flock" <<'STUB'
+#!/usr/bin/env bash
+echo "flock $*" >>"$STUB_STATE/calls"
+[ ! -e "$STUB_STATE/flock-busy-${*: -1}" ]
+STUB
+
+  # Installed packages are lines in $STUB_STATE/packages. While apt-fails
+  # exists, apt-get install fails and installs nothing.
+  cat >"$bin/dpkg-query" <<'STUB'
+#!/usr/bin/env bash
+grep -qxF "${*: -1}" "$STUB_STATE/packages" || { echo "dpkg-query: no packages found matching ${*: -1}" >&2; exit 1; }
+echo "install ok installed"
+STUB
+  cat >"$bin/apt-get" <<'STUB'
+#!/usr/bin/env bash
+echo "DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-} apt-get $*" >>"$STUB_STATE/calls"
+[ "$1" != update ] || exit 0
+[ ! -e "$STUB_STATE/apt-fails" ] || { echo "E: Unable to locate package" >&2; exit 100; }
+for arg in "$@"; do
+  case "$arg" in -*|install) ;; *) echo "$arg" >>"$STUB_STATE/packages" ;; esac
+done
 STUB
 
   # Writes land under $STUB_ROOT instead of on this machine. A file's mode and
@@ -382,6 +424,8 @@ new_case() {
     >"$STATE/ufw-status"
   printf 'aead:\n  AES_GCM_16[gcm]\nprf:\n  PRF_HMAC_SHA2_384[openssl]\nke:\n  ECP_384[openssl]\n  ECP_521[openssl]\n' \
     >"$STATE/algs"
+  printf 'tunnel1\ntunnel2\n' >"$STATE/conns"
+  printf '%s\n' charon-systemd strongswan-swanctl libstrongswan-standard-plugins nftables >"$STATE/packages"
   printf '%s\n' "$PSK1_VALUE" >"$CASE/keys/psk1"
   printf '%s\n' "$PSK2_VALUE" >"$CASE/keys/psk2"
 
@@ -421,6 +465,7 @@ run_vpn() {
   set +e
   env -i HOME="$CASE" PATH="$CASE/bin:$PATH" \
     STUB_STATE="$STATE" STUB_ROOT="$ROOT" ${tmpdir[@]+"${tmpdir[@]}"} \
+    FILONE_DEPLOY_LOCK_FILE="$CASE/deploy.lock" VPN_LOCK_FILE="$CASE/vpn.lock" \
     REAL_CAT="$REAL_CAT" REAL_CMP="$REAL_CMP" REAL_RM="$REAL_RM" REAL_MKTEMP="$REAL_MKTEMP" \
     "${INPUTS[@]}" bash "$SCRIPT" "$@" >"$CASE/stdout" 2>"$CASE/stderr"
   status=$?
@@ -446,7 +491,9 @@ never_output() { ! grep -qF -- "$1" "$CASE/all-output"; }
 ufw_rules_only_for_tunnels() {
   ! grep '^ufw-change' "$STATE/calls" | grep -vqE "from ($TUNNEL1|$TUNNEL2) "
 }
-root_empty() { [ -z "$(ls -A "$ROOT")" ]; }
+# No file under the moved paths. Directories may exist: the locks' directory
+# is created before the checks run.
+root_empty() { [ -z "$(find "$ROOT" -type f)" ]; }
 tmp_empty() { [ -z "$(ls -A "$CASE/tmp")" ]; }
 root_files() { (cd "$ROOT" && find . -type f -exec cksum {} + | sort); }
 route_is() { grep -qx "$VPC dev filone-tun$1 scope link src $SITE" "$STATE/routes"; }
@@ -457,7 +504,7 @@ chain_has() { nft_chain "$1" | grep -qxF -- "    $2"; }
 TUNNELS='{ "filone-tun1", "filone-tun2" }'
 
 # Anything that would change the host.
-CHANGES='^(install -m|ip (link (add|set|del)|addr (add|flush)|route replace)|nft -f|sysctl -q|ufw-change|systemctl (restart|start|stop|enable|disable|daemon-reload)|rm .*/etc/)'
+CHANGES='^(.*apt-get install|install -m|ip (link (add|set|del)|addr (add|flush)|route replace)|nft -f|sysctl -q|ufw-change|systemctl (restart|start|stop|enable|disable|daemon-reload)|rm .*/etc/)'
 changed_nothing() { not_called "$CHANGES" && root_empty; }
 
 # Neither key, nor its base64, in anything printed or in any command's argv.
@@ -556,6 +603,15 @@ new_case "UFW denies outgoing"
 printf 'Status: active\nDefault: deny (incoming), deny (outgoing), deny (routed)\n' >"$STATE/ufw-status"
 expect_input_failure ufw "outgoing"
 
+new_case "a Docker network that contains the VPC"
+# Its base address lies outside the VPC, but the VPC lies inside it.
+echo "10.20.0.0/16 " >"$STATE/docker-network-filone"
+expect_input_failure "docker networks" "uses 10.20.0.0/16, which overlaps $VPC"
+
+new_case "a Docker network inside the VPC"
+echo "10.20.200.0/24 " >"$STATE/docker-network-filone"
+expect_input_failure "docker networks" "uses 10.20.200.0/24, which overlaps $VPC"
+
 new_case "no filone Docker network"
 rm "$STATE/docker-network-filone"
 expect_input_failure "docker networks" "no Docker network 'filone'"
@@ -621,6 +677,11 @@ check "checks charon's algorithms" called '^swanctl --list-algs$'
 check "enables the boot unit" called '^systemctl enable --now filone-vpn.service$'
 check "enables the health timer" called '^systemctl enable --now filone-vpn-health.timer$'
 check "installs the units" test -f "$ROOT/etc/systemd/system/filone-vpn-health.timer"
+check "takes the deploy lock" called '^flock -w 3600 9$'
+check "takes the VPN lock" called '^flock -w 60 8$'
+check "installs no package" not_called 'apt-get'
+check "checks both tunnels loaded" called '^swanctl --list-conns$'
+check "clears the restart marker" test ! -e "$ROOT/run/fil-one/vpn-restart-pending"
 check "never shows a key" key_never_shown
 check "leaves no temporary file" tmp_empty
 
@@ -689,6 +750,18 @@ current="status with both tunnels down"
 run_vpn status
 check "exits non-zero" failed
 check "says the route's tunnel is down" printed "the tunnel carrying the route is down"
+
+current="health while a run holds the VPN lock"
+touch "$STATE/sa-up-2" "$STATE/ping-filone-tun2" "$STATE/flock-busy-8"
+rm -f "$STATE/sa-up-1"
+: >"$STATE/calls"
+run_vpn health
+check "succeeds" succeeded
+check "waits for nothing" called '^flock -n 8$'
+check "says it skipped" printed "skipping this check"
+check "probes no tunnel" not_called '^(swanctl|ping) '
+check "leaves the route in tunnel 1" route_is 1
+rm "$STATE/flock-busy-8"
 
 current="up after a reboot"
 rm -r "$STATE/links" "$STATE/nft-loaded"
@@ -970,6 +1043,149 @@ printf 'prf:\n  PRF_HMAC_SHA2_384[openssl]\nke:\n  ECP_384[openssl]\n  ECP_521[o
 run_vpn
 check "exits non-zero" failed
 check "names the missing package" said "libstrongswan-standard-plugins"
+
+new_case "charon without the GCM plugin after a change"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+cp "$STATE/algs" "$STATE/algs.good"
+printf 'prf:\n  PRF_HMAC_SHA2_384[openssl]\nke:\n  ECP_384[openssl]\n  ECP_521[openssl]\n' >"$STATE/algs"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "restarted strongSwan" called '^systemctl restart strongswan.service$'
+check "keeps the restart marker" test -e "$ROOT/run/fil-one/vpn-restart-pending"
+mv "$STATE/algs.good" "$STATE/algs"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and restarts strongSwan, though no file changes" called '^systemctl restart strongswan.service$'
+check "and clears the marker" test ! -e "$ROOT/run/fil-one/vpn-restart-pending"
+
+new_case "charon loads only one tunnel"
+echo tunnel2 >"$STATE/conns"
+run_vpn
+check "exits non-zero" failed
+check "says charon did not load both" said "did not load both tunnels"
+check "keeps the restart marker" test -e "$ROOT/run/fil-one/vpn-restart-pending"
+check "enables neither unit" not_called '^systemctl enable --now'
+printf 'tunnel1\ntunnel2\n' >"$STATE/conns"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and restarts strongSwan" called '^systemctl restart strongswan.service$'
+
+# --- Locks -------------------------------------------------------------------
+
+new_case "the deploy lock held by another deploy"
+touch "$STATE/flock-busy-9"
+run_vpn
+check "exits non-zero" failed
+check "says another deploy holds it" said "another deploy has held"
+check "changes nothing" changed_nothing
+
+new_case "the VPN lock held by a health check that does not finish"
+touch "$STATE/flock-busy-8"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "vpn.lock"
+check "changes nothing" changed_nothing
+
+# --- Packages ----------------------------------------------------------------
+
+new_case "strongSwan not installed"
+echo nftables >"$STATE/packages"
+run_vpn
+check "succeeds" succeeded
+check "installs the three strongSwan packages, without asking" \
+  called '^DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends charon-systemd strongswan-swanctl libstrongswan-standard-plugins$'
+check "refreshes the package lists first" called '^DEBIAN_FRONTEND=noninteractive apt-get update -q$'
+check "never shows a key" key_never_shown
+: >"$STATE/calls"
+run_vpn
+check "a second run succeeds" succeeded
+check "and installs nothing" not_called 'apt-get'
+
+new_case "apt-get fails"
+: >"$STATE/packages"
+touch "$STATE/apt-fails"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "could not install"
+check "changes nothing else" not_called '^(install -m|ip (link|addr|route) (add|set|replace)|nft -f|ufw-change|systemctl (restart|enable))'
+
+new_case "a bad input with strongSwan not installed"
+: >"$STATE/packages"
+set_input VPN_TUNNEL1_OUTSIDE_ADDRESS 198.51.100.300
+expect_input_failure inputs "not an IPv4 address"
+
+# --- down --------------------------------------------------------------------
+
+new_case "down, not root"
+echo 1000 >"$STATE/uid"
+run_vpn down
+check "exits non-zero" failed
+check "changes nothing" changed_nothing
+
+new_case "down"
+run_vpn
+check "provisions" succeeded
+echo "proto tcp from 192.0.2.99 to any port 22" >>"$STATE/ufw-rules"
+: >"$STATE/calls"
+run_vpn down
+check "succeeds" succeeded
+check "takes the deploy lock" called '^flock -w 3600 9$'
+check "takes the VPN lock" called '^flock -w 60 8$'
+check "disables the health timer" test ! -e "$STATE/enabled-filone-vpn-health.timer"
+check "stops the health timer" test ! -e "$STATE/active-filone-vpn-health.timer"
+check "disables the boot unit" test ! -e "$STATE/enabled-filone-vpn.service"
+check "stops strongSwan" test ! -e "$STATE/active-strongswan.service"
+check "disables strongSwan" test ! -e "$STATE/enabled-strongswan.service"
+check "deletes the nftables table" called '^nft delete table ip filone_vpn$'
+check "removes tunnel 1's interface" test ! -d "$STATE/links/filone-tun1"
+check "removes tunnel 2's interface" test ! -d "$STATE/links/filone-tun2"
+check "removes the dummy interface" test ! -d "$STATE/links/filone-site"
+check "removes the tunnel route" test -z "$(grep "^$VPC dev " "$STATE/routes")"
+check "removes the fallback route" test -z "$(grep '^unreachable ' "$STATE/routes")"
+check "removes tunnel 1's IKE rule" called "^ufw-change delete proto udp from $TUNNEL1 to any port 500,4500$"
+check "removes tunnel 2's ESP rule" called "^ufw-change delete proto esp from $TUNNEL2 to any$"
+check "removes no other rule" grep -qxF "proto tcp from 192.0.2.99 to any port 22" "$STATE/ufw-rules"
+check "removes the connections" test ! -e "$ROOT$SWAN"
+check "removes the keys" test ! -e "$ROOT$SECRETS"
+check "removes charon's file" test ! -e "$ROOT/etc/strongswan.d/zz-filone-vpn.conf"
+check "removes vpn.conf" test ! -e "$ROOT/etc/fil-one/vpn.conf"
+check "removes the ruleset" test ! -e "$ROOT$NFT"
+check "never shows a key" key_never_shown
+: >"$STATE/calls"
+run_vpn down
+check "a second down succeeds" succeeded
+check "and changes nothing" not_called "$CHANGES|^nft delete|^ip (link|route) del|^rm "
+run_vpn status
+check "status then fails" failed
+check "and says there is no VPN" said "no /etc/fil-one/vpn.conf"
+
+new_case "down after vpn.conf is gone"
+run_vpn
+check "provisions" succeeded
+rm "$ROOT/etc/fil-one/vpn.conf"
+: >"$STATE/calls"
+run_vpn down
+check "succeeds" succeeded
+check "finds the tunnel rules from UFW's comments" \
+  called "^ufw-change delete proto udp from $TUNNEL2 to any port 500,4500$"
+check "removes the fallback route" test -z "$(grep '^unreachable ' "$STATE/routes")"
+
+new_case "down after a pending restart"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+touch "$STATE/restart-fails"
+run_vpn
+check "a changed run fails" failed
+rm "$STATE/restart-fails"
+run_vpn down
+check "down succeeds" succeeded
+check "and removes the marker" test ! -e "$ROOT/run/fil-one/vpn-restart-pending"
 
 echo
 if [ "$failures" -ne 0 ]; then
