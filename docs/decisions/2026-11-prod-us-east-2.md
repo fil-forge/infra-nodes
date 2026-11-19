@@ -121,7 +121,7 @@ layout in the
 | `control/state` | reconcile's state, the node's status document and the deploy metrics | quota, 50 GiB |
 | `control/caddy` | Caddy's certificates and ACME account keys | quota, 1 GiB |
 | `control/alloy` | the write-ahead log Alloy buffers telemetry in | quota, 10 GiB |
-| `piri` | what `piri init` writes and Piri's rendered config | quota, 50 GiB |
+| `piri` | Piri's config and the key store holding its wallet key | quota, 50 GiB |
 | `ingot/segments` | Ingot's segments | quota, 5% of the pool |
 | `ingot/blobs` | Ingot's spool and cache | quota, 50% of the pool |
 
@@ -184,8 +184,19 @@ is implemented. The dev node takes none.
 ## Piri keeps its blobs on the site's disk array
 
 IST-1's storage is a disk array of many petabytes that the site exposes over an S3 interface. Piri
-therefore uses its S3 blob backend, and the node runs one Piri. Because the blobs are not on the
-pool, the `piri` dataset holds only Piri's configuration and can be small.
+therefore uses its S3 blob backend, and the node runs one Piri. Piri keeps blob bytes, uploads
+staged before their digest is known, and its IPNI adverts in one bucket on the array, named from the
+bucket prefix with `pdp` appended. Its records go to the node's Postgres: allocations, acceptances,
+claims, receipts, the PDP pipeline's tasks and proof cache, and the index of staged uploads.
+
+The `piri` dataset holds the rest: the config file `piri init` writes, the entrypoint's init
+markers beside it, and a LevelDB key store under `wallet/` that holds the owner wallet's private
+key. The node's identity key stays in the secrets tmpfs, and the config names its path. Piri's
+temp directory is in the container's own filesystem and stays empty, because uploads to S3 stream
+from memory. The dataset therefore stays at a few megabytes. Piri's egress journal also goes on
+the dataset when the egress tracker runs, in batches of up to 100 MiB that Piri deletes once the
+tracker has consolidated them. The Piri this node runs does not start the egress tracker, and the
+50 GiB quota leaves room for the journal if egress tracking is turned on.
 
 The endpoint and the bucket prefix are in `node.env`, and the credentials come from OpenBao.
 `provision-apps.sh` refuses to start while the endpoint or the prefix is missing and asks for the
