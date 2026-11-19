@@ -964,7 +964,8 @@ gives its inputs, how to run it, check it and take it off the node.
 The import service is the `import-service` service in `nodes/prod/us-east-2/apps/compose.yml`.
 `scripts/host/deploy-import.sh` deploys it, run last by every apps deploy and retried on its own by
 reconcile while it is failing. Until every one of its settings is filled in, that script names the
-ones left, starts nothing and lets the rest of the apps deploy as usual. Bring it up after the
+ones left, starts nothing, removes a container an earlier deploy left running, and lets the rest
+of the apps deploy as usual. Bring it up after the
 database VPN above and after the apps (step 6), since it needs both: its ledger is in central's VPC,
 and it reads packs back from Ingot.
 

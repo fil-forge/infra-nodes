@@ -10,7 +10,8 @@
 # next reconcile pass runs it again.
 #
 # Until every setting import_service_placeholders checks is filled in, it says
-# which are left and exits 0 without starting anything and without a marker:
+# which are left, removes a container an earlier deploy left running, and exits
+# 0 without starting anything and without a marker:
 # there is nothing to retry until a commit fills them, and that commit deploys
 # the apps, which runs this.
 #
@@ -58,6 +59,7 @@ if [ -n "$unset_settings" ]; then
   echo "  not configured, so not started. Still a placeholder:"
   while read -r name; do echo "    $name"; done <<<"$unset_settings"
   echo "  docs/RUNBOOK.md, under the prod/us-east-2 appliance, says where each comes from."
+  import_service_remove "$CONTAINER"
   rm -f "$import_retry"
   exit 0
 fi
@@ -137,16 +139,20 @@ install -d -m 0500 -o "$SERVICE_UID" -g "$SERVICE_UID" "$SERVICE_SECRETS"
 
 # Each read in its own assignment before it is used, as in deploy-apps.sh, so a
 # missing secret ends the run instead of rendering an empty one. The PEMs get
-# back the trailing newline OpenBao drops.
+# back the trailing newline OpenBao drops. Each changed file forgets the
+# recorded hash at once, so a run that dies part way through still leaves the
+# service marked changed for the next pass.
 rendered=0
+hash_name="apps-$SERVICE"
+render() { mark rendered forget_hash_on_change "$hash_name" "$@"; }
 tls_cert="$(bao_get "$BAO_PATH" tls_cert)"
-mark rendered write_secret_file "$SERVICE_SECRETS/server.pem" "$tls_cert
+render write_secret_file "$SERVICE_SECRETS/server.pem" "$tls_cert
 "
 tls_key="$(bao_get "$BAO_PATH" tls_key)"
-mark rendered write_secret_file "$SERVICE_SECRETS/server-key.pem" "$tls_key
+render write_secret_file "$SERVICE_SECRETS/server-key.pem" "$tls_key
 "
 client_ca="$(bao_get "$BAO_PATH" client_ca)"
-mark rendered write_secret_file "$SERVICE_SECRETS/client-ca.pem" "$client_ca
+render write_secret_file "$SERVICE_SECRETS/client-ca.pem" "$client_ca
 "
 unset tls_cert tls_key client_ca
 
@@ -155,12 +161,12 @@ unset tls_cert tls_key client_ca
 ledger_password="$(bao_get "$BAO_PATH" ledger_password)"
 plain_value ledger_password "$ledger_password"
 pgpass="$(import_pgpass_line "$ledger_password")"
-mark rendered write_secret_file "$SERVICE_SECRETS/pgpass" "$pgpass
+render write_secret_file "$SERVICE_SECRETS/pgpass" "$pgpass
 "
 unset ledger_password pgpass
 
 s3_secret_key="$(bao_get "$BAO_PATH" s3_secret_key)"
-mark rendered write_secret_file "$SERVICE_SECRETS/s3-secret-key" "$s3_secret_key"
+render write_secret_file "$SERVICE_SECRETS/s3-secret-key" "$s3_secret_key"
 unset s3_secret_key
 
 # The service reads its files as its own user; compose reads the env file as
@@ -184,18 +190,11 @@ if ledger_dsn_has_password "$IMPORT_SERVICE_LEDGER_DSN"; then
 fi
 export IMPORT_SERVICE_LEDGER_DSN IMPORT_SERVICE_S3_ACCESS_KEY_ID \
   IMPORT_SERVICE_KEYS_ROLE_ID IMPORT_SERVICE_KEYS_SECRET_ID
-mark rendered render_template \
+render render_template \
   "$FILONE_NODE_DIR/apps/templates/import-service.env.tpl" \
   "$FILONE_SECRETS_DIR/import-service.env"
 unset IMPORT_SERVICE_LEDGER_DSN IMPORT_SERVICE_S3_ACCESS_KEY_ID \
   IMPORT_SERVICE_KEYS_ROLE_ID IMPORT_SERVICE_KEYS_SECRET_ID
-
-# Rendering compares by content, so a run that dies after this would see no
-# change on the next pass. Forgetting the recorded hash keeps the service marked
-# changed until a run records it healthy.
-if [ "$rendered" -eq 1 ]; then
-  rm -f "$FILONE_STATE_DIR/apps-$SERVICE.sha256"
-fi
 
 # --- 4. Pull ----------------------------------------------------------------
 
@@ -251,14 +250,14 @@ start_unchanged() {
 changed="$rendered"
 mark changed image_differs compose_apps "$SERVICE"
 config_hash="$(compose_config_hash compose_apps "$SERVICE")"
-mark changed config_changed "apps-$SERVICE" "$config_hash"
+mark changed config_changed "$hash_name" "$config_hash"
 if [ "$changed" -eq 1 ]; then
   compose_apps up -d --force-recreate --no-deps "$SERVICE"
 else
   start_unchanged
 fi
 wait_healthy compose_apps 180 "$SERVICE"
-config_hash_record "apps-$SERVICE" "$config_hash"
+config_hash_record "$hash_name" "$config_hash"
 
 rm -f "$import_retry"
 echo "=== import service deploy complete ==="

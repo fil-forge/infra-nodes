@@ -11,8 +11,11 @@
 # directory shares its parent's filesystem (dev, staging) and on one where it
 # is a mount point of its own (prod/us-east-2's control/openbao dataset); the
 # node.env values provision-apps.sh and deploy-apps.sh require for the
-# apps, and the secrets they need in OpenBao; and the
-# node.env placeholders deploy-apps.sh and deploy-platform.sh refuse.
+# apps, and the secrets they need in OpenBao; the
+# node.env placeholders deploy-apps.sh and deploy-platform.sh refuse; and the
+# import service's helpers: its placeholders, address, password file and DSN
+# check, the hash a changed render forgets, and the container removed when a
+# setting is a placeholder again.
 #
 # No real mount is made. Stub stat, mv, cp and install come first on PATH: stat
 # reports a directory named in $STUB_STATE/mounts as on a device of its own,
@@ -514,6 +517,65 @@ for dsn in 'host=db.example dbname=ledger user=import' 'postgresql://import@db.e
   'postgresql://import@db.example:5432/ledger' 'postgresql://db.example:5432/ledger'; do
   check "is accepted without one: $dsn" eval "! ledger_dsn_has_password '$dsn'"
 done
+
+# A run that writes one changed secret and dies before the next leaves the
+# recorded hash gone, so the retry, which reads that file as unchanged, still
+# recreates the service. true and false stand in for a render that changed its
+# file and one that did not: write_secret_file itself needs root to write the
+# 0400 file it creates.
+render_case() { # render_case <name> <command>: forget_hash_on_change's status
+  new_case "$1"
+  STATE="$CASE/state-dir"
+  "$REAL_MKDIR" -p "$STATE"
+  echo recorded >"$STATE/apps-import-service.sha256"
+  render_status=0
+  (FILONE_STATE_DIR="$STATE" forget_hash_on_change apps-import-service "$2") ||
+    render_status=$?
+}
+
+render_case "a render that changes a file" true
+check "reports the change" test "$render_status" -eq 0
+check "forgets the recorded hash at once" test ! -e "$STATE/apps-import-service.sha256"
+
+render_case "a render that changes nothing" false
+check "reports no change" test "$render_status" -eq 1
+check "keeps the recorded hash" test -e "$STATE/apps-import-service.sha256"
+
+# A docker stand-in for import_service_remove: inspect succeeds for a container
+# named in $STUB_STATE/containers, and every call is logged.
+remove_service() {
+  status=0
+  (docker() {
+    echo "docker $*" >>"$STUB_STATE/calls"
+    case "$1" in
+      inspect) grep -qxF "${*: -1}" "$STUB_STATE/containers" 2>/dev/null ;;
+      rm) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  import_service_remove filone-import-service) >/dev/null 2>"$CASE/stderr" || status=$?
+}
+
+new_case "settings back to a placeholder, with the service running"
+echo filone-import-service >"$STUB_STATE/containers"
+remove_service
+check "succeeds" test "$status" -eq 0
+check "removes the container" called '^docker rm -f filone-import-service$'
+
+new_case "settings back to a placeholder, with no container"
+remove_service
+check "succeeds" test "$status" -eq 0
+check "removes nothing" not_called '^docker rm'
+
+current="deploy-import.sh"
+# shellcheck disable=SC2016 # the literal line deploy-import.sh holds
+check "removes the service while a setting is a placeholder" \
+  grep -qxF '  import_service_remove "$CONTAINER"' "$SCRIPTS/deploy-import.sh"
+check "renders every secret through forget_hash_on_change" \
+  test "$(grep -cE '^mark rendered (write_secret_file|render_template)' \
+    "$SCRIPTS/deploy-import.sh")" -eq 0
+check "renders all six files that way" \
+  test "$(grep -cE '^render (write_secret_file|render_template) ' "$SCRIPTS/deploy-import.sh")" -eq 6
 
 current="deploy-apps.sh"
 # shellcheck disable=SC2016 # the literal line deploy-apps.sh holds

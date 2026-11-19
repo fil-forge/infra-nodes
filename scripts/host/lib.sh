@@ -569,6 +569,22 @@ config_hash_record() {
   printf '%s\n' "$2" >"$FILONE_STATE_DIR/$1.sha256"
 }
 
+# Run a command that reports "changed" by exit status, such as write_secret_file
+# or render_template, and forget the hash recorded under <name> the moment it
+# reports a change. Rendering compares by content, so a run that writes a new
+# file and then dies before its service is recreated would read that file as
+# unchanged on the next pass and keep the old container. With the hash gone,
+# config_changed keeps the service marked changed until a run records it
+# healthy. Returns the command's status.
+#
+# Usage: forget_hash_on_change <name> <command> [args...]
+forget_hash_on_change() {
+  local name="$1"
+  shift
+  "$@" || return
+  rm -f "$FILONE_STATE_DIR/$name.sha256"
+}
+
 # A moving tag resolving to a new digest is invisible to compose, which compares
 # the tag string, so the running image id is compared against the pulled one. A
 # service with no container yet counts as different: it has to be created.
@@ -637,6 +653,17 @@ import_service_placeholders() {
     IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_KEYS_ADDR IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
     case "${!name:-}" in "" | PLACEHOLDER) echo "$name" ;; esac
   done
+}
+
+# Remove the import service's container, if there is one. deploy-import.sh
+# calls it when a setting is a placeholder again, so a service deployed with
+# earlier settings does not keep running and publishing its port. By container
+# name, as container_exists is, since compose_apps needs an apps.env that may
+# not be rendered.
+import_service_remove() { # import_service_remove <container>
+  container_exists "$1" || return 0
+  echo "  removing $1, which still runs with the earlier settings"
+  docker rm -f "$1" >/dev/null || die "could not remove $1"
 }
 
 # The address deploy-import.sh gives the service on the filone network: the
