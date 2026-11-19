@@ -1026,8 +1026,13 @@ delegation byte for byte, so a node that lost its copy can ask for it again.
 
 A node whose reconcile timer already runs before onboarding finishes keeps its platform deployed
 and leaves the apps alone. Each pass logs "not deploying the apps: OpenBao has no hilt proof" and
-still succeeds. Once the proof is stored, reconcile resumes deploying the apps, and
-`provision-apps.sh` is still the step that starts them.
+still succeeds. Once the proof is stored, the next pass runs `deploy-apps.sh` itself, within five
+minutes. On such a node, run `systemctl stop filone-reconcile.timer` before storing the proof, and
+start the timer again once `provision-apps.sh` has finished.
+
+A pass that runs before `provision-apps.sh` finds no data directory for a new Piri, which only
+`provision-apps.sh` creates. It starts Ingot without that Piri and fails, and so does every pass
+until `provision-apps.sh` has run.
 
 Each Piri's first start runs `piri init`, which calls the registrar for approval. A 403 there means
 that Piri's DID is not on the delegator's allow list, which means its onboarding did not complete.
