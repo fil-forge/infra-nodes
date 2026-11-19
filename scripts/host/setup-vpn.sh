@@ -452,7 +452,10 @@ require_address() { # require_address <name>
 for name in VPN_SITE_PUBLIC_ADDRESS VPN_SITE_PRIVATE_ADDRESS VPN_TUNNEL1_OUTSIDE_ADDRESS \
   VPN_TUNNEL2_OUTSIDE_ADDRESS VPN_TUNNEL1_INSIDE_REMOTE VPN_TUNNEL2_INSIDE_REMOTE; do
   # The site's private address may come as central lists it, with its /32.
-  [ "$name" != VPN_SITE_PRIVATE_ADDRESS ] || VPN_SITE_PRIVATE_ADDRESS="${VPN_SITE_PRIVATE_ADDRESS%/32}"
+  if [ "$name" = VPN_SITE_PRIVATE_ADDRESS ]; then
+    VPN_SITE_PRIVATE_ADDRESS="${VPN_SITE_PRIVATE_ADDRESS:-}"
+    VPN_SITE_PRIVATE_ADDRESS="${VPN_SITE_PRIVATE_ADDRESS%/32}"
+  fi
   require_address "$name"
 done
 : "${VPN_VPC_CIDR:=$STATED_VPC_CIDR}"
