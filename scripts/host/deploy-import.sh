@@ -169,6 +169,14 @@ s3_secret_key="$(bao_get "$BAO_PATH" s3_secret_key)"
 render write_secret_file "$SERVICE_SECRETS/s3-secret-key" "$s3_secret_key"
 unset s3_secret_key
 
+# The site secret every pack's keys derive from. OpenBao holds it base64; the
+# file holds the bytes, which import_site_secret_file checks as the service
+# would before writing them.
+site_secret="$(bao_get "$BAO_PATH" site_secret)"
+render import_site_secret_file "$FILONE_BAO_MOUNT/$BAO_PATH#site_secret" \
+  "$SERVICE_SECRETS/site-secret" "$site_secret"
+unset site_secret
+
 # The service reads its files as its own user; compose reads the env file as
 # root.
 chown "$SERVICE_UID:$SERVICE_UID" "$SERVICE_SECRETS"/* ||
@@ -176,25 +184,19 @@ chown "$SERVICE_UID:$SERVICE_UID" "$SERVICE_SECRETS"/* ||
 
 IMPORT_SERVICE_LEDGER_DSN="$(bao_get "$BAO_PATH" ledger_dsn)"
 IMPORT_SERVICE_S3_ACCESS_KEY_ID="$(bao_get "$BAO_PATH" s3_access_key_id)"
-IMPORT_SERVICE_KEYS_ROLE_ID="$(bao_get "$BAO_PATH" keys_role_id)"
-IMPORT_SERVICE_KEYS_SECRET_ID="$(bao_get "$BAO_PATH" keys_secret_id)"
 plain_value ledger_dsn "$IMPORT_SERVICE_LEDGER_DSN"
 plain_value s3_access_key_id "$IMPORT_SERVICE_S3_ACCESS_KEY_ID"
-plain_value keys_role_id "$IMPORT_SERVICE_KEYS_ROLE_ID"
-plain_value keys_secret_id "$IMPORT_SERVICE_KEYS_SECRET_ID"
 # The password lives in the password file; libpq would use one in the DSN
 # first, and the DSN is the less guarded of the two.
 if ledger_dsn_has_password "$IMPORT_SERVICE_LEDGER_DSN"; then
   die "OpenBao's $FILONE_BAO_MOUNT/$BAO_PATH#ledger_dsn carries a password. Store the DSN
        without it; the password goes in #ledger_password."
 fi
-export IMPORT_SERVICE_LEDGER_DSN IMPORT_SERVICE_S3_ACCESS_KEY_ID \
-  IMPORT_SERVICE_KEYS_ROLE_ID IMPORT_SERVICE_KEYS_SECRET_ID
+export IMPORT_SERVICE_LEDGER_DSN IMPORT_SERVICE_S3_ACCESS_KEY_ID
 render render_template \
   "$FILONE_NODE_DIR/apps/templates/import-service.env.tpl" \
   "$FILONE_SECRETS_DIR/import-service.env"
-unset IMPORT_SERVICE_LEDGER_DSN IMPORT_SERVICE_S3_ACCESS_KEY_ID \
-  IMPORT_SERVICE_KEYS_ROLE_ID IMPORT_SERVICE_KEYS_SECRET_ID
+unset IMPORT_SERVICE_LEDGER_DSN IMPORT_SERVICE_S3_ACCESS_KEY_ID
 
 # --- 4. Pull ----------------------------------------------------------------
 

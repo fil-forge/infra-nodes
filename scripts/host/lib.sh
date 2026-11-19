@@ -653,7 +653,7 @@ import_service_placeholders() {
   local name
   case "$(import_service_image)" in "" | PLACEHOLDER) echo IMPORT_SERVICE_IMAGE ;; esac
   for name in IMPORT_SERVICE_PORT IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
-    IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_KEYS_ADDR IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
+    IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
     case "${!name:-}" in "" | PLACEHOLDER) echo "$name" ;; esac
   done
 }
@@ -698,6 +698,55 @@ print(network.broadcast_address - 1)
 import_pgpass_line() { # import_pgpass_line <password>
   local password="${1//\\/\\\\}"
   printf '*:*:*:*:%s\n' "${password//:/\\:}"
+}
+
+# Write the import service's site secret file into the tmpfs, with the same
+# 0400 and the same changed/unchanged answer as write_secret_file: 0 when the
+# file changed, 1 when it already held the same bytes. OpenBao holds the secret
+# base64-encoded; the file holds the decoded bytes, which the service reads
+# once at start, strips of surrounding ASCII whitespace and refuses when fewer
+# than 32 bytes remain. A value that is not base64, or that the service would
+# refuse, stops the run with a message naming <label> and never the value.
+#
+# The value goes to the decoder on stdin, as piri_wallet_hex's key does, so it
+# is never on a command line, and the decoded bytes, which may hold any byte,
+# go straight to a file on the tmpfs without passing through a variable.
+import_site_secret_file() { # import_site_secret_file <label> <destination> <base64>
+  local label="$1" destination="$2" status=0 tmp
+  tmp="$(mktemp "$FILONE_SECRETS_DIR/.write.XXXXXX")" || die "mktemp failed in $FILONE_SECRETS_DIR"
+  printf '%s' "$3" | python3 -c '
+import base64, binascii, sys
+
+try:
+    secret = base64.b64decode(sys.stdin.buffer.read().strip(), validate=True)
+except (binascii.Error, ValueError):
+    sys.exit(3)
+if len(secret.strip()) < 32:
+    sys.exit(4)
+sys.stdout.buffer.write(secret)
+' >"$tmp" 2>/dev/null || status=$?
+  case "$status" in
+    0) ;;
+    3)
+      rm -f "$tmp"
+      die "OpenBao's $label is not base64. Store the site secret base64-encoded." ;;
+    4)
+      rm -f "$tmp"
+      die "OpenBao's $label decodes to fewer than 32 bytes once surrounding whitespace is
+       stripped, which the import service refuses." ;;
+    *)
+      rm -f "$tmp"
+      die "could not decode OpenBao's $label" ;;
+  esac
+  chmod 0400 "$tmp" || die "could not chmod $tmp"
+
+  if [ -f "$destination" ] && cmp -s "$tmp" "$destination"; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  mv "$tmp" "$destination" || die "could not write $destination"
+  return 0
 }
 
 # Whether a ledger DSN carries a password, as a password keyword or parameter

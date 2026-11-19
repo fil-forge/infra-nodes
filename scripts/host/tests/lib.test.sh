@@ -13,9 +13,10 @@
 # node.env values provision-apps.sh and deploy-apps.sh require for the
 # apps, and the secrets they need in OpenBao; the
 # node.env placeholders deploy-apps.sh and deploy-platform.sh refuse; and the
-# import service's helpers: its placeholders, address, password file and DSN
-# check, the hash a changed render forgets, and the container removed when a
-# setting is a placeholder again.
+# import service's helpers: its placeholders, address, password file, DSN
+# check and site secret file, the hash a changed render forgets, the container
+# removed when a setting is a placeholder again, and the key source its compose
+# definition gives it.
 #
 # No real mount is made. Stub stat, mv, cp and install come first on PATH: stat
 # reports a directory named in $STUB_STATE/mounts as on a device of its own,
@@ -447,8 +448,7 @@ placeholders() { # placeholders [NAME=value...]: what import_service_placeholder
     import_service_placeholders)
 }
 configured=(IMPORT_SERVICE_ALLOWED_CLIENTS=box-1 IMPORT_SERVICE_LEASE_HOLDER=site-a
-  IMPORT_SERVICE_S3_BUCKET=packs IMPORT_SERVICE_KEYS_ADDR=https://keys.example:8200
-  IMPORT_SERVICE_RECOVERY_PUBLIC_KEY=00ff)
+  IMPORT_SERVICE_S3_BUCKET=packs IMPORT_SERVICE_RECOVERY_PUBLIC_KEY=00ff)
 has_line() { grep -qxF -- "$1" <<<"$2"; }
 lacks_line() { ! has_line "$@"; }
 pin_image() { # pin_image <reference>
@@ -460,9 +460,10 @@ pin_image() { # pin_image <reference>
 import_case "prod/us-east-2 as committed"
 got="$(placeholders)"
 for name in IMPORT_SERVICE_IMAGE IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
-  IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_KEYS_ADDR IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
+  IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
   check "names $name" has_line "$name" "$got"
 done
+check "names nothing else" test "$(grep -c . <<<"$got")" -eq 5
 check "accepts the committed port" lacks_line IMPORT_SERVICE_PORT "$got"
 check "accepts the empty prefix" lacks_line IMPORT_SERVICE_S3_PREFIX "$got"
 
@@ -517,6 +518,82 @@ for dsn in 'host=db.example dbname=ledger user=import' 'postgresql://import@db.e
   'postgresql://import@db.example:5432/ledger' 'postgresql://db.example:5432/ledger'; do
   check "is accepted without one: $dsn" eval "! ledger_dsn_has_password '$dsn'"
 done
+
+# The site secret file: OpenBao's base64 decoded to the bytes the service
+# reads, with the service's own refusal of a secret shorter than 32 bytes once
+# surrounding whitespace is stripped. Made-up secrets only. Each case runs in a
+# subshell, as die exits.
+site_secret_case() { # site_secret_case <name>
+  new_case "$1"
+  SECRETS="$CASE/secrets"
+  "$REAL_MKDIR" -p "$SECRETS"
+}
+write_site_secret() { # write_site_secret <base64>: import_site_secret_file's status
+  site_status=0
+  (FILONE_SECRETS_DIR="$SECRETS"
+    import_site_secret_file filone/import-service#site_secret "$SECRETS/site-secret" "$1") \
+    >"$CASE/stdout" 2>"$CASE/stderr" || site_status=$?
+}
+no_temp_left() { test -z "$(find "$SECRETS" -name '.write.*')"; }
+says_nothing_of() { ! grep -qF -- "$1" "$CASE/stdout" "$CASE/stderr"; }
+secret_a="$(printf 'a%.0s' $(seq 32) | base64)"
+secret_b="$(printf 'b%.0s' $(seq 40) | base64)"
+
+site_secret_case "a site secret, first written"
+write_site_secret "$secret_a"
+check "reports the change" test "$site_status" -eq 0
+check "holds the decoded bytes" test "$(cat "$SECRETS/site-secret")" = "$(printf 'a%.0s' $(seq 32))"
+check "is read-only to its owner alone" test -n "$(find "$SECRETS/site-secret" -perm 400)"
+check "leaves no temp file" no_temp_left
+write_site_secret "$secret_a"
+check "reports no change when written again" test "$site_status" -eq 1
+check "leaves no temp file then either" no_temp_left
+write_site_secret "$secret_b"
+check "reports a changed secret as a change" test "$site_status" -eq 0
+check "holds the changed secret" test "$(cat "$SECRETS/site-secret")" = "$(printf 'b%.0s' $(seq 40))"
+
+site_secret_case "a site secret with a trailing newline on the base64"
+write_site_secret "$secret_a
+"
+check "is accepted" test "$site_status" -eq 0
+
+site_secret_case "a site secret of 31 bytes"
+short="$(printf 'c%.0s' $(seq 31) | base64)"
+write_site_secret "$short"
+check "is refused" test "$site_status" -ne 0
+check "names the field" grep -q 'filone/import-service#site_secret' "$CASE/stderr"
+check "says why" grep -q 'fewer than 32 bytes' "$CASE/stderr"
+check "does not print the value" says_nothing_of "$short"
+check "writes no file" test ! -e "$SECRETS/site-secret"
+check "leaves no temp file" no_temp_left
+
+site_secret_case "a site secret of 32 bytes, two of them surrounding spaces"
+padded="$(printf ' %s ' "$(printf 'd%.0s' $(seq 30))" | base64)"
+write_site_secret "$padded"
+check "is refused, as the service strips them" test "$site_status" -ne 0
+check "writes no file" test ! -e "$SECRETS/site-secret"
+
+site_secret_case "a site secret that is not base64"
+write_site_secret 'not base64 at all!'
+check "is refused" test "$site_status" -ne 0
+check "names the field" grep -q 'filone/import-service#site_secret' "$CASE/stderr"
+check "says why" grep -q 'not base64' "$CASE/stderr"
+check "does not print the value" says_nothing_of 'not base64 at all!'
+check "writes no file" test ! -e "$SECRETS/site-secret"
+check "leaves no temp file" no_temp_left
+
+site_secret_case "a changed site secret, replacing the file the last deploy wrote"
+write_site_secret "$secret_a"
+STATE="$CASE/state-dir"
+"$REAL_MKDIR" -p "$STATE"
+echo recorded >"$STATE/apps-import-service.sha256"
+site_status=0
+(FILONE_SECRETS_DIR="$SECRETS" FILONE_STATE_DIR="$STATE" forget_hash_on_change apps-import-service \
+  import_site_secret_file filone/import-service#site_secret "$SECRETS/site-secret" "$secret_b") ||
+  site_status=$?
+check "reports the change" test "$site_status" -eq 0
+check "forgets the recorded hash, so the service is recreated" \
+  test ! -e "$STATE/apps-import-service.sha256"
 
 # A run that writes one changed secret and dies before the next leaves the
 # recorded hash gone, so the retry, which reads that file as unchanged, still
@@ -643,6 +720,27 @@ check "defines render() once" \
   test "$(grep -cE '^render\(\)' "$SCRIPTS/deploy-import.sh")" -eq 1
 check "renders all six files that way" \
   test "$(grep -cE '^render (write_secret_file|render_template) ' "$SCRIPTS/deploy-import.sh")" -eq 6
+check "renders the site secret that way too" \
+  test "$(grep -cE '^render import_site_secret_file ' "$SCRIPTS/deploy-import.sh")" -eq 1
+# shellcheck disable=SC2016 # the literal line deploy-import.sh holds
+check "renders the site secret before giving the files to the service's user" \
+  test "$(grep -nE '^render import_site_secret_file ' "$SCRIPTS/deploy-import.sh" | cut -d: -f1)" \
+    -lt "$(grep -nE '^chown "\$SERVICE_UID' "$SCRIPTS/deploy-import.sh" | cut -d: -f1)"
+check "reads no key service login" \
+  eval "! grep -qE 'keys_role_id|keys_secret_id|KEYS_ADDR' '$SCRIPTS/deploy-import.sh'"
+
+current="the import service's compose definition"
+IMPORT_COMPOSE="$NODES/prod/us-east-2/apps/compose.yml"
+IMPORT_ENV_TEMPLATE="$NODES/prod/us-east-2/apps/templates/import-service.env.tpl"
+check "points the service at the rendered site secret" \
+  grep -qxF '      IST1_PACK_SITE_SECRET: /run/import/site-secret' "$IMPORT_COMPOSE"
+check "sets no OpenBao key source, since the service takes exactly one" \
+  eval "! grep -q 'IST1_PACK_OPENBAO_' '$IMPORT_COMPOSE' '$IMPORT_ENV_TEMPLATE'"
+mounts_read_only() {
+  grep -A3 -F 'source: /run/fil-one/secrets/import-service' "$IMPORT_COMPOSE" |
+    grep -qF 'read_only: true'
+}
+check "mounts the secrets directory read-only" mounts_read_only
 
 current="deploy-apps.sh"
 # shellcheck disable=SC2016 # the literal line deploy-apps.sh holds

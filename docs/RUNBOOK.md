@@ -1000,14 +1000,8 @@ Its settings:
 | `IMPORT_SERVICE_ALLOWED_CLIENTS` | `node.env` | the client certificates' common names, comma-separated. This repository is public, so the names must say nothing about a client but which one it is |
 | `IMPORT_SERVICE_LEASE_HOLDER` | `node.env` | the site's name in its serving leases |
 | `IMPORT_SERVICE_S3_BUCKET`, `IMPORT_SERVICE_S3_PREFIX` | `node.env` | the Ingot bucket the clients upload packs to, and its key prefix if any |
-| `IMPORT_SERVICE_KEYS_ADDR` | `node.env` | the URL of the OpenBao that holds the site secret the pack keys derive from |
 | `IMPORT_SERVICE_RECOVERY_PUBLIC_KEY` | `node.env` | the estate recovery public key, hex |
 | the client addresses | `/etc/fil-one/import-clients` on the host | the source IPv4 addresses or networks of the clients, one per line |
-
-The key service has no address to give yet. The node's own OpenBao listens on its container's
-loopback and on a unix socket, and the service's client takes an HTTP(S) URL, so the service cannot
-reach it as the node stands. `IMPORT_SERVICE_KEYS_ADDR` stays a placeholder until that is settled,
-together with the AppRole the service logs in with.
 
 Its secrets, in the node's OpenBao at `filone/import-service`:
 
@@ -1018,8 +1012,13 @@ Its secrets, in the node's OpenBao at `filone/import-service`:
 | `ledger_dsn` | the ledger's libpq DSN, without a password. `deploy-import.sh` refuses one that carries a password |
 | `ledger_password` | the ledger role's password, which goes into a libpq password file |
 | `s3_access_key_id`, `s3_secret_key` | the Ingot access key the service reads packs with |
-| `keys_role_id`, `keys_secret_id` | the key service's AppRole login |
+| `site_secret` | the site secret every pack's keys derive from, base64. `deploy-import.sh` refuses a value that is not base64 or that decodes to fewer than 32 bytes once surrounding whitespace is stripped |
 | `registry_username`, `registry_token` | a read-only pull credential for the image's private registry |
+
+The site secret lives in the node's OpenBao and on no persistent disk. Every deploy renders it, as
+the bytes the base64 decodes to, into a memory-backed file the service reads once at start.
+Every pack the service accepts is sealed under keys derived from it, so replacing it once packs
+exist makes them unreadable. Write it once, before the first import, and never again.
 
 No value may hold a quote or a line break, except the PEMs. Store them with the `bao_exec` helper
 defined under the eu-central-3 staging appliance above, `put` for the first field and `patch` for
@@ -1031,12 +1030,22 @@ bao_exec kv patch -mount=filone import-service tls_key=- <server-key.pem
 bao_exec kv patch -mount=filone import-service client_ca=- <client-ca.pem
 read -rsp 'ledger password: ' value; echo
 bao_exec kv patch -mount=filone import-service ledger_password=- <<<"$value"
-# ... and the same for each remaining field
+# ... and the same for each remaining field but site_secret
 unset value
 ```
 
-`deploy-import.sh` renders the files into `/run/fil-one/secrets/import-service/`, owned by the
-service's user (uid 10001) and read-only, and the rest into
+Store the site secret the clients seal their packs under. Copy its file to the host's `/run`
+tmpfs through the jump host, readable by root only, then write it only if the field is still
+empty, and remove the copy:
+
+```sh
+bao_exec kv get -mount=filone -field=site_secret import-service   # must fail: none yet
+base64 -w 0 </run/site-secret | bao_exec kv patch -mount=filone import-service site_secret=-
+rm /run/site-secret
+```
+
+`deploy-import.sh` renders the files, the site secret's included, into
+`/run/fil-one/secrets/import-service/`, owned by the service's user (uid 10001) and read-only, and the rest into
 `/run/fil-one/secrets/import-service.env`, root-only. It pulls the image only when the host does not
 have it, logging in through a Docker configuration directory on the same tmpfs that it removes after
 the pull, so no registry credential is left on the disk.
@@ -1088,9 +1097,9 @@ What has not been run. The scripts are tested only against stubs
 `reconcile.test.sh`). Not yet exercised: `deploy-import.sh` itself on a host, the `filone_import`
 table as `nft` parses it, the drop on real translated traffic, the fixed address on the filone
 network, the image and its healthcheck under this compose file, the ledger over the VPN, reads from
-Ingot over the filone network, the password file and certificate files as the service reads them,
-and the registry login and pull. No image has been released, and the key service is not reachable
-yet, so the service has never started on this node.
+Ingot over the filone network, the password file, certificate files and site secret file as the service reads them,
+and the registry login and pull. No image has been released, so the service has never started on this
+node.
 
 ### 4. The unseal token
 

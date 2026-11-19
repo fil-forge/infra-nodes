@@ -200,21 +200,21 @@ services:
       IST1_PACK_S3_PREFIX: ${IMPORT_SERVICE_S3_PREFIX:-}
       IST1_PACK_S3_PATH_STYLE: "1"
       IST1_PACK_S3_SECRET_KEY_FILE: /run/import/s3-secret-key
-      IST1_PACK_OPENBAO_ADDR: ${IMPORT_SERVICE_KEYS_ADDR}
+      # The site secret the pack keys derive from, which it reads once at start.
+      IST1_PACK_SITE_SECRET: /run/import/site-secret
       IST1_PACK_RECOVERY_PUBLIC_KEY: ${IMPORT_SERVICE_RECOVERY_PUBLIC_KEY}
-    # The ledger's DSN, the object store's access key id and the key service's
-    # AppRole id and secret id, rendered from OpenBao by deploy-import.sh. Not
-    # required here so CI can validate this file without it; the service does
-    # not start without them.
+    # The ledger's DSN and the object store's access key id, rendered from
+    # OpenBao by deploy-import.sh. Not required here so CI can validate this file
+    # without it; the service does not start without them.
     env_file:
       - path: /run/fil-one/secrets/import-service.env
         required: false
     volumes:
-      # Its certificate, key and client CA, the ledger's password file and the
-      # object store's secret key, rendered by deploy-import.sh into the secrets
-      # tmpfs and owned by the service's user. create_host_path: false makes a
-      # start after a reboot fail until that deploy renders them, which it does
-      # only after loading the firewall table.
+      # Its certificate, key and client CA, the ledger's password file, the
+      # object store's secret key and the site secret, rendered by
+      # deploy-import.sh into the secrets tmpfs and owned by the service's user.
+      # create_host_path: false makes a start after a reboot fail until that
+      # deploy renders them, which it does only after loading the firewall table.
       - type: bind
         source: /run/fil-one/secrets/import-service
         target: /run/import
