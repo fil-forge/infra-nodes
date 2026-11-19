@@ -1021,15 +1021,24 @@ scripts/host/setup-vpn.sh
 The script checks every input, strongSwan's unit, UFW, IP forwarding, the public address against
 the host's addresses, any existing route for the VPC's CIDR and the subnets of the Docker networks
 before it changes anything. A failed check names itself and changes nothing. It never prints a key.
-It then writes the strongSwan connections and secrets under `/etc/swanctl/conf.d/` (both 0600,
-root's; a file whose mode or owner has drifted is written again), admits UDP 500 and 4500 and ESP
-from the two tunnel addresses in UFW, and no other address, creates the interfaces, the route and
-the nftables table, and only then writes `/etc/fil-one/vpn.conf`, which the boot unit and the
-health check read. A run that stops on the way, on a UFW rule it cannot delete or a ruleset `nft`
-refuses, leaves the previous `vpn.conf` in place, so the next boot applies the last configuration
-that went in whole and a re-run retries what failed. It then restarts strongSwan and enables
-`filone-vpn.service`, which recreates the interfaces after a boot, and `filone-vpn-health.timer`.
-A second run with the same inputs changes nothing. Delete `psk1` and
+It then admits UDP 500 and 4500 and ESP from the two tunnel addresses in UFW, and no other
+address, and creates the interfaces, the route and the nftables table. Only then does it write the
+strongSwan connections and secrets under `/etc/swanctl/conf.d/` (both 0600, root's) and
+`/etc/fil-one/vpn.conf`, which the boot unit and the health check read, and restart strongSwan if
+its configuration changed. A file whose mode or owner alone has drifted is written again without
+a restart. It then enables `filone-vpn.service`, which recreates the interfaces after a boot, and
+`filone-vpn-health.timer`. A second run with the same inputs changes nothing.
+
+A run that stops on the way, on a UFW rule it cannot delete or a ruleset `nft` refuses, leaves the
+previous strongSwan files and `vpn.conf` in place. Re-run it until it succeeds: the re-run retries
+what failed and restarts strongSwan even when the files already match, because the first run left
+a marker, `/run/fil-one/vpn-restart-pending`, that only a restart with both tunnels loaded clears.
+A reboot before a successful re-run starts strongSwan and the interfaces from the files on disk:
+the previous configuration when the run stopped before writing them, the new one after. UFW is the
+exception. A stopped run may already have removed the old tunnel addresses' rules, so after such a
+reboot a tunnel whose address changed stays down until the re-run. A configuration strongSwan
+itself refuses also stays on disk: each re-run stops at the check that both tunnels loaded, and
+the next boot starts strongSwan without them, until a run with corrected inputs succeeds. Delete `psk1` and
 `psk2` afterwards: strongSwan reads its copy of the keys from
 `/etc/swanctl/conf.d/filone-vpn-secrets.conf`, on the OS disk like the node's other tokens. A later
 run that changes no key needs neither file: leave `VPN_PSK_SOURCE` and the two key-file inputs

@@ -57,7 +57,12 @@
 # Section 1 checks every input and the host and changes nothing; a failed check
 # stops the run and names itself. A second run with the same inputs changes
 # nothing. A changed configuration restarts strongSwan, which takes both
-# tunnels down for a few seconds.
+# tunnels down for a few seconds; a change to only a file's mode or owner
+# rewrites the file without the restart. strongSwan's files are written only
+# after the firewall and the host network, next to vpn.conf, and a run that
+# changes them first leaves a marker under /run/fil-one that only a restart and
+# a passing connection check clear, so a re-run after a run that stopped on the
+# way always restarts strongSwan.
 #
 # The firewall: UFW admits UDP 500 and 4500 and ESP from the two tunnel
 # addresses and nothing else. The rules for addresses a previous run admitted
@@ -86,6 +91,9 @@ SWANCTL_CONF=/etc/swanctl/conf.d/filone-vpn.conf
 SWANCTL_SECRETS=/etc/swanctl/conf.d/filone-vpn-secrets.conf
 CHARON_CONF=/etc/strongswan.d/zz-filone-vpn.conf
 NFT_RULESET=/run/fil-one/vpn-nftables.conf
+# Set while strongSwan has yet to be restarted onto a changed configuration. A
+# reboot clears it, and strongSwan then loads the files as they stand.
+RESTART_PENDING=/run/fil-one/vpn-restart-pending
 NFT_TABLE=filone_vpn
 STRONGSWAN_UNIT=strongswan.service
 BOOT_UNIT=filone-vpn.service
@@ -157,30 +165,52 @@ is_private() { # RFC 1918
 
 # --- Files -----------------------------------------------------------------
 
+# Copy stdin to a temporary file, STAGED, and compare it with a path that should
+# hold it at a mode, owned by root. FILE_STATE is then same, mode (the contents
+# match but the mode or owner does not) or content. The temporary copy sits in
+# TMPDIR when that is set, and otherwise in the root-only secrets directory on
+# /run's tmpfs, which keeps a key off the disk on its way. Under systemd and
+# from a root shell without TMPDIR, it is the latter.
+#
+# These functions read stdin and set variables, so they are called with a
+# redirection, never at the end of a pipeline: there a die would end only the
+# pipeline's subshell and the run would go on.
+stage_file() { # stage_file <mode> <destination>
+  local mode="$1" destination="$2"
+  STAGED="$(umask 077 && mktemp "${TMPDIR:-$FILONE_SECRETS_DIR}/.vpn.XXXXXX")" || die "mktemp failed"
+  if ! cat >"$STAGED"; then
+    rm -f "$STAGED"
+    die "could not write $STAGED"
+  fi
+  if ! cmp -s "$STAGED" "$destination"; then
+    FILE_STATE=content
+  elif [ "$(stat -c '%a %u %g' "$destination" 2>/dev/null)" != "${mode#0} 0 0" ]; then
+    FILE_STATE=mode
+  else
+    FILE_STATE=same
+  fi
+}
+
+file_state() { # file_state <mode> <destination>: sets FILE_STATE, writes nothing
+  stage_file "$@"
+  rm -f "$STAGED"
+}
+
 # Install stdin at a path with a mode, unless the path already holds exactly
-# that, with that mode and owned by root. Says so when it writes, and returns 1
-# when it did not. The temporary
-# copy sits in TMPDIR when that is set, and otherwise in the root-only secrets
-# directory on /run's tmpfs, which keeps a key off the disk on its way. Under
-# systemd and from a root shell without TMPDIR, it is the latter.
+# that, with that mode and owned by root. Says so when it writes. FILE_STATE
+# says what differed; INSTALLED is 1 when it wrote and 0 when it did not.
 install_if_changed() { # install_if_changed <mode> <destination>
-  local mode="$1" destination="$2" tmp
-  tmp="$(umask 077 && mktemp "${TMPDIR:-$FILONE_SECRETS_DIR}/.vpn.XXXXXX")" || die "mktemp failed"
-  if ! cat >"$tmp"; then
-    rm -f "$tmp"
-    die "could not write $tmp"
+  INSTALLED=0
+  stage_file "$@"
+  if [ "$FILE_STATE" != same ]; then
+    if ! install -m "$1" -o root -g root "$STAGED" "$2"; then
+      rm -f "$STAGED"
+      die "could not write $2"
+    fi
+    INSTALLED=1
+    echo "  wrote $2"
   fi
-  if cmp -s "$tmp" "$destination" &&
-    [ "$(stat -c '%a %u %g' "$destination" 2>/dev/null)" = "${mode#0} 0 0" ]; then
-    rm -f "$tmp"
-    return 1
-  fi
-  if ! install -m "$mode" -o root -g root "$tmp" "$destination"; then
-    rm -f "$tmp"
-    die "could not write $destination"
-  fi
-  rm -f "$tmp"
-  echo "  wrote $destination"
+  rm -f "$STAGED"
 }
 
 # Read /etc/fil-one/vpn.conf into the environment. Parsed, not sourced: only
@@ -349,7 +379,8 @@ bring_up() {
   # At boot nothing else may have created the secrets directory yet; the
   # temporary copy of the ruleset goes there.
   install -d -m 0700 -o root -g root /run/fil-one "$FILONE_SECRETS_DIR"
-  nft_ruleset | install_if_changed 0600 "$NFT_RULESET" && ruleset_changed=1
+  install_if_changed 0600 "$NFT_RULESET" < <(nft_ruleset)
+  ruleset_changed="$INSTALLED"
   nft list table ip "$NFT_TABLE" >/dev/null 2>&1 && table_present=1
   if [ "$ruleset_changed" = 1 ] || [ "$table_present" = 0 ]; then
     echo "  loading nftables table $NFT_TABLE"
@@ -650,20 +681,20 @@ if previous="$(cat "$VPN_CONF" 2>/dev/null)"; then
   previous_outside="$(sed -n 's/^VPN_TUNNEL[12]_OUTSIDE_ADDRESS=//p' <<<"$previous")"
 fi
 
-# --- 2. Configuration files ------------------------------------------------
-
-changed=0
-install -d -m 0755 /etc/fil-one /etc/swanctl/conf.d /etc/strongswan.d
-install -d -m 0700 -o root -g root /run/fil-one /run/fil-one/secrets
+# --- 2. strongSwan's configuration, rendered --------------------------------
+# Compared with what is installed here, and written only in section 4, once the
+# firewall and the host network are applied.
 
 # Routes come from this script, not from charon: with 0.0.0.0/0 traffic
 # selectors, charon's own route would take every packet on the host.
-cat <<'CHARON' | install_if_changed 0644 "$CHARON_CONF" && changed=1
+charon_conf() {
+  cat <<'CHARON'
 # Written by scripts/host/setup-vpn.sh.
 charon {
   install_routes = no
 }
 CHARON
+}
 
 swanctl_connections() {
   local n outside local_addrs=""
@@ -727,9 +758,35 @@ EOF
   echo "}"
 }
 
-swanctl_connections | install_if_changed 0600 "$SWANCTL_CONF" && changed=1
-swanctl_secrets | install_if_changed 0600 "$SWANCTL_SECRETS" && changed=1
-unset PSK1 PSK2
+STRONGSWAN_FILES="$CHARON_CONF $SWANCTL_CONF $SWANCTL_SECRETS"
+
+strongswan_mode() { # strongswan_mode <file>
+  if [ "$1" = "$CHARON_CONF" ]; then echo 0644; else echo 0600; fi
+}
+
+render_strongswan() { # render_strongswan <file>
+  case "$1" in
+    "$CHARON_CONF") charon_conf ;;
+    "$SWANCTL_CONF") swanctl_connections ;;
+    "$SWANCTL_SECRETS") swanctl_secrets ;;
+  esac
+}
+
+restart_pending() { cat "$RESTART_PENDING" >/dev/null 2>&1; }
+
+install -d -m 0755 /etc/fil-one /etc/swanctl/conf.d /etc/strongswan.d
+install -d -m 0700 -o root -g root /run/fil-one /run/fil-one/secrets
+
+# A changed file means a restart. The marker records it before anything on the
+# host changes, so a run that stops on the way leaves the restart to the next.
+for file in $STRONGSWAN_FILES; do
+  file_state "$(strongswan_mode "$file")" "$file" < <(render_strongswan "$file")
+  if [ "$FILE_STATE" = content ]; then
+    install -m 0600 -o root -g root /dev/null "$RESTART_PENDING" ||
+      die "could not write $RESTART_PENDING"
+    break
+  fi
+done
 
 # --- 3. Firewall -----------------------------------------------------------
 
@@ -743,7 +800,7 @@ ufw_rule() { # ufw_rule allow|delete <rule words...>
     grep -q '^Skipping' <<<"$output" || echo "  ufw allow $*"
   else
     output="$(ufw delete allow "$@" 2>&1)" || grep -q 'non-existent' <<<"$output" ||
-      die "ufw refused: delete allow $*"
+      die "ufw refused: delete allow $*: $(tr '\n' ' ' <<<"$output")"
     grep -q 'non-existent' <<<"$output" || echo "  ufw delete allow $*"
   fi
 }
@@ -764,10 +821,17 @@ done
 
 bring_up
 
+# strongSwan's files, next to vpn.conf so that a reboot after a failed run
+# finds either both new or, short of a failed write of vpn.conf, both old. A
+# file whose mode or owner alone drifted is written again without a restart.
+for file in $STRONGSWAN_FILES; do
+  install_if_changed "$(strongswan_mode "$file")" "$file" < <(render_strongswan "$file")
+done
+unset PSK1 PSK2
+
 # What boot and the health check apply from now on, then the routes they no
 # longer own.
-for key in $CONF_KEYS; do printf '%s=%s\n' "$key" "${!key}"; done |
-  install_if_changed 0600 "$VPN_CONF" || true
+install_if_changed 0600 "$VPN_CONF" < <(for key in $CONF_KEYS; do printf '%s=%s\n' "$key" "${!key}"; done)
 remove_stale_routes
 
 # --- 5. Units and strongSwan -----------------------------------------------
@@ -775,7 +839,7 @@ remove_stale_routes
 FILONE_CHECKOUT="$CHECKOUT"
 sync_systemd_units
 
-if [ "$changed" = 1 ] || ! systemctl is-active --quiet "$STRONGSWAN_UNIT"; then
+if restart_pending || ! systemctl is-active --quiet "$STRONGSWAN_UNIT"; then
   echo "  restarting $STRONGSWAN_UNIT"
   systemctl is-enabled --quiet "$STRONGSWAN_UNIT" || systemctl enable "$STRONGSWAN_UNIT" >/dev/null
   systemctl restart "$STRONGSWAN_UNIT" || die "$STRONGSWAN_UNIT did not start"
@@ -795,6 +859,8 @@ for algorithm in AES_GCM_16 PRF_HMAC_SHA2_384 ECP_384 ECP_521; do
 done
 swanctl --list-conns | grep -q '^tunnel2: ' ||
   die "charon did not load $SWANCTL_CONF; 'journalctl -u $STRONGSWAN_UNIT' says why"
+# charon runs the configuration on disk.
+if restart_pending; then rm -f "$RESTART_PENDING"; fi
 
 for unit in "$BOOT_UNIT" "$HEALTH_TIMER"; do
   systemctl is-enabled --quiet "$unit" || {

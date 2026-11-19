@@ -270,7 +270,8 @@ case "$1" in
     if [ "$2" = --now ]; then touch "$STUB_STATE/enabled-$3" "$STUB_STATE/active-$3"
     else touch "$STUB_STATE/enabled-$2"; fi
     ;;
-  restart) touch "$STUB_STATE/active-$2" ;;
+  # While restart-fails exists, a restart fails and leaves the unit as it was.
+  restart) [ ! -e "$STUB_STATE/restart-fails" ] || exit 1; touch "$STUB_STATE/active-$2" ;;
 esac
 exit 0
 STUB
@@ -298,7 +299,8 @@ exit 0
 STUB
 
   # Writes land under $STUB_ROOT instead of on this machine. A file's mode and
-  # owner go under $STUB_STATE/meta, where the stat stub reads them.
+  # owner go under $STUB_STATE/meta, where the stat stub reads them. A write to
+  # the path named in install-fails fails.
   cat >"$bin/install" <<'STUB'
 #!/usr/bin/env bash
 echo "install $*" >>"$STUB_STATE/calls"
@@ -307,6 +309,10 @@ owner=0
 case " $* " in *" -m "*) mode="$(printf '%s\n' "$*" | sed 's/.*-m \([0-7]*\).*/\1/')" ;; esac
 case " $* " in *" -o root "*) ;; *" -o "*) owner=1000 ;; esac
 destination="${*: -1}"
+if [ -f "$STUB_STATE/install-fails" ] && [ "$(cat "$STUB_STATE/install-fails")" = "$destination" ]; then
+  echo "install: cannot create regular file '$destination': No space left on device" >&2
+  exit 1
+fi
 map() {
   case "$1" in
     /etc/*|/run/*|/mnt/*|/var/lib/*|/root/*) printf '%s%s' "$STUB_ROOT" "$1" ;;
@@ -432,6 +438,7 @@ succeeded() {
 }
 said() { grep -qF -- "$1" "$CASE/stderr"; }
 printed() { grep -qF -- "$1" "$CASE/stdout"; }
+not_printed() { ! printed "$1"; }
 in_file() { grep -qF -- "$2" "$ROOT$1"; }
 not_in_file() { ! in_file "$@"; }
 never_output() { ! grep -qF -- "$1" "$CASE/all-output"; }
@@ -825,18 +832,35 @@ run_vpn
 check "succeeds" succeeded
 check "reinstalls the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS$"
 check "leaves the file root-only" test "$(cat "$STATE/meta$SECRETS")" = "600 0 0"
+check "does not restart strongSwan" not_called '^systemctl restart'
 check "never shows a key" key_never_shown
+
+new_case "a connections file whose owner drifted"
+run_vpn
+check "provisions" succeeded
+echo "600 1000 0" >"$STATE/meta$SWAN"
+: >"$STATE/calls"
+run_vpn
+check "succeeds" succeeded
+check "reinstalls it as root's" test "$(cat "$STATE/meta$SWAN")" = "600 0 0"
+check "does not restart strongSwan" not_called '^systemctl restart'
 
 new_case "UFW fails to delete an old address's rule"
 run_vpn
 check "provisions" succeeded
 set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
 touch "$STATE/ufw-delete-fails"
+: >"$STATE/calls"
 run_vpn
 check "exits non-zero" failed
 check "says ufw refused the delete" said "ufw refused: delete allow proto udp from $TUNNEL2"
+check "says why, in ufw's words" said "problem running iptables"
 check "keeps the old address in vpn.conf for the next run" \
   in_file /etc/fil-one/vpn.conf "VPN_TUNNEL2_OUTSIDE_ADDRESS=$TUNNEL2"
+check "leaves strongSwan's connections as they were" in_file "$SWAN" "remote_addrs = $TUNNEL2"
+check "leaves strongSwan's keys as they were" in_file "$SECRETS" "id-2 = $TUNNEL2"
+check "does not restart strongSwan" not_called '^systemctl restart'
+check "never shows a key" key_never_shown
 rm "$STATE/ufw-delete-fails"
 : >"$STATE/calls"
 run_vpn
@@ -844,6 +868,8 @@ check "a re-run succeeds" succeeded
 check "and removes the old address's IKE rule" called "^ufw-change delete proto udp from $TUNNEL2 to any port 500,4500$"
 check "and its ESP rule" called "^ufw-change delete proto esp from $TUNNEL2 to any$"
 check "then records the new address" in_file /etc/fil-one/vpn.conf "VPN_TUNNEL2_OUTSIDE_ADDRESS=$TUNNEL3"
+check "and renders it for strongSwan" in_file "$SWAN" "remote_addrs = $TUNNEL3"
+check "and restarts strongSwan" called '^systemctl restart strongswan.service$'
 
 new_case "nft refuses a changed ruleset"
 run_vpn
@@ -861,6 +887,73 @@ run_vpn
 check "a re-run succeeds" succeeded
 check "and loads the ruleset" called "^nft -f $NFT$"
 check "and records the new MTU" in_file /etc/fil-one/vpn.conf "VPN_TUNNEL_MTU=1400"
+
+new_case "nft refuses the ruleset of a run with a new tunnel address"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+set_input VPN_TUNNEL_MTU 1400
+touch "$STATE/nft-refuses"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "does not restart strongSwan" not_called '^systemctl restart'
+rm "$STATE/nft-refuses"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and renders the new address" in_file "$SWAN" "remote_addrs = $TUNNEL3"
+check "and restarts strongSwan" called '^systemctl restart strongswan.service$'
+
+new_case "strongSwan fails to restart after a change"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+touch "$STATE/restart-fails"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "says strongSwan did not start" said "strongswan.service did not start"
+check "enables neither unit" not_called '^systemctl enable --now'
+rm "$STATE/restart-fails"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and restarts strongSwan, though no file changes" called '^systemctl restart strongswan.service$'
+: >"$STATE/calls"
+run_vpn
+check "a third run succeeds" succeeded
+check "and restarts nothing" not_called '^systemctl restart'
+
+new_case "a failed write of vpn.conf"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL_MTU 1400
+echo /etc/fil-one/vpn.conf >"$STATE/install-fails"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "could not write /etc/fil-one/vpn.conf"
+check "stops there" not_called '^systemctl enable'
+check "does not say it provisioned" not_printed "VPN provisioned"
+
+new_case "a failed write of the keys file"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+echo "$SECRETS" >"$STATE/install-fails"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "could not write $SECRETS"
+check "does not restart strongSwan" not_called '^systemctl restart'
+check "does not say it provisioned" not_printed "VPN provisioned"
+check "never shows a key" key_never_shown
+rm "$STATE/install-fails"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and restarts strongSwan" called '^systemctl restart strongswan.service$'
 
 new_case "behind NAT"
 set_input VPN_BEHIND_NAT true
