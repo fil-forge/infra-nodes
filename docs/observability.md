@@ -377,10 +377,11 @@ containers, under `service_name="appliance-prod-us-east-2-import-service"`. It i
 Ingot's path: when it is down, imports stop and Piri and Ingot keep serving. The apps deploy hands
 it to `deploy-import.sh` after it has recorded the Piris and Ingot as deployed. While any of its
 settings is a placeholder, that script logs which ones, starts nothing, removes a container an
-earlier deploy left running and records no retry. When
-the service fails to deploy or to come up healthy, it logs a warning to the reconcile journal, and
-every reconcile pass retries it on its own until it comes up. The `apps` stamp does not cover it,
-so the warning is the signal:
+earlier deploy left and records no retry. Removing that container fires the "Appliance container
+is not running" alert below for `import-service`, which stays on until it is silenced or the
+service is deployed again. When the service fails to deploy or to come up healthy, it logs a
+warning to the reconcile journal, and every reconcile pass retries it on its own until it comes
+up. The `apps` stamp does not cover it, so the warning is the signal:
 
 ```logql
 {node="prod/us-east-2", unit="filone-reconcile.service"} |= "WARNING: the import service"

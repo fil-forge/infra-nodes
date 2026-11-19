@@ -541,31 +541,92 @@ render_case "a render that changes nothing" false
 check "reports no change" test "$render_status" -eq 1
 check "keeps the recorded hash" test -e "$STATE/apps-import-service.sha256"
 
+# A hash that cannot be removed, here through an rm that fails as it would on
+# a read-only state directory, would leave a changed render looking unchanged.
+# The call sits in an if, as it does inside mark, where errexit is off, so only
+# an exit stops the run.
+new_case "a render that changes a file, with the hash not removable"
+STATE="$CASE/state-dir"
+"$REAL_MKDIR" -p "$STATE"
+echo recorded >"$STATE/apps-import-service.sha256"
+render_status=0
+(rm() { return 1; }
+if FILONE_STATE_DIR="$STATE" forget_hash_on_change apps-import-service true; then :; fi
+touch "$CASE/continued") 2>"$CASE/stderr" || render_status=$?
+check "stops the run" test "$render_status" -ne 0
+check "goes no further" test ! -e "$CASE/continued"
+check "says why" grep -q 'could not forget' "$CASE/stderr"
+
 # A docker stand-in for import_service_remove: inspect succeeds for a container
-# named in $STUB_STATE/containers, and every call is logged.
+# named in $STUB_STATE/containers and otherwise answers as Docker does for a
+# missing container, unless $STUB_STATE/docker-down makes it answer as a CLI
+# that cannot reach the daemon. Every call is logged.
 remove_service() {
   status=0
   (docker() {
     echo "docker $*" >>"$STUB_STATE/calls"
+    if [ -e "$STUB_STATE/docker-down" ]; then
+      echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2
+      return 1
+    fi
     case "$1" in
-      inspect) grep -qxF "${*: -1}" "$STUB_STATE/containers" 2>/dev/null ;;
+      inspect)
+        grep -qxF "${*: -1}" "$STUB_STATE/containers" 2>/dev/null && return 0
+        echo "Error: No such container: ${*: -1}" >&2
+        return 1
+        ;;
       rm) return 0 ;;
       *) return 1 ;;
     esac
   }
-  import_service_remove filone-import-service) >/dev/null 2>"$CASE/stderr" || status=$?
+  import_service_remove filone-import-service) >"$CASE/stdout" 2>"$CASE/stderr" || status=$?
 }
 
 new_case "settings back to a placeholder, with the service running"
 echo filone-import-service >"$STUB_STATE/containers"
 remove_service
 check "succeeds" test "$status" -eq 0
+check "inspects it as a container" called '^docker inspect --type container filone-import-service$'
 check "removes the container" called '^docker rm -f filone-import-service$'
+check "does not claim it is running" eval "! grep -q 'still runs' '$CASE/stdout'"
+check "says what it removes" grep -q 'removing filone-import-service' "$CASE/stdout"
 
 new_case "settings back to a placeholder, with no container"
 remove_service
 check "succeeds" test "$status" -eq 0
 check "removes nothing" not_called '^docker rm'
+
+new_case "settings back to a placeholder, with the Docker daemon not answering"
+touch "$STUB_STATE/docker-down"
+remove_service
+check "fails" test "$status" -ne 0
+check "removes nothing" not_called '^docker rm'
+check "says why" grep -q 'could not ask Docker' "$CASE/stderr"
+
+# container_exists tells a missing container from a daemon that did not answer.
+exists_status() { # exists_status: container_exists's status under the stub above
+  status=0
+  (docker() {
+    if [ -e "$STUB_STATE/docker-down" ]; then
+      echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2
+      return 1
+    fi
+    grep -qxF "${*: -1}" "$STUB_STATE/containers" 2>/dev/null && return 0
+    echo "Error: No such container: ${*: -1}" >&2
+    return 1
+  }
+  container_exists filone-import-service) 2>/dev/null || status=$?
+}
+
+new_case "container_exists"
+exists_status
+check "returns 1 for no such container" test "$status" -eq 1
+echo filone-import-service >"$STUB_STATE/containers"
+exists_status
+check "returns 0 for a container" test "$status" -eq 0
+touch "$STUB_STATE/docker-down"
+exists_status
+check "returns 2 when the daemon does not answer" test "$status" -eq 2
 
 current="deploy-import.sh"
 # shellcheck disable=SC2016 # the literal line deploy-import.sh holds
@@ -574,6 +635,12 @@ check "removes the service while a setting is a placeholder" \
 check "renders every secret through forget_hash_on_change" \
   test "$(grep -cE '^mark rendered (write_secret_file|render_template)' \
     "$SCRIPTS/deploy-import.sh")" -eq 0
+# shellcheck disable=SC2016 # the literal line deploy-import.sh holds
+check "defines render() through forget_hash_on_change" \
+  grep -qxF 'render() { mark rendered forget_hash_on_change "$hash_name" "$@"; }' \
+  "$SCRIPTS/deploy-import.sh"
+check "defines render() once" \
+  test "$(grep -cE '^render\(\)' "$SCRIPTS/deploy-import.sh")" -eq 1
 check "renders all six files that way" \
   test "$(grep -cE '^render (write_secret_file|render_template) ' "$SCRIPTS/deploy-import.sh")" -eq 6
 

@@ -575,14 +575,17 @@ config_hash_record() {
 # file and then dies before its service is recreated would read that file as
 # unchanged on the next pass and keep the old container. With the hash gone,
 # config_changed keeps the service marked changed until a run records it
-# healthy. Returns the command's status.
+# healthy. Returns the command's status, and stops the run when the hash
+# cannot be removed, since a changed render would then read as unchanged.
 #
 # Usage: forget_hash_on_change <name> <command> [args...]
 forget_hash_on_change() {
   local name="$1"
   shift
   "$@" || return
-  rm -f "$FILONE_STATE_DIR/$name.sha256"
+  rm -f "$FILONE_STATE_DIR/$name.sha256" ||
+    die "could not forget the recorded hash $FILONE_STATE_DIR/$name.sha256"
+  return 0
 }
 
 # A moving tag resolving to a new digest is invisible to compose, which compares
@@ -661,8 +664,14 @@ import_service_placeholders() {
 # name, as container_exists is, since compose_apps needs an apps.env that may
 # not be rendered.
 import_service_remove() { # import_service_remove <container>
-  container_exists "$1" || return 0
-  echo "  removing $1, which still runs with the earlier settings"
+  local status=0
+  container_exists "$1" || status=$?
+  case "$status" in
+    0) ;;
+    1) return 0 ;;
+    *) die "could not ask Docker whether $1 exists" ;;
+  esac
+  echo "  removing $1, left from the earlier settings"
   docker rm -f "$1" >/dev/null || die "could not remove $1"
 }
 
@@ -751,8 +760,16 @@ piri_containers() {
 # takes an --env-file that does not exist until provision-apps.sh has run and
 # compose refuses to start without it. A node that has never deployed apps still
 # has to be able to deploy the platform.
+#
+# Returns 0 when the container exists, 1 when Docker says there is no such
+# container, and 2 when Docker did not answer, so a caller that has to act on a
+# container can tell a missing one from a daemon it could not reach. Typed, so
+# an image or network of the same name does not count.
 container_exists() {
-  docker inspect "$1" >/dev/null 2>&1
+  local err
+  err="$(docker inspect --type container "$1" 2>&1 >/dev/null)" && return 0
+  case "$err" in *"No such container"*) return 1 ;; esac
+  return 2
 }
 
 container_running() {
