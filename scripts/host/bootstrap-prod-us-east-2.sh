@@ -58,6 +58,10 @@ fail() { die "check '$1' failed: $2"; }
 compare_file() {
   local status=0
   cmp -s - "$1" || status=$?
+  # cmp stops reading at the first difference, and reads nothing when the
+  # path is absent. Read the rest, so the writer never meets a closed pipe,
+  # which pipefail and set -e would turn into a silent exit.
+  cat >/dev/null || true
   case "$status" in
     0) echo same ;;
     1) echo differs ;;
