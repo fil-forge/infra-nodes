@@ -3,7 +3,8 @@
 #
 #   import-firewall.sh           apply the client list in /etc/fil-one/import-clients
 #   import-firewall.sh status    say what the loaded table admits, and fail when the
-#                                table is gone or the list has changed since it loaded
+#                                table is gone or has lost its drop rule, or the list
+#                                has changed since it loaded
 #
 # The import service publishes its port through Docker, and UFW does not filter
 # a port Docker publishes. So the rule is an nftables table of the node's own,
@@ -24,7 +25,9 @@
 # list loses its access, open connections included, in the same step as a new
 # one gains it. A run whose list matches the loaded table loads nothing. Docker
 # and UFW never flush this table, and nothing here adds to, reorders or reads
-# their chains, or any other table.
+# their chains, or any other table. A table that is there but has lost its
+# forward chain or its drop rule, as `nft flush table` leaves it, counts as
+# gone: it admits every address, so it is loaded again.
 #
 # deploy-import.sh applies the list before it starts the service, on every run.
 # A reboot empties the table, and the service cannot start until that deploy
@@ -183,7 +186,14 @@ install_if_changed() { # install_if_changed <destination>
   rm -f "$tmp"
 }
 
-table_loaded() { nft list table ip "$NFT_TABLE" >/dev/null 2>&1; }
+# The table is loaded with its forward chain and the drop rule in it. A flushed
+# table keeps its chain but has no rule, which leaves the port open.
+table_loaded() {
+  local listing
+  listing="$(nft list table ip "$NFT_TABLE" 2>/dev/null)" || return 1
+  grep -q 'hook forward' <<<"$listing" &&
+    grep -qF 'saddr != @clients drop' <<<"$listing"
+}
 
 describe_clients() { # describe_clients <space-separated clients>
   if [ -z "$1" ]; then
@@ -225,7 +235,7 @@ status() {
   if table_loaded; then
     echo "nftables table $NFT_TABLE loaded"
   else
-    echo "nftables table $NFT_TABLE is missing: while the service runs, its port admits every address."
+    echo "nftables table $NFT_TABLE is missing or has lost its drop rule: while the service runs, its port admits every address."
     echo "Run $(basename "$0") as root to load it."
     return 1
   fi

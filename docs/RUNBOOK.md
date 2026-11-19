@@ -990,7 +990,7 @@ How it is wired:
   missing list closes the port to everyone. `deploy-import.sh` applies the list on every run, before
   it starts the service. After a reboot the service cannot start until that deploy renders its
   certificates. Once the service has come up, every reconcile pass applies the list as well, so a
-  table flushed by hand is back within five minutes.
+  table flushed or deleted by hand is back within five minutes.
 
 Its settings:
 

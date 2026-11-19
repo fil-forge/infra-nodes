@@ -390,10 +390,10 @@ up. The `apps` stamp does not cover it, so the warning is the signal:
 infra-central's "Appliance container is not running" alert fires when `import-service` stops, as
 it does for every appliance container. Nothing alerts on a service that runs and fails its imports.
 Once the service has come up, every reconcile pass applies its firewall table, which puts back a
-table that went missing; a pass that cannot apply it logs `WARNING: the import service's
-firewall`, which the query above matches. `scripts/host/import-firewall.sh status` says what the
-loaded table admits, and exits non-zero when the table is gone or the list has not been applied.
-Add an alert on that warning, and one for failing imports, before the service takes production
+table that went missing or was flushed; a pass that cannot apply it logs `WARNING: the import
+service's firewall`, which the query above matches. `scripts/host/import-firewall.sh status` says
+what the loaded table admits, and exits non-zero when the table is gone or has lost its drop rule,
+or the list has not been applied. Add an alert on that warning, and one for failing imports, before the service takes production
 imports.
 
 ### The deploy stamp

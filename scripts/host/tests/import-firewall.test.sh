@@ -58,13 +58,17 @@ exit 1
 STUB
 
   # The loaded table is a copy of the last file `nft -f` read, in
-  # $STUB_STATE/nft-loaded. A file nft-refuses makes every load fail, as nft
+  # $STUB_STATE/nft-loaded, and `nft list table` prints it. A file nft-refuses makes every load fail, as nft
   # does on a ruleset it cannot parse.
   cat >"$bin/nft" <<'STUB'
 #!/usr/bin/env bash
 echo "nft $*" >>"$STUB_STATE/calls"
 case "$1" in
-  list) [ "$*" = "list table ip filone_import" ] || exit 2; [ -e "$STUB_STATE/nft-loaded" ] ;;
+  list)
+    [ "$*" = "list table ip filone_import" ] || exit 2
+    [ -e "$STUB_STATE/nft-loaded" ] || { echo "Error: No such file or directory" >&2; exit 1; }
+    cat "$STUB_STATE/nft-loaded"
+    ;;
   -f)
     [ ! -e "$STUB_STATE/nft-refuses" ] || { echo "Error: syntax error" >&2; exit 1; }
     [ -f "$STUB_ROOT$2" ] || exit 1
@@ -248,6 +252,24 @@ check "succeeds" succeeded
 check "loads the table again" test "$(loads)" -eq 2
 check "with the same client" loaded_has "    elements = { $CLIENT1 }"
 
+# What `nft flush table` leaves: the table, its set and its chain, with no rule.
+flush_table() {
+  printf '%s\n' "table ip filone_import {" "  set clients {" "    type ipv4_addr" \
+    "    flags interval" "  }" "  chain forward {" \
+    "    type filter hook forward priority filter - 10; policy accept;" "  }" "}" \
+    >"$STATE/nft-loaded"
+}
+
+new_case "table flushed while the list stayed"
+clients "$CLIENT1"
+run_firewall
+flush_table
+run_firewall
+check "succeeds" succeeded
+check "loads the table again" test "$(loads)" -eq 2
+check "with the drop rule" loaded_has "$DROP"
+check "and the same client" loaded_has "    elements = { $CLIENT1 }"
+
 new_case "the port matches the service's published container port"
 compose="$NODES/prod/us-east-2/apps/compose.yml"
 check "prod/us-east-2 publishes the service on container port 8443" \
@@ -380,6 +402,15 @@ rm -f "$STATE/nft-loaded"
 run_firewall status
 check "fails" failed
 check "says the table is missing" printed "filone_import is missing"
+check "loads nothing" test "$(loads)" -eq 1
+
+new_case "status with the table flushed"
+clients "$CLIENT1"
+run_firewall
+flush_table
+run_firewall status
+check "fails" failed
+check "says the drop rule is gone" printed "has lost its drop rule"
 check "loads nothing" test "$(loads)" -eq 1
 
 echo
