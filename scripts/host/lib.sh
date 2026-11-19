@@ -644,9 +644,12 @@ image_differs() {
 # Whether the platform's Caddy changed in its Caddyfile alone: same image, same
 # definition as the last deploy recorded under platform-caddy-definition. Such a
 # change, like the site block for a new Piri, is applied by reload_caddy without
-# a restart. A Caddy that has never recorded a definition is not one.
+# a restart. A Caddy that has never recorded a definition is not one, and
+# neither is a stopped Caddy, which has nothing to reload into and needs the
+# recreate that starts it.
 caddy_only_caddyfile_changed() {
-  ! image_differs compose_platform caddy &&
+  [ -n "$(compose_platform ps -q caddy)" ] &&
+    ! image_differs compose_platform caddy &&
     ! config_changed platform-caddy-definition "$(compose_config_hash compose_platform caddy definition)"
 }
 
