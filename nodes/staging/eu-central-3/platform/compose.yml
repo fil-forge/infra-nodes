@@ -36,9 +36,12 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      # Read only when the data directory is empty. C.UTF-8 sorts by code
+      # point, the order the cluster had under the Alpine image's musl.
+      POSTGRES_INITDB_ARGS: --locale=C.UTF-8 --encoding=UTF8
     volumes:
       - type: bind
-        source: /mnt/data/fil-one/control/postgres
+        source: ${POSTGRES_DATA_DIR}
         target: /var/lib/postgresql/data
         bind:
           create_host_path: false
