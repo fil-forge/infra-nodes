@@ -35,6 +35,14 @@ The new cluster is initialised with `C.UTF-8`, which glibc sorts by code point: 
 gave, so nothing that sorts text in SQL sees a change. A `REINDEX` in place would have kept
 `en_US.utf8`, and with it changed the order every such query returns.
 
+PostgreSQL records no collation version for glibc's `C.UTF-8` either: it skips every libc locale
+named `C`, `C.*` or `POSIX`. glibc has sorted `C.UTF-8` by code point since 2.35, and bookworm
+ships 2.36, but nothing in Postgres would notice a later C library that sorted it differently, so
+the node has to keep the image's C library and the cluster together itself. From PostgreSQL 17 the
+builtin locale provider sorts by code point without the C library, and records a version.
+`prod/us-east-2` uses it, and dev and staging can move to it when they leave 16, by a dump and
+restore: `pg_upgrade` keeps a cluster's provider.
+
 ## How a node moves
 
 `versions.env` states the image and the data directory together, since the one decides what the
