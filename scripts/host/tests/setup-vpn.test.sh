@@ -109,6 +109,11 @@ details=""
 case "$1 $2" in
   "route show")
     if [ "$3" = default ]; then echo "default via 192.0.2.1 dev eth0 proto static"; exit 0; fi
+    if [ -z "${3:-}" ]; then
+      echo "default via 192.0.2.1 dev eth0 proto static"
+      cat "$routes"
+      exit 0
+    fi
     [ "$3" = exact ] || exit 2
     awk -v p="$4" '($1 == p) || ($1 == "unreachable" && $2 == p)' "$routes"
     ;;
@@ -120,6 +125,12 @@ case "$1 $2" in
       grep -v "^$3 dev " "$routes" >"$routes.new" || true
       echo "$3 dev $5 scope link src $7" >>"$routes.new"
     fi
+    mv "$routes.new" "$routes"
+    ;;
+  "route del")
+    if [ "$3" = unreachable ]; then pattern="^unreachable $4 "; else pattern="^$3 dev $5 "; fi
+    grep -q "$pattern" "$routes" || { echo "RTNETLINK answers: No such process" >&2; exit 2; }
+    grep -v "$pattern" "$routes" >"$routes.new" || true
     mv "$routes.new" "$routes"
     ;;
   "link show") show_link "$4" "$details" ;;
@@ -158,14 +169,19 @@ STUB
 echo "nft $*" >>"$STUB_STATE/calls"
 case "$1" in
   list) [ -e "$STUB_STATE/nft-loaded" ] ;;
-  # Like nft, refuses a ruleset file that is not there.
-  -f) [ -f "$STUB_ROOT$2" ] || exit 1; touch "$STUB_STATE/nft-loaded" ;;
+  # Like nft, refuses a ruleset file that is not there, and any ruleset while
+  # nft-refuses exists.
+  -f)
+    [ -f "$STUB_ROOT$2" ] && [ ! -e "$STUB_STATE/nft-refuses" ] || exit 1
+    touch "$STUB_STATE/nft-loaded"
+    ;;
   *) exit 2 ;;
 esac
 STUB
 
   # Rules are lines in $STUB_STATE/ufw-rules. Like ufw, an existing rule is
-  # skipped and a missing one cannot be deleted.
+  # skipped and a missing one cannot be deleted. While ufw-delete-fails exists,
+  # every delete fails as ufw does on an error of its own.
   cat >"$bin/ufw" <<'STUB'
 #!/usr/bin/env bash
 echo "ufw $*" >>"$STUB_STATE/calls"
@@ -183,6 +199,7 @@ case "$1" in
     ;;
   delete)
     shift 2
+    if [ -e "$STUB_STATE/ufw-delete-fails" ]; then echo "ERROR: problem running iptables" >&2; exit 1; fi
     if grep -qxF "$*" "$rules"; then
       grep -vxF "$*" "$rules" >"$rules.new" || true
       mv "$rules.new" "$rules"
@@ -280,10 +297,16 @@ STUB
 exit 0
 STUB
 
-  # Writes land under $STUB_ROOT instead of on this machine.
+  # Writes land under $STUB_ROOT instead of on this machine. A file's mode and
+  # owner go under $STUB_STATE/meta, where the stat stub reads them.
   cat >"$bin/install" <<'STUB'
 #!/usr/bin/env bash
 echo "install $*" >>"$STUB_STATE/calls"
+mode=755
+owner=0
+case " $* " in *" -m "*) mode="$(printf '%s\n' "$*" | sed 's/.*-m \([0-7]*\).*/\1/')" ;; esac
+case " $* " in *" -o root "*) ;; *" -o "*) owner=1000 ;; esac
+destination="${*: -1}"
 map() {
   case "$1" in
     /etc/*|/run/*|/mnt/*|/var/lib/*|/root/*) printf '%s%s' "$STUB_ROOT" "$1" ;;
@@ -303,6 +326,15 @@ done
 if [ "$dirs" = 1 ]; then mkdir -p "${args[@]}"; exit; fi
 mkdir -p "$(dirname "${args[1]}")"
 cp "${args[0]}" "${args[1]}"
+mkdir -p "$(dirname "$STUB_STATE/meta$destination")"
+echo "${mode#0} $owner $owner" >"$STUB_STATE/meta$destination"
+STUB
+
+  # stat -c '%a %u %g' <path>, from what the install stub recorded.
+  cat >"$bin/stat" <<'STUB'
+#!/usr/bin/env bash
+[ -f "$STUB_STATE/meta${*: -1}" ] || exit 1
+cat "$STUB_STATE/meta${*: -1}"
 STUB
 
   # cat, cmp, rm and mktemp run the real command on the moved paths.
@@ -471,6 +503,15 @@ expect_input_failure "pre-shared keys" "the two tunnels have the same key"
 new_case "an outside address that is not an address"
 set_input VPN_TUNNEL1_OUTSIDE_ADDRESS 198.51.100.300
 expect_input_failure inputs "not an IPv4 address"
+
+new_case "an outside address with a leading zero"
+# nft and strongSwan would read 010 as octal 8.
+set_input VPN_TUNNEL1_OUTSIDE_ADDRESS 198.51.100.010
+expect_input_failure inputs "not an IPv4 address"
+
+new_case "an inside local address with a prefix other than /30"
+set_input VPN_TUNNEL1_INSIDE_LOCAL 169.254.200.2/0
+expect_input_failure inputs "VPN_TUNNEL1_INSIDE_LOCAL is '169.254.200.2/0', not an IPv4 address with the prefix /30"
 
 new_case "a VPC CIDR with host bits"
 set_input VPN_VPC_CIDR 10.20.192.1/18
@@ -761,6 +802,65 @@ check "keeps tunnel 1's rules" not_called "^ufw-change delete .* $TUNNEL1 "
 check "renders the new address" in_file "$SWAN" "remote_addrs = $TUNNEL3"
 check "restarts strongSwan" called '^systemctl restart strongswan.service$'
 check "leaves the interfaces alone" not_called '^ip link (add|del)'
+
+new_case "a new VPC CIDR"
+run_vpn
+check "provisions" succeeded
+set_input VPN_VPC_CIDR "$OTHER_VPC"
+set_input VPN_VPC_CIDR_OVERRIDE true
+run_vpn
+check "succeeds" succeeded
+check "routes the new CIDR into tunnel 1" grep -qx "$OTHER_VPC dev filone-tun1 scope link src $SITE" "$STATE/routes"
+check "keeps a fallback for the new CIDR" grep -qx "unreachable $OTHER_VPC metric 4294967295" "$STATE/routes"
+check "removes the old CIDR's tunnel route" test -z "$(grep "^$VPC dev " "$STATE/routes")"
+check "removes the old CIDR's fallback" test -z "$(grep "^unreachable $VPC " "$STATE/routes")"
+check "keeps the default route" not_called '^ip route del default'
+
+new_case "a key file whose mode drifted"
+run_vpn
+check "provisions" succeeded
+echo "644 0 0" >"$STATE/meta$SECRETS"
+: >"$STATE/calls"
+run_vpn
+check "succeeds" succeeded
+check "reinstalls the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS$"
+check "leaves the file root-only" test "$(cat "$STATE/meta$SECRETS")" = "600 0 0"
+check "never shows a key" key_never_shown
+
+new_case "UFW fails to delete an old address's rule"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+touch "$STATE/ufw-delete-fails"
+run_vpn
+check "exits non-zero" failed
+check "says ufw refused the delete" said "ufw refused: delete allow proto udp from $TUNNEL2"
+check "keeps the old address in vpn.conf for the next run" \
+  in_file /etc/fil-one/vpn.conf "VPN_TUNNEL2_OUTSIDE_ADDRESS=$TUNNEL2"
+rm "$STATE/ufw-delete-fails"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and removes the old address's IKE rule" called "^ufw-change delete proto udp from $TUNNEL2 to any port 500,4500$"
+check "and its ESP rule" called "^ufw-change delete proto esp from $TUNNEL2 to any$"
+check "then records the new address" in_file /etc/fil-one/vpn.conf "VPN_TUNNEL2_OUTSIDE_ADDRESS=$TUNNEL3"
+
+new_case "nft refuses a changed ruleset"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL_MTU 1400
+touch "$STATE/nft-refuses"
+run_vpn
+check "exits non-zero" failed
+check "says nft refused it" said "nft refused"
+check "leaves no refused ruleset behind" test ! -e "$ROOT/run/fil-one/vpn-nftables.conf"
+check "keeps the last applied vpn.conf for the next boot" in_file /etc/fil-one/vpn.conf "VPN_TUNNEL_MTU=1446"
+rm "$STATE/nft-refuses"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and loads the ruleset" called "^nft -f $NFT$"
+check "and records the new MTU" in_file /etc/fil-one/vpn.conf "VPN_TUNNEL_MTU=1400"
 
 new_case "behind NAT"
 set_input VPN_BEHIND_NAT true
