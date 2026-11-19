@@ -218,10 +218,13 @@ resource "aws_instance" "node" {
   # from reaching the metadata service through Docker's bridge: the SSM agent
   # runs on the host and is unaffected, while a compromised Piri or Ingot cannot
   # read the instance's credentials.
+  #
+  # Tags are readable there too, for scripts/host/mount-piri-volumes.sh.
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
+    instance_metadata_tags      = "enabled"
   }
 
   root_block_device {
@@ -239,7 +242,6 @@ resource "aws_instance" "node" {
     node_name         = var.node_name
     control_volume_id = aws_ebs_volume.control.id
     data_volume_id    = aws_ebs_volume.data.id
-    piri_volume_ids   = { for name, volume in aws_ebs_volume.piri : name => volume.id }
     repository_url    = var.repository_url
   })
 
@@ -258,10 +260,16 @@ resource "aws_instance" "node" {
     ignore_changes = [ami]
   }
 
-  tags = {
-    Name        = "filone-node-${var.node_name}"
-    RegionLabel = var.region_label
-  }
+  # One PiriVolume:<piri> tag per Piri volume, which mount-piri-volumes.sh
+  # reads. In tags rather than user_data because a tag edit updates the instance
+  # in place, so adding a Piri does not replace the node.
+  tags = merge(
+    {
+      Name        = "filone-node-${var.node_name}"
+      RegionLabel = var.region_label
+    },
+    { for name, volume in aws_ebs_volume.piri : "PiriVolume:${name}" => volume.id },
+  )
 }
 
 # The node's address, and the reason it is a separate resource: the seal token
