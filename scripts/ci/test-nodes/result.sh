@@ -9,6 +9,9 @@
 #   NODE              the node tested
 #   WAITED            true when the job waited for the node to reach the
 #                     pushed commit, which only a push does
+#   E2E               true when the node's stage gets the end-to-end test, as
+#                     the select job's matrix says; false skips it and its
+#                     cleanup on purpose
 #   WAIT_OUTCOME      the outcome of each step, as steps.<id>.outcome gives it
 #   SMOKE_OUTCOME
 #   E2E_OUTCOME
@@ -39,8 +42,19 @@ main() {
     check_step wait "$WAIT_OUTCOME"
   fi
   check_step smoke "$SMOKE_OUTCOME"
-  check_step e2e "$E2E_OUTCOME"
-  check_step cleanup "$CLEANUP_OUTCOME"
+  case "$E2E" in
+    true)
+      check_step e2e "$E2E_OUTCOME"
+      check_step cleanup "$CLEANUP_OUTCOME"
+      ;;
+    # The workflow skips both steps for such a node. Any other outcome means
+    # the matrix and the workflow disagree, which is worth an alert.
+    false)
+      check_skipped e2e "$E2E_OUTCOME"
+      check_skipped cleanup "$CLEANUP_OUTCOME"
+      ;;
+    *) echo "E2E must be true or false, got '$E2E'" >&2; exit 2 ;;
+  esac
 
   jq -n \
     --arg node "$NODE" \
@@ -68,6 +82,21 @@ check_step() {
     failure | cancelled)
       failed_step="$step"
       outcome="$step_outcome"
+      ;;
+    *) echo "unknown outcome for $step: '$step_outcome'" >&2; exit 2 ;;
+  esac
+}
+
+# check_skipped — a step that must not run on this node, recorded as the failed
+# one if it ran anyway.
+check_skipped() {
+  local step="$1" step_outcome="$2"
+  [ -z "$failed_step" ] || return 0
+  case "$step_outcome" in
+    skipped) ;;
+    success | failure | cancelled)
+      failed_step="$step"
+      outcome=failure
       ;;
     *) echo "unknown outcome for $step: '$step_outcome'" >&2; exit 2 ;;
   esac

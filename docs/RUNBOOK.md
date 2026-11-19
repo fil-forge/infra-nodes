@@ -1272,7 +1272,8 @@ infra-central deploy, and hourly.
 bucket on the node's Ingot, uploads a 4 KiB object with PutObject and a 16 MiB one with a multipart
 upload, downloads both and compares them. `--cleanup` then deletes the objects and the bucket,
 disables the tenant and deletes it. `test-nodes.yml` runs it right after the smoke test, on every
-node that passed. A push to main tests every node once it has reached the commit, an infra-central
+dev and staging node that passed. Prod nodes get the smoke test alone until
+[FIL-1491](https://linear.app/filecoin-foundation/issue/FIL-1491). A push to main tests every node once it has reached the commit, an infra-central
 deploy tests every node of the stages it deployed, and the hourly run tests every node. To start the
 workflow on some stages or nodes, pass comma-separated lists:
 
@@ -1286,10 +1287,12 @@ Leave both empty to test every node. Only `main` can run the workflow, because t
 reads its key from a GitHub Environment that admits `main` alone. To smoke-test a branch, run
 `scripts/ci/smoke-test.sh` from your machine as above.
 
-The workflow tests every node under `nodes/` whose stage is dev or staging, unless its node.env sets
-`FILONE_TESTED=false`; steps 2 and 7 of bringing up a node set and remove that line. The stages are
-listed in `TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`, and the run titles in
-`.github/workflows/test-nodes.yml` name them too.
+The workflow tests every node under `nodes/` whose stage is dev, staging or prod, unless its
+node.env sets `FILONE_TESTED=false`; steps 2 and 7 of bringing up a node set and remove that line.
+The stages are listed in `TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`, and the run titles
+in `.github/workflows/test-nodes.yml` name them too. `E2E_STAGES` beside it lists the stages that
+also get the end-to-end test: dev and staging. A failed prod smoke test posts to `filone-alerts`
+like any other.
 
 Running `scripts/ci/e2e-test.sh` from your machine needs Hilt's partner key, the one FilOne uses, which central
 keeps in SSM and the workflow reads from the `HILT_PARTNER_KEY` secret of the GitHub Environment
@@ -2193,7 +2196,8 @@ in `nodes/dev/node.env`, in Ingot's rendered config, in hilt's `provider add`, a
 **A `filone-alerts` message arrived.** One message covers one run of `test-nodes.yml`. Its
 headline names every node that failed, and each node gets a line saying which step failed and where
 to look first. A node's steps run in order: wait for the pushed commit (after a push only), the smoke
-test, the end-to-end test, and the cleanup after it. A node stops at the first step that fails,
+test, the end-to-end test, and the cleanup after it. A prod node stops after the smoke test, since
+it gets no end-to-end test. A node stops at the first step that fails,
 except that the cleanup also runs after a failed end-to-end test. A run that a newer push or a newer
 central deploy replaced posts nothing, because the newer run reports on the same nodes.
 
@@ -2288,7 +2292,7 @@ Environment's branch rule. Production gets no Environment until
 reach customer tenants.
 
 Create the Environment with its branch rule before the secret goes in, and before the stage joins
-`TESTED_STAGES` in `scripts/ci/test-nodes/select.sh`: a workflow that names a missing Environment
+`E2E_STAGES` in `scripts/ci/test-nodes/select.sh`: a workflow that names a missing Environment
 creates it with no rules. The commands below are for dev; repeat them with `staging`.
 
 ```sh
@@ -2308,8 +2312,8 @@ Repeat that whenever central's `hilt/partner-key` changes. Until then, every end
 that stage fails with HTTP 401.
 
 The workflow names the Environment with `deployment: false`, so its runs create no deployment
-records. Each node's job names its stage's Environment, so `test-nodes.yml` runs from `main` alone,
-smoke test included.
+records. Each dev and staging node's job names its stage's Environment, so `test-nodes.yml` runs
+from `main` alone, smoke test included. A prod node's job names no Environment and reads no secret.
 
 ### Cleaning up after the end-to-end test
 

@@ -17,24 +17,30 @@
 # The nodes are the directories under nodes/ that hold a node.env, each in the
 # stage its STAGE names. A node is tested unless its node.env sets
 # FILONE_TESTED=false, which a node does while it is being brought up, and only
-# if its stage is one of TESTED_STAGES below.
+# if its stage is one of TESTED_STAGES below. Every tested node gets the smoke
+# test; the end-to-end test runs only on the nodes of E2E_STAGES.
 #
 # An unknown stage or node, a node that is not tested, or a node outside the
 # chosen stages fails loudly rather than passing with nothing tested. A stage
 # whose every node sets FILONE_TESTED=false selects nothing, and has_nodes
 # says so.
 #
-# Prints {"include":[{"node":...,"env":...}]}, where env is the GitHub
-# Environment holding the stage's Hilt partner key. In GitHub Actions it also
-# writes matrix and has_nodes (true or false) to $GITHUB_OUTPUT, because a
-# matrix with no entries fails the job that uses it.
+# Prints {"include":[{"node":...,"env":...,"e2e":...}]}. e2e is true when the
+# node's stage is one of E2E_STAGES. env is the GitHub Environment holding the
+# stage's Hilt partner key, and empty when e2e is false, so the job reads no
+# secret it does not use. In GitHub Actions it also writes matrix and has_nodes
+# (true or false) to $GITHUB_OUTPUT, because a matrix with no entries fails the
+# job that uses it.
 set -euo pipefail
 
-# The stages with a GitHub Environment named after them, holding the partner key
-# the end-to-end test uses. Prod stays out until FIL-1491 finds a credential
-# that cannot reach customer tenants. The run-name in
+# The stages whose nodes Test nodes checks. The run-name in
 # .github/workflows/test-nodes.yml names these stages too; change both together.
-TESTED_STAGES='["dev", "staging"]'
+TESTED_STAGES='["dev", "staging", "prod"]'
+
+# The tested stages whose nodes also get the end-to-end test. Each has a GitHub
+# Environment named after it, holding the partner key the test uses. Prod stays
+# out until FIL-1491 finds a credential that cannot reach customer tenants.
+E2E_STAGES='["dev", "staging"]'
 
 usage="usage: scripts/ci/test-nodes/select.sh [<stages> [<nodes>]]"
 [ $# -le 2 ] || { echo "$usage" >&2; exit 2; }
@@ -47,12 +53,17 @@ main() {
   nodes=$(read_nodes)
 
   local matrix
-  matrix=$(jq -nc --arg stages "${1-}" --arg nodes "${2-}" --argjson all "$nodes" --argjson tested_stages "$TESTED_STAGES" '
+  matrix=$(jq -nc --arg stages "${1-}" --arg nodes "${2-}" --argjson all "$nodes" \
+    --argjson tested_stages "$TESTED_STAGES" --argjson e2e_stages "$E2E_STAGES" '
     # Splits a comma-separated list, dropping the spaces a person may type
     # after a comma and the empty entries a stray comma leaves.
     def list: split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""));
 
-    ($stages | list) as $wanted_stages
+    ($e2e_stages - $tested_stages) as $untested_e2e_stages
+    | if ($untested_e2e_stages | length) > 0 then
+        error("E2E_STAGES names \($untested_e2e_stages | join(", ")), which is not one of TESTED_STAGES")
+      else . end
+    | ($stages | list) as $wanted_stages
     | ($nodes | list) as $wanted_nodes
     | [$all[] | select(.tested and (.stage | IN($tested_stages[])))] as $table
     | ($wanted_stages - $tested_stages) as $unknown_stages
@@ -72,7 +83,8 @@ main() {
       else . end
     | {include: [$in_stages[]
         | select(($wanted_nodes | length) == 0 or (.node | IN($wanted_nodes[])))
-        | {node, env: .stage}]}
+        | (.stage | IN($e2e_stages[])) as $e2e
+        | {node, env: (if $e2e then .stage else "" end), e2e: $e2e}]}
   ') || {
     echo "::error::could not select the nodes to test; see the error above" >&2
     exit 1
