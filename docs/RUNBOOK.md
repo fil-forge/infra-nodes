@@ -139,9 +139,11 @@ alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB t
 Commit the printed value in place of the 0 placeholder.
 
 `nodes/prod/us-east-2/node.env` was committed with these values still open, and each is refused
-until it is set: `PAYER_ADDRESS` (from central's prod stage), `INGOT_LOCAL_BLOB_MAX_BYTES` (from
-bootstrap), `PDP_VERIFIER_ADDRESS` and `FWSS_VIEW_ADDRESS` (central's prod files name neither),
-`OPERATOR_EMAIL`, and `TARGET_PLATFORM` with the two tool checksums for the host's architecture.
+until it is set: `INGOT_LOCAL_BLOB_MAX_BYTES` (from bootstrap), and `TARGET_PLATFORM` with the two
+tool checksums for the host's architecture.
+
+Central's prod files name no PDP verifier or FWSS view address, so the node's two come from the
+FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` return them.
 
 Prod/us-east-2's Piri keeps its blobs in S3-compatible object storage, through the `[repo.s3]`
 section of its base config, because the piri dataset's 50 GiB quota is sized for its config and

@@ -288,8 +288,8 @@ done
 echo "==> node.env placeholders"
 
 # Each require_configured line in the deploy scripts, run against each node's
-# node.env: dev and staging pass every one; prod/us-east-2 refuses those still
-# at their placeholder and passes the ones named after the node.
+# node.env. Every node passes every one now; a node that commits a placeholder
+# again is checked with refuse, and the values it has set named after it.
 refusals="$(grep -hE '^ *require_configured ' "$SCRIPTS/deploy-apps.sh" "$SCRIPTS/deploy-platform.sh" |
   sed 's/^ *//')"
 check_placeholders() { # check_placeholders <node> pass|refuse [name that passes...]
@@ -315,8 +315,17 @@ check_placeholders() { # check_placeholders <node> pass|refuse [name that passes
 }
 check_placeholders dev pass
 check_placeholders staging/eu-central-3 pass
-check_placeholders prod/us-east-2 refuse LOTUS_RPC_URL GRAFANA_LOGS_URL GRAFANA_LOGS_USER \
-  GRAFANA_METRICS_URL GRAFANA_METRICS_USER GRAFANA_TRACES_URL GRAFANA_TRACES_USER
+check_placeholders prod/us-east-2 pass
+
+# No committed node.env holds a placeholder, so each line is also run with its
+# value set to the placeholder it names.
+current="a value left at its placeholder"
+while read -r _ name placeholder; do
+  result=pass
+  (FILONE_NODE_DIR="$NODES/dev"; printf -v "$name" '%s' "$placeholder"; require_configured "$name" "$placeholder") \
+    2>/dev/null || result=refuse
+  check "$name $placeholder: refuse" test "$result" = refuse
+done <<<"$refusals"
 
 echo
 if [ "$failures" -ne 0 ]; then
