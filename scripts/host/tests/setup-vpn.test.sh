@@ -7,9 +7,9 @@
 # against stubs. Each case puts stub ip, nft, ufw, swanctl, systemctl, sysctl,
 # ping, docker and id commands first on PATH. They answer from files in a
 # temporary directory and append every call to a log the assertions read. Stub
-# install, cat, cmp and rm commands absorb the file reads and writes: a path
-# under /etc, /run, /mnt, /var/lib or /root is moved under the case's own root
-# directory. The script reads and writes those paths only through these
+# install, cat, cmp, stat, mv and rm commands absorb the file reads and writes:
+# a path under /etc, /run, /mnt, /var/lib or /root is moved under the case's own
+# root directory. The script reads and writes those paths only through these
 # commands, so nothing outside the temporary directory changes.
 #
 # Nothing here reaches a real gateway: the stubs stand in for strongSwan's SA
@@ -407,11 +407,15 @@ cat "$STUB_STATE/meta${*: -1}"
 STUB
 
   # mv renames on the moved paths, and moves the recorded mode and owner with
-  # the file.
+  # the file. A rename onto the path named in mv-fails fails.
   cat >"$bin/mv" <<'STUB'
 #!/usr/bin/env bash
 echo "mv $*" >>"$STUB_STATE/calls"
 [ "$1" != -f ] || shift
+if [ -f "$STUB_STATE/mv-fails" ] && [ "$2" = "$(cat "$STUB_STATE/mv-fails")" ]; then
+  echo "mv: cannot move '$1' to '$2': Input/output error" >&2
+  exit 1
+fi
 map() {
   case "$1" in
     /etc/*|/run/*|/mnt/*|/var/lib/*|/root/*) printf '%s%s' "$STUB_ROOT" "$1" ;;
@@ -639,6 +643,10 @@ new_case "something else routes part of the VPC"
 echo "10.20.200.0/24 via 192.0.2.1 dev eth0" >"$STATE/routes"
 expect_input_failure routes "something else routes $VPC: 10.20.200.0/24"
 
+new_case "an unreachable route of someone else's inside the VPC"
+echo "unreachable 10.20.200.0/24 metric 100" >"$STATE/routes"
+expect_input_failure routes "something else routes $VPC: unreachable 10.20.200.0/24 metric 100"
+
 new_case "no strongSwan"
 touch "$STATE/no-strongswan"
 expect_input_failure strongswan "libstrongswan-standard-plugins"
@@ -688,8 +696,12 @@ check "writes tunnel 1's key, base64-encoded" \
   in_file "$SECRETS" "secret = 0s$(printf '%s' "$PSK1_VALUE" | base64)"
 check "writes tunnel 2's key, base64-encoded" \
   in_file "$SECRETS" "secret = 0s$(printf '%s' "$PSK2_VALUE" | base64)"
-check "writes the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS(\.new)?$"
-check "writes vpn.conf at 0600" called '^install -m 0600 -o root -g root [^ ]+ /etc/fil-one/vpn.conf$'
+check "writes the keys at 0600 beside their place" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS\.new$"
+check "renames the keys into place" called "^mv -f $SECRETS\.new $SECRETS$"
+check "writes vpn.conf at 0600 beside its place" \
+  called '^install -m 0600 -o root -g root [^ ]+ /etc/fil-one/vpn\.conf\.new$'
+check "renames vpn.conf into place" called '^mv -f /etc/fil-one/vpn\.conf\.new /etc/fil-one/vpn\.conf$'
+check "leaves no new copy" test -z "$(find "$ROOT" -name '*.new')"
 check "turns off charon's own routes" in_file /etc/strongswan.d/zz-filone-vpn.conf "install_routes = no"
 check "creates tunnel 1's xfrm interface" called '^ip link add filone-tun1 type xfrm dev eth0 if_id 1$'
 check "creates tunnel 2's xfrm interface" called '^ip link add filone-tun2 type xfrm dev eth0 if_id 2$'
@@ -947,7 +959,8 @@ echo "644 0 0" >"$STATE/meta$SECRETS"
 : >"$STATE/calls"
 run_vpn
 check "succeeds" succeeded
-check "reinstalls the keys at 0600" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS(\.new)?$"
+check "reinstalls the keys at 0600 beside their place" called "^install -m 0600 -o root -g root [^ ]+ $SECRETS\.new$"
+check "renames the keys into place" called "^mv -f $SECRETS\.new $SECRETS$"
 check "leaves the file root-only" test "$(cat "$STATE/meta$SECRETS")" = "600 0 0"
 check "does not restart strongSwan" not_called '^systemctl restart'
 check "never shows a key" key_never_shown
@@ -1074,6 +1087,50 @@ check "says so" said "could not write /etc/fil-one/vpn.conf"
 check "stops there" not_called '^systemctl enable'
 check "does not say it provisioned" not_printed "VPN provisioned"
 
+new_case "a failed write of vpn.conf after a tunnel address changed"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+echo /etc/fil-one/vpn.conf >"$STATE/install-fails"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "could not write /etc/fil-one/vpn.conf"
+check "leaves strongSwan's connections as they were" in_file "$SWAN" "remote_addrs = $TUNNEL2"
+check "leaves vpn.conf as it was" in_file /etc/fil-one/vpn.conf "VPN_TUNNEL2_OUTSIDE_ADDRESS=$TUNNEL2"
+check "leaves no new copy" test -z "$(find "$ROOT" -name '*.new')"
+check "never shows a key" key_never_shown
+
+new_case "a failed rename"
+run_vpn
+check "provisions" succeeded
+set_input VPN_TUNNEL2_OUTSIDE_ADDRESS "$TUNNEL3"
+echo "$SWAN" >"$STATE/mv-fails"
+: >"$STATE/calls"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "could not move $SWAN.new into place"
+check "leaves the keys as they were" \
+  in_file "$SECRETS" "id-2 = $TUNNEL2"
+check "leaves no new copy" test -z "$(find "$ROOT" -name '*.new')"
+check "never shows a key" key_never_shown
+rm "$STATE/mv-fails"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "and renders the new address" in_file "$SWAN" "remote_addrs = $TUNNEL3"
+
+new_case "a copy left by a run that stopped while writing"
+run_vpn
+check "provisions" succeeded
+cp "$ROOT$SECRETS" "$ROOT$SECRETS.new"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+check "removes the copy" test ! -e "$ROOT$SECRETS.new"
+check "says so" printed "removed $SECRETS.new"
+check "never shows a key" key_never_shown
+
 new_case "a failed write of the keys file"
 run_vpn
 check "provisions" succeeded
@@ -1197,6 +1254,8 @@ new_case "down"
 run_vpn
 check "provisions" succeeded
 echo "proto tcp from 192.0.2.99 to any port 22" >>"$STATE/ufw-rules"
+# A copy a run that stopped while writing left beside the keys.
+cp "$ROOT$SECRETS" "$ROOT$SECRETS.new"
 : >"$STATE/calls"
 run_vpn down
 check "succeeds" succeeded
@@ -1218,6 +1277,7 @@ check "removes tunnel 2's ESP rule" called "^ufw-change delete proto esp from $T
 check "removes no other rule" grep -qxF "proto tcp from 192.0.2.99 to any port 22" "$STATE/ufw-rules"
 check "removes the connections" test ! -e "$ROOT$SWAN"
 check "removes the keys" test ! -e "$ROOT$SECRETS"
+check "removes the copy beside the keys" test ! -e "$ROOT$SECRETS.new"
 check "removes charon's file" test ! -e "$ROOT/etc/strongswan.d/zz-filone-vpn.conf"
 check "removes vpn.conf" test ! -e "$ROOT/etc/fil-one/vpn.conf"
 check "removes the ruleset" test ! -e "$ROOT$NFT"

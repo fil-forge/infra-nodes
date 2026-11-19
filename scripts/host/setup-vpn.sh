@@ -88,7 +88,7 @@
 # route's source address.
 #
 # Files under /etc and /run are read only through cat, cmp and stat and written
-# only through install and rm, which is what lets the test in tests/ run it
+# only through install, mv and rm, which is what lets the test in tests/ run it
 # against stubs. The two lock files are the exception, and the test moves them
 # with FILONE_DEPLOY_LOCK_FILE and VPN_LOCK_FILE.
 set -euo pipefail
@@ -104,6 +104,8 @@ SWANCTL_SECRETS=/etc/swanctl/conf.d/filone-vpn-secrets.conf
 CHARON_CONF=/etc/strongswan.d/zz-filone-vpn.conf
 NFT_RULESET=/run/fil-one/vpn-nftables.conf
 STRONGSWAN_FILES="$CHARON_CONF $SWANCTL_CONF $SWANCTL_SECRETS"
+# The files a provisioning run writes as one set, vpn.conf last.
+STAGED_FILES="$STRONGSWAN_FILES $VPN_CONF"
 # Set while strongSwan has yet to be restarted onto a changed configuration. A
 # reboot clears it, and strongSwan then loads the files as they stand.
 RESTART_PENDING=/run/fil-one/vpn-restart-pending
@@ -458,6 +460,17 @@ remove_vpn_routes() { # remove_vpn_routes [<CIDR to keep>]
     { for (i = 2; i < NF; i++) if ($i == "dev" && $(i + 1) ~ /^filone-tun[12]$/) { print $1, $(i + 1); next } }')
 }
 
+# The <file>.new copies a run that stopped while writing the set left behind.
+# One may hold the keys.
+remove_staged_copies() {
+  local file
+  for file in $STAGED_FILES; do
+    cat "$file.new" >/dev/null 2>&1 || continue
+    rm -f "$file.new" || die "could not remove $file.new"
+    echo "  removed $file.new"
+  done
+}
+
 # The tunnel addresses vpn.conf names, and any other address whose UFW rules
 # carry this script's comment. Not every word is an address; callers check.
 admitted_addresses() {
@@ -582,6 +595,7 @@ down() {
     ufw_rule delete proto esp from "$address" to any
   done
 
+  remove_staged_copies
   for file in $STRONGSWAN_FILES "$NFT_RULESET" "$RESTART_PENDING" "$VPN_CONF"; do
     cat "$file" >/dev/null 2>&1 || continue
     rm -f "$file" || die "could not remove $file"
@@ -796,7 +810,8 @@ fi
 
 # Nothing else may route the VPC or any part of it, and no address on the host
 # may sit inside it. 'root' lists the VPC's own prefix and every longer one in it.
-existing_route="$(ip -4 route show root "$VPN_VPC_CIDR" | grep -v '^unreachable ' |
+# This script's own unreachable routes, at the fallback metric, are exempt.
+existing_route="$(ip -4 route show root "$VPN_VPC_CIDR" | grep -v "^unreachable [^ ]* metric $FALLBACK_METRIC\$" |
   grep -v ' dev filone-tun[12] ' || true)"
 [ -z "$existing_route" ] ||
   fail routes "something else routes $VPN_VPC_CIDR: $existing_route"
@@ -906,15 +921,16 @@ EOF
   echo "}"
 }
 
-strongswan_mode() { # strongswan_mode <file>
+file_mode() { # file_mode <file>
   if [ "$1" = "$CHARON_CONF" ]; then echo 0644; else echo 0600; fi
 }
 
-render_strongswan() { # render_strongswan <file>
+render_file() { # render_file <file>
   case "$1" in
     "$CHARON_CONF") charon_conf ;;
     "$SWANCTL_CONF") swanctl_connections ;;
     "$SWANCTL_SECRETS") swanctl_secrets ;;
+    "$VPN_CONF") for key in $CONF_KEYS; do printf '%s=%s\n' "$key" "${!key}"; done ;;
   esac
 }
 
@@ -922,11 +938,12 @@ restart_pending() { cat "$RESTART_PENDING" >/dev/null 2>&1; }
 
 install -d -m 0755 /etc/fil-one /etc/swanctl/conf.d /etc/strongswan.d
 install -d -m 0700 -o root -g root /run/fil-one /run/fil-one/secrets
+remove_staged_copies
 
 # A changed file means a restart. The marker records it before anything on the
 # host changes, so a run that stops on the way leaves the restart to the next.
 for file in $STRONGSWAN_FILES; do
-  file_state "$(strongswan_mode "$file")" "$file" < <(render_strongswan "$file")
+  file_state "$(file_mode "$file")" "$file" < <(render_file "$file")
   if [ "$FILE_STATE" = content ]; then
     install -m 0600 -o root -g root /dev/null "$RESTART_PENDING" ||
       die "could not write $RESTART_PENDING"
@@ -953,16 +970,18 @@ done
 
 bring_up
 
-# strongSwan's files, next to vpn.conf so that a reboot after a failed run
-# finds either both new or, short of a failed write of vpn.conf, both old. They
-# go in as one set: each changed file is written beside itself as <file>.new,
+# strongSwan's files and vpn.conf, which boot and the health check apply from
+# now on, go in as one set so that a reboot after a failed run finds either all
+# new or all old. Each changed file is written beside itself as <file>.new,
 # which no include pattern matches, and only once all are written are they
-# renamed into place, so a failed write leaves every one as it was. A file whose
-# mode or owner alone drifted is written again without a restart.
+# renamed into place, so a failed write leaves every one as it was. A failed
+# rename, which within one filesystem is close to impossible, leaves the files
+# renamed before it new and removes the copies left. A file whose mode or owner
+# alone drifted is written again without a restart.
 staged_files=""
-for file in $STRONGSWAN_FILES; do
-  mode="$(strongswan_mode "$file")"
-  stage_file "$mode" "$file" < <(render_strongswan "$file")
+for file in $STAGED_FILES; do
+  mode="$(file_mode "$file")"
+  stage_file "$mode" "$file" < <(render_file "$file")
   if [ "$FILE_STATE" != same ]; then
     if ! install -m "$mode" -o root -g root "$STAGED" "$file.new"; then
       rm -f "$STAGED" "$file.new"
@@ -973,15 +992,21 @@ for file in $STRONGSWAN_FILES; do
   fi
   rm -f "$STAGED"
 done
+unmoved=""
 for file in $staged_files; do
-  mv -f "$file.new" "$file" || die "could not move $file.new into place"
-  echo "  wrote $file"
+  if [ -n "$unmoved" ]; then
+    rm -f "$file.new"
+  elif mv -f "$file.new" "$file"; then
+    echo "  wrote $file"
+  else
+    unmoved="$file"
+    rm -f "$file.new"
+  fi
 done
+[ -z "$unmoved" ] || die "could not move $unmoved.new into place"
 unset PSK1 PSK2
 
-# What boot and the health check apply from now on, then the routes they no
-# longer own.
-install_if_changed 0600 "$VPN_CONF" < <(for key in $CONF_KEYS; do printf '%s=%s\n' "$key" "${!key}"; done)
+# The routes boot and the health check no longer own.
 remove_vpn_routes "$VPN_VPC_CIDR"
 
 # --- 5. Units and strongSwan -----------------------------------------------
