@@ -58,7 +58,7 @@ unset_settings="$(import_service_placeholders)"
 if [ -n "$unset_settings" ]; then
   echo "  not configured, so not started. Still a placeholder:"
   while read -r name; do echo "    $name"; done <<<"$unset_settings"
-  echo "  docs/RUNBOOK.md, under the prod/us-east-2 appliance, says where each comes from."
+  echo "  docs/runbook/set-up-import-service.md says where each comes from."
   import_service_remove "$CONTAINER"
   rm -f "$import_retry"
   exit 0

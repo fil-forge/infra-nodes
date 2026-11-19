@@ -395,6 +395,8 @@ service's firewall`, which the query above matches. `scripts/host/import-firewal
 what the loaded table admits, and exits non-zero when the table is gone or has lost its drop rule,
 or the list has not been applied. Add an alert on that warning, and one for failing imports, before the service takes production
 imports.
+[Set up the import service](runbook/set-up-import-service.md) covers its settings, deploy and
+checks.
 
 ### The deploy stamp
 

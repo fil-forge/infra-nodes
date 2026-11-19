@@ -155,8 +155,8 @@ services:
   # The import service. scripts/host/deploy-import.sh deploys it on its own,
   # after Piri and Ingot, and leaves it stopped while any of its settings in
   # node.env or its image pin in versions.env is still PLACEHOLDER; deploy-apps.sh
-  # neither starts it nor waits for it. docs/RUNBOOK.md, under the prod/us-east-2
-  # appliance, has the provisioning steps.
+  # neither starts it nor waits for it. docs/runbook/set-up-import-service.md
+  # has the provisioning steps.
   #
   # It terminates its own mutual TLS, because the client certificate's common
   # name is the key of its allow-list and of every record it writes, so Caddy
