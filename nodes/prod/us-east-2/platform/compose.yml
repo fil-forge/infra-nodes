@@ -58,10 +58,10 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
-      # Read only when the data directory is empty. C.UTF-8 sorts by code
-      # point, the locale dev and staging get when they move to the Debian
-      # image, so every node sorts text the same way.
-      POSTGRES_INITDB_ARGS: --locale=C.UTF-8 --encoding=UTF8
+      # Read only when the data directory is empty. PostgreSQL's builtin
+      # C.UTF-8 sorts by code point, the order dev and staging get from
+      # glibc's C.UTF-8, and does not depend on the image's C library.
+      POSTGRES_INITDB_ARGS: --locale-provider=builtin --locale=C.UTF-8 --encoding=UTF8
     volumes:
       - type: bind
         source: /mnt/data/fil-one/control/postgres
