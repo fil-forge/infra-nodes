@@ -131,7 +131,8 @@ stops one kind of state from growing into the space the others share. The quotas
 Ingot's byte budget for its spool and cache, `INGOT_LOCAL_BLOB_MAX_BYTES`, is 80% of the
 `ingot/blobs` quota. Request bodies in flight are written above the budget and need room there, and
 central pages when an Ingot volume has less than 10% free. Bootstrap prints the value, and
-`node.env` commits it.
+`node.env` commits it before the node is provisioned: `provision-platform.sh` refuses to start
+without it.
 
 ## Bootstrap changes nothing it did not create
 
@@ -178,9 +179,10 @@ into the config file it writes on the `piri` dataset, which the pool's encryptio
 The node runs on the Calibration testnet, as central's production stage does for now. It pushes
 logs, metrics and traces to the one Grafana Cloud stack every appliance reports to.
 
-GitHub CI runs the smoke test against the node as it does for dev and staging. The end-to-end test
-does not run for the production stage until it has a credential that cannot reach customer tenants
-(FIL-1491).
+GitHub CI runs the smoke test against the node as it does for dev and staging: after every push to
+this repository, after every production deploy of central and each hour. The end-to-end test does
+not run for the production stage until it has a credential that cannot reach customer tenants
+(FIL-1491). The node joins the tests once it is provisioned and a smoke test run by hand passes.
 
 ## The database VPN
 
