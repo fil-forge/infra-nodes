@@ -129,6 +129,11 @@ A reservation keeps space for Postgres and OpenBao however full the rest of the 
 stops one kind of state from growing into the space the others share. The quotas of
 `control/caddy` and `control/alloy` are a first guess, to be corrected once the node has run.
 
+OpenBao's store is the `control/openbao` dataset's own mount point, which cannot be renamed. A
+restore that moves a damaged store aside therefore copies its contents aside and empties the
+directory. The files move only while OpenBao is stopped, and the move refuses to run while its
+container is running.
+
 Ingot's byte budget for its spool and cache, `INGOT_LOCAL_BLOB_MAX_BYTES`, is 80% of the
 `ingot/blobs` quota. Request bodies in flight are written above the budget and need room there, and
 central pages when an Ingot volume has less than 10% free. Bootstrap prints the value, and
@@ -218,9 +223,6 @@ stopped while any of its settings is still a placeholder.
   keys derive from. The node's OpenBao listens only on loopback inside its container and on a unix
   socket. Either OpenBao gains a listener the Docker network can reach, or the service learns to
   use a socket.
-- **OpenBao's store directory.** The store is the `control/openbao` dataset's own mount point, so
-  a damaged store cannot be renamed aside and is copied aside and emptied. A store one directory
-  below the mount point could be renamed, as on dev and staging.
 
 ## Setting up the pool
 
