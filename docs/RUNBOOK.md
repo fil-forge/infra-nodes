@@ -1021,11 +1021,15 @@ scripts/host/setup-vpn.sh
 The script checks every input, strongSwan's unit, UFW, IP forwarding, the public address against
 the host's addresses, any existing route for the VPC's CIDR and the subnets of the Docker networks
 before it changes anything. A failed check names itself and changes nothing. It never prints a key.
-It then writes `/etc/fil-one/vpn.conf`, the strongSwan connections and secrets under
-`/etc/swanctl/conf.d/` (both 0600), admits UDP 500 and 4500 and ESP from the two tunnel addresses
-in UFW, and no other address, creates the interfaces, the route and the nftables table, restarts
-strongSwan and enables `filone-vpn.service`, which recreates the interfaces after a boot, and
-`filone-vpn-health.timer`. A second run with the same inputs changes nothing. Delete `psk1` and
+It then writes the strongSwan connections and secrets under `/etc/swanctl/conf.d/` (both 0600,
+root's; a file whose mode or owner has drifted is written again), admits UDP 500 and 4500 and ESP
+from the two tunnel addresses in UFW, and no other address, creates the interfaces, the route and
+the nftables table, and only then writes `/etc/fil-one/vpn.conf`, which the boot unit and the
+health check read. A run that stops on the way, on a UFW rule it cannot delete or a ruleset `nft`
+refuses, leaves the previous `vpn.conf` in place, so the next boot applies the last configuration
+that went in whole and a re-run retries what failed. It then restarts strongSwan and enables
+`filone-vpn.service`, which recreates the interfaces after a boot, and `filone-vpn-health.timer`.
+A second run with the same inputs changes nothing. Delete `psk1` and
 `psk2` afterwards: strongSwan reads its copy of the keys from
 `/etc/swanctl/conf.d/filone-vpn-secrets.conf`, on the OS disk like the node's other tokens. A later
 run that changes no key needs neither file: leave `VPN_PSK_SOURCE` and the two key-file inputs
@@ -1070,7 +1074,8 @@ a dead tunnel only when strongSwan's dead peer detection gives up on it.
 A change of tunnel addresses or keys, after central's platform root is destroyed and applied
 again, is a re-run with the new values, including new `psk1` and `psk2` from a fresh run of
 central's fetch script. It removes the UFW rules for the old addresses and restarts
-strongSwan, which takes both tunnels down for a few seconds. Reconcile never changes the tunnel.
+strongSwan, which takes both tunnels down for a few seconds. A re-run with another
+`VPN_VPC_CIDR` removes the tunnel and `unreachable` routes it made for the previous one. Reconcile never changes the tunnel.
 
 To take the VPN off the node:
 

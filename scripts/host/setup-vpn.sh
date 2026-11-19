@@ -71,9 +71,9 @@
 # to or reordered in their chains. Host processes use the /32 through the
 # route's source address.
 #
-# Files under /etc and /run are read only through cat and cmp and written only
-# through install and rm, which is what lets the test in tests/ run it against
-# stubs.
+# Files under /etc and /run are read only through cat, cmp and stat and written
+# only through install and rm, which is what lets the test in tests/ run it
+# against stubs.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -112,11 +112,13 @@ fail() { die "check '$1' failed: $2"; }
 tunnel_link() { echo "filone-tun$1"; }
 
 # --- Addresses -------------------------------------------------------------
-# As in bootstrap-prod-us-east-2.sh.
+# As in bootstrap-prod-us-east-2.sh, except that an octet or prefix with a
+# leading zero is refused: nft and strongSwan read an address through
+# inet_aton, which takes 010 as octal 8.
 
 ipv4_to_int() { # prints the address as a number, or fails
   local IFS=. a b c d octet
-  [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  [[ "$1" =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]] || return 1
   read -r a b c d <<<"$1"
   for octet in "$a" "$b" "$c" "$d"; do
     [ "$((10#$octet))" -le 255 ] || return 1
@@ -126,7 +128,7 @@ ipv4_to_int() { # prints the address as a number, or fails
 
 is_cidr() { # an address/prefix whose host bits may be set
   local prefix="${1#*/}"
-  [ "$1" != "$prefix" ] && [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && [ "$prefix" -le 32 ] &&
+  [ "$1" != "$prefix" ] && [[ "$prefix" =~ ^(0|[1-9][0-9]?)$ ]] && [ "$prefix" -le 32 ] &&
     ipv4_to_int "${1%/*}" >/dev/null
 }
 
@@ -134,7 +136,7 @@ in_network() { # in_network <address> <address[/prefix]>
   local address network prefix=32 mask
   address="$(ipv4_to_int "$1")" || return 1
   case "$2" in */*) prefix="${2#*/}" ;; esac
-  [[ "$prefix" =~ ^[0-9]{1,2}$ ]] || return 1
+  [[ "$prefix" =~ ^(0|[1-9][0-9]?)$ ]] || return 1
   [ "$prefix" -le 32 ] || return 1
   network="$(ipv4_to_int "${2%/*}")" || return 1
   mask=$(((0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF))
@@ -156,7 +158,8 @@ is_private() { # RFC 1918
 # --- Files -----------------------------------------------------------------
 
 # Install stdin at a path with a mode, unless the path already holds exactly
-# that. Says so when it writes, and returns 1 when it did not. The temporary
+# that, with that mode and owned by root. Says so when it writes, and returns 1
+# when it did not. The temporary
 # copy sits in TMPDIR when that is set, and otherwise in the root-only secrets
 # directory on /run's tmpfs, which keeps a key off the disk on its way. Under
 # systemd and from a root shell without TMPDIR, it is the latter.
@@ -167,7 +170,8 @@ install_if_changed() { # install_if_changed <mode> <destination>
     rm -f "$tmp"
     die "could not write $tmp"
   fi
-  if cmp -s "$tmp" "$destination"; then
+  if cmp -s "$tmp" "$destination" &&
+    [ "$(stat -c '%a %u %g' "$destination" 2>/dev/null)" = "${mode#0} 0 0" ]; then
     rm -f "$tmp"
     return 1
   fi
@@ -349,7 +353,12 @@ bring_up() {
   nft list table ip "$NFT_TABLE" >/dev/null 2>&1 && table_present=1
   if [ "$ruleset_changed" = 1 ] || [ "$table_present" = 0 ]; then
     echo "  loading nftables table $NFT_TABLE"
-    nft -f "$NFT_RULESET" || die "nft refused $NFT_RULESET"
+    if ! nft -f "$NFT_RULESET"; then
+      # Gone, so the next run loads its ruleset again rather than taking the
+      # refused one for the table already loaded.
+      rm -f "$NFT_RULESET"
+      die "nft refused the ruleset; the table loaded before stays as it was"
+    fi
   fi
 
   ensure_fallback_route
@@ -358,6 +367,24 @@ bring_up() {
     echo "  routing $VPN_VPC_CIDR into tunnel 1"
     move_route 1
   fi
+}
+
+# The routes a previous run made for another VPC CIDR: into a tunnel, other
+# than the inside /30s the kernel adds, or unreachable at the fallback metric.
+remove_stale_routes() {
+  local destination device
+  while read -r destination device; do
+    [ -n "$destination" ] || continue
+    echo "  removing the route to $destination, which is not $VPN_VPC_CIDR"
+    if [ "$device" = unreachable ]; then
+      ip route del unreachable "$destination" metric "$FALLBACK_METRIC"
+    else
+      ip route del "$destination" dev "$device"
+    fi || die "could not remove the route to $destination"
+  done < <(ip -4 route show | awk -v cidr="$VPN_VPC_CIDR" -v metric="$FALLBACK_METRIC" '
+    $1 == "unreachable" { if ($2 != cidr && $NF == metric && $(NF - 1) == "metric") print $2, "unreachable"; next }
+    $1 == cidr || / proto kernel / { next }
+    { for (i = 2; i < NF; i++) if ($i == "dev" && $(i + 1) ~ /^filone-tun[12]$/) { print $1, $(i + 1); next } }')
 }
 
 # --- health and status -----------------------------------------------------
@@ -462,6 +489,11 @@ done
 for name in VPN_VPC_CIDR VPN_TUNNEL1_INSIDE_LOCAL VPN_TUNNEL2_INSIDE_LOCAL; do
   [ -n "${!name:-}" ] || fail inputs "set $name"
   is_cidr "${!name}" || fail inputs "$name is '${!name}', not an IPv4 address with a prefix"
+done
+# AWS gives each tunnel a /30; any other prefix would route more than the
+# tunnel's two inside addresses into it, the default route at /0.
+for name in VPN_TUNNEL1_INSIDE_LOCAL VPN_TUNNEL2_INSIDE_LOCAL; do
+  [ "${!name#*/}" = 30 ] || fail inputs "$name is '${!name}', not an IPv4 address with the prefix /30"
 done
 
 case "${VPN_BEHIND_NAT:-}" in
@@ -611,6 +643,8 @@ done
 [ -n "$VPN_CLIENT_SOURCES" ] || fail "docker networks" "no IPv4 subnet on ${VPN_DOCKER_NETWORKS:-filone}"
 
 # The outside addresses a previous run admitted, whose rules go if they changed.
+# vpn.conf is written only once the firewall and the host network are applied,
+# so a run that stops before then leaves them here for the next.
 previous_outside=""
 if previous="$(cat "$VPN_CONF" 2>/dev/null)"; then
   previous_outside="$(sed -n 's/^VPN_TUNNEL[12]_OUTSIDE_ADDRESS=//p' <<<"$previous")"
@@ -621,9 +655,6 @@ fi
 changed=0
 install -d -m 0755 /etc/fil-one /etc/swanctl/conf.d /etc/strongswan.d
 install -d -m 0700 -o root -g root /run/fil-one /run/fil-one/secrets
-
-for key in $CONF_KEYS; do printf '%s=%s\n' "$key" "${!key}"; done |
-  install_if_changed 0600 "$VPN_CONF" || true
 
 # Routes come from this script, not from charon: with 0.0.0.0/0 traffic
 # selectors, charon's own route would take every packet on the host.
@@ -702,7 +733,8 @@ unset PSK1 PSK2
 
 # --- 3. Firewall -----------------------------------------------------------
 
-# ufw skips a rule it already has, and says so.
+# ufw skips a rule it already has, and says so. A delete of a rule that is
+# already gone is fine; any other failure stops the run.
 ufw_rule() { # ufw_rule allow|delete <rule words...>
   local verb="$1" output
   shift
@@ -710,7 +742,8 @@ ufw_rule() { # ufw_rule allow|delete <rule words...>
     output="$(ufw allow "$@")" || die "ufw refused: allow $*"
     grep -q '^Skipping' <<<"$output" || echo "  ufw allow $*"
   else
-    output="$(ufw delete allow "$@" 2>&1)" || true
+    output="$(ufw delete allow "$@" 2>&1)" || grep -q 'non-existent' <<<"$output" ||
+      die "ufw refused: delete allow $*"
     grep -q 'non-existent' <<<"$output" || echo "  ufw delete allow $*"
   fi
 }
@@ -730,6 +763,12 @@ done
 # --- 4. Host network -------------------------------------------------------
 
 bring_up
+
+# What boot and the health check apply from now on, then the routes they no
+# longer own.
+for key in $CONF_KEYS; do printf '%s=%s\n' "$key" "${!key}"; done |
+  install_if_changed 0600 "$VPN_CONF" || true
+remove_stale_routes
 
 # --- 5. Units and strongSwan -----------------------------------------------
 
