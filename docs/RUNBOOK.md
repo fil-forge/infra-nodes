@@ -89,8 +89,8 @@ they get it. It is a public address, so any channel will do.
 `INGOT_LOCAL_BLOB_MAX_BYTES` becomes Ingot's `local_blob_max_bytes`: one byte budget for its spool
 (bodies being written or waiting for upload to Piri) and its cache (copies of bodies Piri already
 holds). Every 30 seconds a sweeper evicts cached bodies, oldest first, down to 90% of it. Ingot reads
-0 as no budget, and its cache then keeps every body until the disk fills, so `deploy-apps.sh`
-refuses anything but a positive byte count. On the EC2 nodes Ingot has the data volume to itself,
+0 as no budget, and its cache then keeps every body until the disk fills, so `provision-platform.sh`
+and `deploy-apps.sh` refuse anything but a positive byte count. On the EC2 nodes Ingot has the data volume to itself,
 so size the budget from that volume's filesystem:
 
 1. Start from 90% of the filesystem's size, the most it can hold before infra-central's "Ingot
@@ -136,21 +136,19 @@ Prod/us-east-2: Ingot's spool and cache have the `ingot/blobs` dataset to themse
 catalog log has `ingot/segments`. Bootstrap sets the blobs quota to 50% of the pool and prints the
 budget, 80% of that quota, which leaves room for bodies in flight and stays under the 10%-free
 alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB ten-minute peak.
-Commit the printed value in place of the 0 placeholder.
-
-`nodes/prod/us-east-2/node.env` was committed with `INGOT_LOCAL_BLOB_MAX_BYTES` still open, to be
-set from bootstrap's output, and `deploy-apps.sh` refuses it until then.
+Commit the printed value before step 5. `provision-platform.sh` and `deploy-apps.sh` refuse
+anything but a positive byte count.
 
 Central's prod files name no PDP verifier or FWSS view address, so the node's two come from the
 FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` return them.
 
 Prod/us-east-2's Piri keeps its blobs in S3-compatible object storage, through the `[repo.s3]`
 section of its base config, because the piri dataset's 50 GiB quota is sized for its config and
-state. `PIRI_S3_ENDPOINT` and `PIRI_S3_BUCKET_PREFIX` are committed empty, and `deploy-apps.sh`
-refuses to start a Piri while either is empty or OpenBao lacks `filone/external`'s
-`piri_s3_access_key_id` and `piri_s3_secret_access_key`. Once the endpoint is committed,
-`provision-platform.sh` asks for the two credentials. `piri init` copies them into the config it
-writes on the piri dataset.
+state. Commit `PIRI_S3_ENDPOINT` and `PIRI_S3_BUCKET_PREFIX` from the storage provider's details
+before step 5: `provision-platform.sh` refuses to start while either is empty, and asks for the
+access key id and secret key, which it stores as `filone/external`'s `piri_s3_access_key_id` and
+`piri_s3_secret_access_key`. `deploy-apps.sh` refuses to start a Piri without all four.
+`piri init` copies the credentials into the config it writes on the piri dataset.
 
 Add `FILONE_TESTED=false` to a new node's node.env. `test-nodes.yml` tests every node under
 `nodes/` of a tested stage from the moment its node.env merges, and a node that is not serving yet
@@ -931,7 +929,8 @@ each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when 
 restarts Docker for it only when no container runs; an existing file that differs is shown as a
 diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
 systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value;
-commit it in `nodes/prod/us-east-2/node.env` before step 6.
+commit it in `nodes/prod/us-east-2/node.env`, with the object storage endpoint and bucket prefix,
+before step 5.
 
 `nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao, the state directory, Caddy's
 state and Alloy's write-ahead log to their `control/` datasets (Caddy's to `data/` and `config/`
@@ -982,6 +981,11 @@ the bring-up runs in this shell.
 ```sh
 scripts/host/provision-platform.sh
 ```
+
+It first checks that `node.env` holds what the apps need from step 2, Ingot's byte budget and, on
+a node whose Piris keep their blobs in object storage, its endpoint and bucket prefix, and stops
+before it creates anything if one is missing. The platform and the apps are provisioned in one
+sitting, steps 5 and 6.
 
 It asks for the unseal-token wrapping token, exchanges it at central for the unseal token,
 initialises OpenBao, and prints **one recovery key and one root token**.
