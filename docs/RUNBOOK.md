@@ -879,8 +879,9 @@ the Docker drop-in holds exactly what the storage record gives, Compose 2.40 or 
 UFW rule admitting port 22 from `JUMP_HOST_ADDRESS`, the `filone` network's subnet if it exists,
 `/etc/docker/daemon.json`, and any datasets already under `data/fil-one`. It stops on the first
 check that fails, names it, and changes nothing. It never changes a firewall rule. Existing
-datasets with other quotas, reservations or mount points are all reported before it stops, and are
-left for you to change by hand.
+datasets with other quotas, reservations or mount points, that are unmounted, or that have an
+encryption root other than the pool are all reported before it stops, and are left for you to
+change by hand.
 
 It then creates the datasets under `data/fil-one` with their quotas and reservations and checks
 each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when there is none, and

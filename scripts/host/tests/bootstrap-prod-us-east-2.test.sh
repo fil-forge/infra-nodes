@@ -71,7 +71,8 @@ STUB
   # Datasets are directories under $STUB_STATE/zfs, named with % for /, and
   # each property is a file in its directory. An unset quota or reservation
   # reads 0, which is what `zfs get -p` prints for none, and an unset
-  # mountpoint is inherited from the nearest ancestor that sets one.
+  # mountpoint is inherited from the nearest ancestor that sets one. An unset
+# encryptionroot reads data, as for a dataset that inherits the pool's key.
   # A file get-fails-<property> makes reading that property fail.
   cat >"$bin/zfs" <<'STUB'
 #!/usr/bin/env bash
@@ -98,7 +99,7 @@ case "$1" in
       done
       echo "$(cat "$root/$(key "$d")/mountpoint")$rest"
     else
-      case "$prop" in quota|reservation) echo 0 ;; *) echo - ;; esac
+      case "$prop" in quota|reservation) echo 0 ;; encryptionroot) echo data ;; *) echo - ;; esac
     fi ;;
   create)
     shift
@@ -160,9 +161,15 @@ case "$1 ${2:-}" in
     if [ "$3" = -f ]; then cat "$STUB_STATE/network-subnet"; else echo '[]'; fi ;;
   "network create")
     printf '%s\n' "$4" >"$STUB_STATE/network-subnet" ;;
+  "info ")
+    [ ! -f "$STUB_STATE/daemon-down" ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; } ;;
   "ps -q")
     [ ! -f "$STUB_STATE/ps-fails" ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
     cat "$STUB_STATE/containers" ;;
+  "ps -aq")
+    [ ! -f "$STUB_STATE/ps-fails" ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+    cat "$STUB_STATE/containers"
+    [ ! -f "$STUB_STATE/stopped-containers" ] || cat "$STUB_STATE/stopped-containers" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -171,11 +178,18 @@ STUB
 #!/usr/bin/env bash
 echo "systemctl $*" >>"$STUB_STATE/calls"
 case "$1" in
+  # is-enabled exits 0 for static, indirect and the other states systemctl
+  # documents with 0, not only for enabled.
   is-enabled)
     state="$(cat "$STUB_STATE/enabled-$2" 2>/dev/null || echo disabled)"
     echo "$state"
-    [ "$state" = enabled ] ;;
-  show) cat "$STUB_STATE/docker-dropins" ;;
+    case "$state" in enabled|enabled-runtime|static|indirect|alias|generated|transient) ;; *) exit 1 ;; esac ;;
+  show)
+    case "$*" in
+      *DropInPaths*) cat "$STUB_STATE/docker-dropins" ;;
+      *ExecStartPre*) cat "$STUB_STATE/docker-execstartpre" ;;
+      *) exit 1 ;;
+    esac ;;
   restart) [ ! -f "$STUB_STATE/restart-fails" ] ;;
   *) exit 0 ;;
 esac
@@ -268,6 +282,8 @@ new_case() {
   touch "$STATE/zpool-imported"
   echo ONLINE >"$STATE/zpool-health"
   echo "$POOL_SIZE" >"$STATE/zpool-size"
+  echo 12 >"$STATE/zpool-ashift"
+  echo on >"$STATE/zpool-autotrim"
   write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE
 
   zfs_set data mountpoint /mnt/data
@@ -275,14 +291,51 @@ new_case() {
   zfs_set data encryption aes-256-gcm
   zfs_set data keystatus available
   zfs_set data keylocation file:///etc/zfs/keys/data.key
+  zfs_set data compression lz4
+  zfs_set data atime off
+  zfs_set data xattr sa
+  zfs_set data acltype posix
 
   echo enabled >"$STATE/enabled-zfs-load-key-data.service"
+  write_key_unit
   echo /etc/systemd/system/docker.service.d/10-zfs-mounted.conf >"$STATE/docker-dropins"
   write_docker_dropin
+  # As systemctl show prints a command: its argv joined by spaces.
+  printf '%s\n' "{ path=/bin/sh ; argv[]=/bin/sh -c $GUARD ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }" \
+    >"$STATE/docker-execstartpre"
 
   write_ufw_status "22/tcp                     ALLOW       $JUMP"
   ROOT_BEFORE="$(root_tree)"
 }
+
+# The key unit as the storage record gives it, or with the given contents
+# instead.
+write_key_unit() { # write_key_unit [contents]
+  local dir="$ROOT/etc/systemd/system"
+  mkdir -p "$dir"
+  if [ $# -gt 0 ]; then
+    printf '%s' "$1" >"$dir/zfs-load-key-data.service"
+    return
+  fi
+  cat >"$dir/zfs-load-key-data.service" <<'INI'
+[Unit]
+Description=Load the ZFS encryption key for the data pool
+DefaultDependencies=no
+After=zfs-import.target
+Before=zfs-mount.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'zfs get -H -o value keystatus data | grep -qx available || zfs load-key data'
+
+[Install]
+WantedBy=zfs-mount.service
+INI
+}
+
+# The mount guard the drop-in runs before Docker starts.
+GUARD='zfs list -H -o name data >/dev/null && ! zfs get -H -r -t filesystem -o value mounted data | grep -vqx yes'
 
 # The Docker drop-in as the storage record gives it, or with the given
 # contents instead.
@@ -305,12 +358,14 @@ INI
 case_count=0
 
 # zpool status for pool data with one mirror of the given members. A member
-# is a name, or name:STATE for one that is not ONLINE. $POOL_EXTRA, when set,
+# is a name, name:STATE for one that is not ONLINE, or name:STATE:CKSUM for one
+# that counts checksum errors. $POOL_DATA_ERRORS, when set, replaces the final
+# "No known data errors". $POOL_EXTRA, when set,
 # is appended after the pool's own tree, as a logs or cache section would be.
 # The status and scan lines carry tab-indented continuations, as real output
 # does, which the script must not take for the config.
 write_pool_status() { # write_pool_status <member>...
-  local member name state
+  local member name state cksum
   {
     printf '  pool: data\n state: ONLINE\n'
     printf 'status: Some supported and requested features are not enabled on the pool.\n'
@@ -323,11 +378,13 @@ write_pool_status() { # write_pool_status <member>...
     for member in "$@"; do
       name="${member%%:*}"
       state=ONLINE
+      cksum=0
       [ "$name" = "$member" ] || state="${member#*:}"
-      printf '\t    %-20s  %s       0     0     0\n' "$name" "$state"
+      case "$state" in *:*) cksum="${state#*:}" state="${state%%:*}" ;; esac
+      printf '\t    %-20s  %s       0     0     %s\n' "$name" "$state" "$cksum"
     done
     [ -z "${POOL_EXTRA:-}" ] || printf '%b' "$POOL_EXTRA"
-    printf '\nerrors: No known data errors\n'
+    printf '\nerrors: %s\n' "${POOL_DATA_ERRORS:-No known data errors}"
   } >"$STATE/zpool-status"
 }
 
@@ -453,6 +510,35 @@ write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE
 POOL_EXTRA=""
 expect_check_failure "pool mirror"
 
+new_case "member counting checksum errors while ONLINE"
+write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE:ONLINE:3
+expect_check_failure "pool errors"
+check "names the member and its counts" said "nvme-SECOND_DRIVE=0/0/3"
+
+new_case "pool reporting data errors"
+POOL_DATA_ERRORS='1 data errors, use '"'"'-v'"'"' for a list'
+write_pool_status nvme-FIRST_DRIVE nvme-SECOND_DRIVE
+POOL_DATA_ERRORS=""
+expect_check_failure "pool errors"
+
+new_case "pool built with another ashift"
+echo 9 >"$STATE/zpool-ashift"
+expect_check_failure "pool properties"
+
+new_case "pool without autotrim"
+echo off >"$STATE/zpool-autotrim"
+expect_check_failure "pool properties"
+
+for setting in compression=off atime=on xattr=on acltype=off; do
+  new_case "pool with ${setting%%=*} ${setting#*=}"
+  zfs_set data "${setting%%=*}" "${setting#*=}"
+  expect_check_failure "pool properties"
+done
+
+new_case "pool acltype read back as posixacl"
+zfs_set data acltype posixacl
+expect_success
+
 new_case "zpool status unreadable"
 touch "$STATE/zpool-status-fails"
 expect_check_failure "pool mirror"
@@ -481,6 +567,27 @@ new_case "key unit not enabled"
 echo disabled >"$STATE/enabled-zfs-load-key-data.service"
 expect_check_failure "key unit"
 
+new_case "key unit static"
+echo static >"$STATE/enabled-zfs-load-key-data.service"
+expect_check_failure "key unit"
+
+new_case "key unit file missing"
+rm "$ROOT/etc/systemd/system/zfs-load-key-data.service"
+ROOT_BEFORE="$(root_tree)"
+expect_check_failure "key unit"
+
+new_case "key unit without its boot dependency"
+write_key_unit '[Unit]
+Description=Load the ZFS encryption key for the data pool
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/zfs load-key data
+'
+ROOT_BEFORE="$(root_tree)"
+expect_check_failure "key unit"
+check "shows how the unit differs" said '+WantedBy=zfs-mount.service'
+
 new_case "key file does not unlock the pool"
 touch "$STATE/load-key-fails"
 expect_check_failure "pool key file"
@@ -503,6 +610,12 @@ ROOT_BEFORE="$(root_tree)"
 expect_check_failure "docker drop-in"
 check "shows how the drop-in differs" said '+ExecStartPre='
 
+new_case "a later drop-in empties ExecStartPre"
+printf '%s\n' /etc/systemd/system/docker.service.d/10-zfs-mounted.conf \
+  /etc/systemd/system/docker.service.d/99-override.conf >"$STATE/docker-dropins"
+: >"$STATE/docker-execstartpre"
+expect_check_failure "docker drop-in"
+
 new_case "jump host address unset"
 JUMP_HOST_ADDRESS_UNSET=1 expect_check_failure "jump host address"
 
@@ -519,6 +632,19 @@ expect_check_failure "ssh rule"
 
 new_case "SSH denied from the jump host"
 write_ufw_status "22/tcp                     DENY        $JUMP"
+expect_check_failure "ssh rule"
+
+new_case "SSH denied from the jump host before the rule admitting it"
+write_ufw_status "Anywhere                   DENY IN     $JUMP" "22/tcp                     ALLOW       $JUMP"
+expect_check_failure "ssh rule"
+check "names the rule that comes first" said "Anywhere                   DENY IN     $JUMP"
+
+new_case "SSH rejected from everywhere before the rule admitting it"
+write_ufw_status "22/tcp                     REJECT      Anywhere" "22/tcp                     ALLOW       $JUMP"
+expect_check_failure "ssh rule"
+
+new_case "SSH denied on a port range before the rule admitting it"
+write_ufw_status "20:30/tcp                  DENY        192.0.2.0/24" "22/tcp                     ALLOW       $JUMP"
 expect_check_failure "ssh rule"
 
 new_case "rule for another port"
@@ -541,7 +667,33 @@ new_case "no daemon.json while containers run"
 echo 0123456789ab >"$STATE/containers"
 expect_check_failure "docker idle"
 
+new_case "no daemon.json while stopped containers exist"
+echo 0123456789ab >"$STATE/stopped-containers"
+expect_check_failure "docker idle"
+
+new_case "Docker daemon down"
+touch "$STATE/daemon-down"
+expect_check_failure "docker daemon"
+
+new_case "Docker daemon down while daemon.json matches"
+mkdir -p "$ROOT/etc/docker"
+printf '{\n  "log-driver": "json-file",\n  "log-opts": {\n    "max-size": "50m",\n    "max-file": "5"\n  }\n}\n' \
+  >"$ROOT/etc/docker/daemon.json"
+ROOT_BEFORE="$(root_tree)"
+touch "$STATE/daemon-down"
+expect_check_failure "docker daemon"
+
 # --- Accepted SSH rules ------------------------------------------------------
+
+new_case "denials for other ports, protocols and addresses before the SSH rule"
+write_ufw_status "80,443/tcp                 DENY        $JUMP" "53/udp                     DENY        Anywhere" \
+  "22/tcp                     DENY        $OTHER" "Anywhere                   DENY OUT    $JUMP" \
+  "22/tcp                     ALLOW       $JUMP"
+expect_success
+
+new_case "a denial after the SSH rule"
+write_ufw_status "22/tcp                     ALLOW       $JUMP" "Anywhere                   DENY        Anywhere"
+expect_success
 
 new_case "SSH rule with LIMIT"
 write_ufw_status "22/tcp                     LIMIT IN    $JUMP"
@@ -644,6 +796,27 @@ zfs_set data/fil-one mountpoint /srv/fil-one
 run_bootstrap
 check "exits non-zero" failed
 check "reports the mount point" said "data/fil-one: mountpoint is /srv/fil-one, expected /mnt/data/fil-one"
+check "changes nothing" changed_nothing
+
+new_case "existing parent dataset unmounted beside missing ones"
+zfs_set data/fil-one mountpoint /mnt/data/fil-one
+zfs_set data/fil-one mounted yes
+zfs_set data/fil-one/control mounted no
+run_bootstrap
+check "exits non-zero" failed
+check "reports the unmounted parent" said "data/fil-one/control: mounted is no, expected yes"
+check "creates none of the missing ones" not_called '^zfs create'
+check "changes nothing" changed_nothing
+
+new_case "existing dataset with an encryption root of its own"
+zfs_set data/fil-one/control/state quota "$EXPECT_STATE_QUOTA"
+zfs_set data/fil-one/control/state mounted yes
+zfs_set data/fil-one/control/state encryptionroot data/fil-one/control/state
+run_bootstrap
+check "exits non-zero" failed
+check "reports the encryption root" \
+  said "data/fil-one/control/state: encryptionroot is data/fil-one/control/state, expected data"
+check "creates none of the missing ones" not_called '^zfs create'
 check "changes nothing" changed_nothing
 
 new_case "created datasets that do not mount"

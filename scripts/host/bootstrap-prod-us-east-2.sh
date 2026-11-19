@@ -41,6 +41,7 @@ POOL_MOUNTPOINT=/mnt/data
 POOL_KEYLOCATION=file:///etc/zfs/keys/data.key
 KEY_UNIT=zfs-load-key-data.service
 DOCKER_DROPIN=/etc/systemd/system/docker.service.d/10-zfs-mounted.conf
+KEY_UNIT_FILE=/etc/systemd/system/$KEY_UNIT
 DAEMON_JSON=/etc/docker/daemon.json
 STAMP=/etc/fil-one/bootstrap-complete
 # The same fixed subnet as staging. Nothing on this host filters by it today;
@@ -120,6 +121,26 @@ daemon_json() {
 JSON
 }
 
+# The key unit, as docs/decisions/2026-11-prod-us-east-2.md gives it: it loads
+# the pool's key before zfs-mount.service mounts the pool.
+key_unit() {
+  cat <<'INI'
+[Unit]
+Description=Load the ZFS encryption key for the data pool
+DefaultDependencies=no
+After=zfs-import.target
+Before=zfs-mount.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'zfs get -H -o value keystatus data | grep -qx available || zfs load-key data'
+
+[Install]
+WantedBy=zfs-mount.service
+INI
+}
+
 # The Docker drop-in, as docs/decisions/2026-11-prod-us-east-2.md gives
 # it: Docker waits for the pool to mount and refuses to start while the pool is
 # missing or any dataset on it is unmounted.
@@ -147,6 +168,9 @@ ipv4_to_int "$JUMP_HOST_ADDRESS" >/dev/null ||
   fail "jump host address" "JUMP_HOST_ADDRESS is '$JUMP_HOST_ADDRESS', not an IPv4 address"
 
 command -v docker >/dev/null || fail docker "docker is not installed"
+# Asked first, so that a later failed `docker network inspect` means the
+# network is missing rather than that the daemon is down.
+docker info >/dev/null 2>&1 || fail "docker daemon" "the Docker daemon is not answering"
 # deploy-apps.sh runs `pull --policy missing`, and 2.40 is the oldest Compose
 # verified to have it. Only the major and minor are compared, as on staging.
 compose_version="$(docker compose version --short 2>/dev/null)" ||
@@ -180,22 +204,32 @@ value="$(zpool get -H -o value health "$POOL")" ||
 # else. zpool status indents the config by two spaces per level after a tab:
 # the pool, its top-level vdevs, then their members. Sections such as logs,
 # cache, special or spares sit at the pool's level after the pool's own tree.
+# A pool and its drives stay ONLINE while they count read, write or checksum
+# errors, so every row of the pool's tree must count none.
 status="$(zpool status "$POOL")" || fail "pool mirror" "cannot read zpool status $POOL"
 layout="$(awk -v pool="$POOL" '
+  function count_errors() {
+    if ($3 != "0" || $4 != "0" || $5 != "0") errors = errors " " $1 "=" $3 "/" $4 "/" $5
+  }
   /^\tNAME/ { in_config = 1; next }
   in_config && /^$/ { in_config = 0 }
   !in_config { next }
-  /^\t[^ \t]/ { section = $1; if (section != pool) extra = extra " " section; next }
+  /^\t[^ \t]/ {
+    section = $1
+    if (section != pool) extra = extra " " section; else count_errors()
+    next
+  }
   section != pool { next }
-  /^\t  [^ ]/ { vdevs++; vdev = $1 }
+  /^\t  [^ ]/ { vdevs++; vdev = $1; count_errors() }
   /^\t    [^ ]/ {
     members++
     if ($2 != "ONLINE") bad = bad " " $1 "=" $2
     if ($1 ~ /^(nvme[0-9]+n[0-9]+|sd[a-z]+)/) kernel = kernel " " $1
+    count_errors()
   }
-  END { printf "%d|%s|%d|%s|%s|%s\n", vdevs, vdev, members, bad, kernel, extra }
+  END { printf "%d|%s|%d|%s|%s|%s|%s\n", vdevs, vdev, members, bad, kernel, extra, errors }
 ' <<<"$status")"
-IFS='|' read -r vdevs vdev members bad kernel extra <<<"$layout"
+IFS='|' read -r vdevs vdev members bad kernel extra errors <<<"$layout"
 { [ "$vdevs" = 1 ] && [[ "$vdev" == mirror-* ]] && [ "$members" = 2 ]; } ||
   fail "pool mirror" "$POOL should be one mirror of two drives; zpool status shows $vdevs top-level vdev(s), the last '$vdev', with $members member(s)"
 [ -z "$bad" ] || fail "pool mirror" "mirror members not ONLINE:$bad"
@@ -203,6 +237,26 @@ IFS='|' read -r vdevs vdev members bad kernel extra <<<"$layout"
   fail "pool mirror" "members named by kernel name, which can change between boots:$kernel"
 [ -z "$extra" ] ||
   fail "pool mirror" "$POOL has devices outside its mirror, which the storage record does not describe:$extra"
+[ -z "$errors" ] ||
+  fail "pool errors" "$POOL counts read/write/checksum errors:$errors. Find the cause, then clear them with 'zpool clear $POOL'"
+grep -qx 'errors: No known data errors' <<<"$status" ||
+  fail "pool errors" "zpool status $POOL does not report 'No known data errors'"
+
+# The properties the storage record creates the pool with. ashift is fixed
+# when the pool is created, so a pool built without it must be built again.
+for setting in ashift=12 autotrim=on; do
+  value="$(zpool get -H -o value "${setting%%=*}" "$POOL")" ||
+    fail "pool properties" "cannot read ${setting%%=*} of $POOL"
+  [ "$value" = "${setting#*=}" ] ||
+    fail "pool properties" "$POOL ${setting%%=*} is '$value', expected ${setting#*=}"
+done
+# OpenZFS reads acltype=posixacl back as posix.
+for setting in compression=lz4 atime=off xattr=sa acltype=posix; do
+  value="$(pool_value "pool properties" "${setting%%=*}")"
+  [ "$value" != posixacl ] || value=posix
+  [ "$value" = "${setting#*=}" ] ||
+    fail "pool properties" "$POOL ${setting%%=*} is '$value', expected ${setting#*=}"
+done
 
 value="$(pool_value "pool encryption" encryption)"
 [ "$value" = aes-256-gcm ] || fail "pool encryption" "$POOL encryption is '$value', expected aes-256-gcm"
@@ -223,8 +277,21 @@ pool_size="$(zpool get -Hp -o value size "$POOL")" ||
   fail "pool size" "cannot read the size of $POOL"
 [[ "$pool_size" =~ ^[0-9]+$ ]] || fail "pool size" "cannot read the size of $POOL from '$pool_size'"
 
-systemctl is-enabled "$KEY_UNIT" >/dev/null 2>&1 ||
-  fail "key unit" "$KEY_UNIT is not enabled, so the pool would stay locked after a reboot"
+# The key unit must hold exactly what the storage record gives, and be enabled
+# in its own right. is-enabled also exits 0 for a static or indirect unit,
+# which nothing starts at boot, so its answer is read rather than its status.
+case "$(key_unit | compare_file "$KEY_UNIT_FILE")" in
+  absent)
+    fail "key unit" "$KEY_UNIT_FILE is missing, so the pool would stay locked after a reboot"
+    ;;
+  differs)
+    key_unit | diff -u "$KEY_UNIT_FILE" - >&2 || true
+    fail "key unit" "$KEY_UNIT_FILE differs from the storage record's unit above, so the pool may stay locked after a reboot"
+    ;;
+esac
+value="$(systemctl is-enabled "$KEY_UNIT" 2>/dev/null)" || true
+[ "$value" = enabled ] ||
+  fail "key unit" "$KEY_UNIT is '${value:-unknown}', not enabled, so the pool would stay locked after a reboot"
 # The drop-in must hold exactly what the storage record gives, and systemd
 # must have loaded it.
 case "$(docker_dropin | compare_file "$DOCKER_DROPIN")" in
@@ -238,6 +305,11 @@ case "$(docker_dropin | compare_file "$DOCKER_DROPIN")" in
 esac
 grep -qxF "$DOCKER_DROPIN" <<<"$(systemctl show -p DropInPaths --value docker.service | tr ' ' '\n')" ||
   fail "docker drop-in" "systemd does not load $DOCKER_DROPIN for docker.service, so Docker could start before the pool mounts"
+# A later drop-in can empty ExecStartPre and drop the guard with it, so the
+# guard must be among the commands systemd will run.
+guard="$(docker_dropin | sed -n "s/^ExecStartPre=\/bin\/sh -c '\(.*\)'\$/\1/p")"
+grep -qF -- "$guard" <<<"$(systemctl show -p ExecStartPre --value docker.service)" ||
+  fail "docker drop-in" "docker.service does not run the mount guard before it starts, so another drop-in overrides $DOCKER_DROPIN"
 
 command -v ufw >/dev/null || fail "ufw active" "ufw is not installed"
 ufw_status="$(ufw status)" || fail "ufw active" "could not read ufw status"
@@ -246,11 +318,54 @@ grep -qx 'Status: active' <<<"$ufw_status" || fail "ufw active" "ufw is not acti
 # on one interface or to one destination address, allowed or rate-limited,
 # from the address itself or a network that holds it.
 ssh_rule='^([0-9./]+ )?(22(/tcp)?|OpenSSH)( on [^ ]+)? +(ALLOW|LIMIT)( IN)? +([0-9.]+(/[0-9]+)?)( |$)'
+# Any rule: To, action, direction and the first word of From.
+ufw_rule='^(.*[^ ]) +(ALLOW|DENY|REJECT|LIMIT)( (IN|OUT|FWD))? +([^ ]+)'
+
+# Whether a UFW rule's To column may take in TCP port 22. Only a port list or
+# range that leaves 22 out, or a UDP rule, is taken not to; an address alone,
+# Anywhere and any application profile are taken to.
+may_cover_ssh() { # may_cover_ssh <To column>
+  local to="${1%% on *}" ports item
+  local -a items
+  ports="${to##* }"
+  case "$ports" in */udp) return 1 ;; esac
+  ports="${ports%/tcp}"
+  [[ "$ports" =~ ^[0-9][0-9,:]*$ ]] || return 0
+  IFS=, read -r -a items <<<"$ports"
+  for item in "${items[@]}"; do
+    case "$item" in
+      *:*) [ "${item%%:*}" -gt 22 ] || [ "${item#*:}" -lt 22 ] || return 0 ;;
+      *) [ "$item" -ne 22 ] || return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# UFW applies the first rule that matches, so a rule that denies or rejects
+# the jump host's SSH above the one admitting it shuts SSH out, however the
+# current session survives. Rules are read in order up to the first of either.
 ssh_admitted=0
+ssh_denied=""
 while IFS= read -r line; do
-  [[ "$line" =~ $ssh_rule ]] || continue
-  ! in_network "$JUMP_HOST_ADDRESS" "${BASH_REMATCH[7]}" || ssh_admitted=1
+  if [[ "$line" =~ $ssh_rule ]]; then
+    if in_network "$JUMP_HOST_ADDRESS" "${BASH_REMATCH[7]}"; then
+      ssh_admitted=1
+      break
+    fi
+    continue
+  fi
+  [[ "$line" =~ $ufw_rule ]] || continue
+  case "${BASH_REMATCH[2]}" in DENY | REJECT) ;; *) continue ;; esac
+  [ "${BASH_REMATCH[4]:-IN}" = IN ] || continue
+  case "$line" in *"(v6)"*) continue ;; esac
+  to="${BASH_REMATCH[1]}"
+  [ "${BASH_REMATCH[5]}" = Anywhere ] || in_network "$JUMP_HOST_ADDRESS" "${BASH_REMATCH[5]}" || continue
+  may_cover_ssh "$to" || continue
+  ssh_denied="$line"
+  break
 done <<<"$ufw_status"
+[ -z "$ssh_denied" ] ||
+  fail "ssh rule" "the UFW rule '$ssh_denied' comes before any rule admitting port 22 from $JUMP_HOST_ADDRESS, and UFW applies the first that matches. This script changes no firewall rule; fix it by hand, keeping your current session open"
 [ "$ssh_admitted" -eq 1 ] ||
   fail "ssh rule" "no UFW rule admits port 22 from $JUMP_HOST_ADDRESS. This script changes no firewall rule; fix it by hand, keeping your current session open"
 
@@ -272,10 +387,12 @@ case "$daemon_json_state" in
     fail "docker log config" "$DAEMON_JSON differs from the log rotation above. Merge the rotation into it by hand and restart Docker, then run this again"
     ;;
   absent)
-    running="$(docker ps -q)" ||
+    # Stopped containers count too: they keep the log settings they were
+    # created with, so they would start again without rotation.
+    containers="$(docker ps -aq)" ||
       fail "docker idle" "cannot list containers, so cannot tell whether restarting Docker is safe"
-    [ -z "$running" ] ||
-      fail "docker idle" "$DAEMON_JSON needs writing and Docker restarting, but containers are running. Stop them first"
+    [ -z "$containers" ] ||
+      fail "docker idle" "$DAEMON_JSON needs writing and Docker restarting, but containers exist, and they would keep logging without rotation. Remove them first"
     ;;
 esac
 
@@ -318,12 +435,21 @@ mismatch() { # mismatch <dataset> <property> <actual> <expected>
   echo "ERROR: $1: $2 is $3, expected $4" >&2
   mismatches=$((mismatches + 1))
 }
+# What every existing dataset must be, parent or not: mounted where it
+# belongs, so that a dataset created under it lands on it, and unlocked by the
+# pool's key, the only one the key unit loads at boot.
+check_existing() { # check_existing <dataset> <mount point>
+  actual="$(dataset_value mountpoint "$1")"
+  [ "$actual" = "$2" ] || mismatch "$1" mountpoint "$actual" "$2"
+  actual="$(dataset_value mounted "$1")"
+  [ "$actual" = yes ] || mismatch "$1" mounted "$actual" yes
+  actual="$(dataset_value encryptionroot "$1")"
+  [ "$actual" = "$POOL" ] || mismatch "$1" encryptionroot "$actual" "$POOL"
+}
 for name in $parents; do
   dataset="$POOL/$name"
   zfs list -H -o name "$dataset" >/dev/null 2>&1 || continue
-  actual="$(dataset_value mountpoint "$dataset")"
-  [ "$actual" = "$POOL_MOUNTPOINT/$name" ] ||
-    mismatch "$dataset" mountpoint "$actual" "$POOL_MOUNTPOINT/$name"
+  check_existing "$dataset" "$POOL_MOUNTPOINT/$name"
 done
 while read -r name property want; do
   [ -n "$name" ] || continue
@@ -336,13 +462,12 @@ while read -r name property want; do
     actual="$(dataset_value "$check_property" "$dataset")"
     [ "$actual" = "$expected" ] || mismatch "$dataset" "$check_property" "$actual" "$expected"
   done
-  actual="$(dataset_value mountpoint "$dataset")"
-  [ "$actual" = "$POOL_MOUNTPOINT/fil-one/$name" ] ||
-    mismatch "$dataset" mountpoint "$actual" "$POOL_MOUNTPOINT/fil-one/$name"
+  check_existing "$dataset" "$POOL_MOUNTPOINT/fil-one/$name"
 done <<<"$datasets"
 [ "$mismatches" -eq 0 ] ||
   fail datasets "$mismatches dataset value(s) differ from this script's and were left alone.
-       Change them by hand with 'zfs set', or change this script, then run it again."
+       Change them by hand with 'zfs set' or 'zfs mount', or change this script, then run it again.
+       A dataset with an encryption root of its own must be created again under the pool's key."
 
 # --- 2. Datasets -------------------------------------------------------------
 

@@ -146,8 +146,9 @@ without it.
 encryption and key file, the key unit, the Docker drop-in and the SSH rule. A failed check names
 itself and stops the run before anything changes.
 
-An existing dataset whose reservation, quota or mount point differs from the table above is
-reported and left alone, and so is an existing `/etc/docker/daemon.json` that differs from the log
+An existing dataset whose reservation, quota or mount point differs from the table above, that is
+unmounted, or that has an encryption root other than the pool, which the key unit would not unlock,
+is reported and left alone, and so is an existing `/etc/docker/daemon.json` that differs from the log
 rotation bootstrap would write. A smaller quota on a dataset that holds data, or a Docker restart
 under running containers, is not a change to apply unattended. A second run changes nothing.
 
