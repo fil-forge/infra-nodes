@@ -169,7 +169,9 @@ a hand edit, reviewed like any other change to the node.
 
 **The node takes backups.** `FILONE_TAKES_BACKUPS=true`, as on staging: provisioning stores the
 access key for central's production backup bucket and uploads the first OpenBao snapshot, and a
-timer takes one daily from then on. The dev node takes none.
+timer takes one daily from then on. The node will push Postgres backups to the same bucket once
+[catalog database replication and point-in-time recovery](https://app.shortcut.com/filone/story/131/catalog-database-replication-and-point-in-time-recovery)
+is implemented. The dev node takes none.
 
 ## Piri keeps its blobs on the site's disk array
 
