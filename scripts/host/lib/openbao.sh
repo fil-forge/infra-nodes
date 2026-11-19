@@ -581,11 +581,15 @@ pause_node_timers() {
 
 # Move the store in $FILONE_CONTROL_DIR/openbao to <destination>, and leave an
 # empty raft directory with the same owner and mode in its place. The caller
-# stops OpenBao first. The destination is in the control directory;
-# move_dir_aside says how the store gets there.
+# stops OpenBao first, and this refuses while its container is running: on a
+# node whose raft directory is a mount point the store is copied, and a copy
+# taken while OpenBao writes can hold half of a change. The destination is in
+# the control directory; move_dir_aside says how the store gets there.
 #
 # Usage: move_bao_store_aside <destination>
 move_bao_store_aside() {
+  ! container_running "$FILONE_BAO_CONTAINER" ||
+    die "$FILONE_BAO_CONTAINER is running; stop it before moving its store"
   move_dir_aside "$FILONE_CONTROL_DIR/openbao" "$1"
 }
 

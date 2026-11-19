@@ -99,6 +99,16 @@ done
 [ -z "$mode" ] || "$REAL_CHMOD" "$mode" "$1"
 STUB
 
+cat >"$BIN/docker" <<'STUB'
+#!/usr/bin/env bash
+# docker inspect -f '{{.State.Running}}' <container>: true while
+# $STUB_STATE/bao-running exists, else no such container.
+echo "docker $*" >>"$STUB_STATE/calls"
+[ "$1" = inspect ] || exit 2
+[ -e "$STUB_STATE/bao-running" ] || { echo "Error: No such object: ${*: -1}" >&2; exit 1; }
+echo true
+STUB
+
 "$REAL_CHMOD" +x "$BIN"/*
 PATH="$BIN:$PATH"
 
@@ -169,6 +179,16 @@ as_mount
 run move_bao_store_aside "$CONTROL/openbao.damaged-1"
 check "fails" test "$status" -ne 0
 check "leaves the store where it was" holds_store "$CONTROL/openbao"
+
+new_case "OpenBao still running"
+as_mount
+touch "$STUB_STATE/bao-running"
+run move_bao_store_aside "$CONTROL/openbao.damaged-1"
+check "fails" test "$status" -ne 0
+check "says OpenBao is running" said "filone-openbao is running"
+check "copies nothing" not_called '^cp '
+check "leaves the store where it was" holds_store "$CONTROL/openbao"
+check "leaves no destination" test ! -e "$CONTROL/openbao.damaged-1"
 
 echo "==> a drill's rollback"
 
