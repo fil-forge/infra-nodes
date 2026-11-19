@@ -53,6 +53,16 @@ new_case() {
 #!/usr/bin/env bash
 echo "docker $*" >>"$STUB_STATE/calls"
 case "$1" in
+  # Like Compose, refuse an --env-file that does not exist. The platform's live
+  # on a tmpfs, so they are gone after a reboot until a platform deploy.
+  compose)
+    previous=""
+    for arg in "$@"; do
+      if [ "$previous" = --env-file ] && [ ! -e "$arg" ]; then exit 1; fi
+      previous="$arg"
+    done
+    ;;
+  ps) cat "$STUB_STATE/container" ;;
   exec)
     printf '%s' "${PGPASSWORD:-}" >"$STUB_STATE/exec-pgpassword"
     cat >"$STUB_STATE/exec-stdin"
@@ -63,14 +73,6 @@ STUB
   PATH="$root/bin:$PATH"
 
   printf 'any-container\n' >"$STUB_STATE/container"
-}
-
-# Replaces lib.sh's compose_platform, which needs a node's env files.
-compose_platform() {
-  echo "compose $*" >>"$STUB_STATE/calls"
-  case "$1" in
-    ps) cat "$STUB_STATE/container" ;;
-  esac
 }
 
 # --- ensure_piri_database ----------------------------------------------------
@@ -86,6 +88,23 @@ compose_platform() {
     [ "$(cat "$STUB_STATE/exec-pgpassword")" = any-password ]
   check "never puts the admin password on the command line" \
     lacks any-password "$STUB_STATE/calls"
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+(
+  # No platform.env or openbao.env exist here, as on a node after a reboot,
+  # where reconcile runs the apps deploy without a platform deploy first.
+  new_case "creates the database when the platform's env files are gone"
+  POSTGRES_ADMIN_PASSWORD=any-password
+  ensure_piri_database piri-0
+  check "finds Postgres by its compose labels" \
+    grep -qF "docker ps -q --filter label=com.docker.compose.project=filone-platform --filter label=com.docker.compose.service=postgres" \
+    "$STUB_STATE/calls"
+  check "sends the CREATE to that container" \
+    grep -qF "docker exec -i -e PGPASSWORD any-container psql" "$STUB_STATE/calls"
   [ "$failures" -eq 0 ]
 ) || {
   failures=$((failures + 1))
