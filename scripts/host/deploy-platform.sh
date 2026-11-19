@@ -108,6 +108,18 @@ else
   echo "  nothing changed"
 fi
 
+# A change to the Caddyfile alone, such as the site block for a new Piri, is
+# reloaded into the running Caddy: no restart, so no gate and no stopped apps.
+# Any other Caddy change still recreates it below, behind the gate.
+if [[ " ${changed_services[*]} " == *" caddy "* ]] && caddy_only_caddyfile_changed; then
+  echo "  caddy: only the Caddyfile changed; reloading it in place"
+  reload_caddy
+  for i in "${!changed_services[@]}"; do
+    [ "${changed_services[$i]}" != caddy ] || unset 'changed_services[i]'
+  done
+  changed_services=("${changed_services[@]}")
+fi
+
 # --- Applying ----------------------------------------------------------------
 
 # Anything below that exits non-zero leaves Piri and Ingot down, so bring them
@@ -185,6 +197,11 @@ trap - EXIT
 for service in "${!platform_service_hash[@]}"; do
   config_hash_record "platform-$service" "${platform_service_hash[$service]}"
 done
+# What caddy_only_caddyfile_changed compares the next run's definition against.
+if [ -n "${platform_service_hash[caddy]:-}" ]; then
+  config_hash_record platform-caddy-definition \
+    "$(compose_config_hash compose_platform caddy definition)"
+fi
 # The project-wide record the per-service ones replaced.
 rm -f "$FILONE_STATE_DIR/platform.sha256"
 
