@@ -71,7 +71,7 @@ aws s3api list-buckets --query "Buckets[?starts_with(Name, 'forge-nodes-backups-
   after its last renewal, and it is bound to the node's IP.
 - **The root token from 1Password that was valid when the snapshot was taken.** That is the
   current one unless the root token was rotated after the snapshot;
-  [Snapshots taken before the rotation](rotate-openbao-root-token.md#snapshots-taken-before-the-rotation)
+  [Snapshots taken before the rotation](replace-openbao-root-token.md#snapshots-taken-before-the-rotation)
   says which token to use then, and to revoke it again afterwards. The restore brings the token
   back to life.
 - **The `AdministratorAccess` SSO role in the stage's central account**, for every AWS command

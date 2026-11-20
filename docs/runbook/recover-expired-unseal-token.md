@@ -148,7 +148,7 @@ scripts/host/provision-platform.sh
 
 Enter the wrapping token when prompted. The script then asks for the root token
 twice, once for the host token and once for the region key; it is in the
-operator password manager. Because the OpenBao store is already initialised,
+operator password manager, with a second copy at central. Because the OpenBao store is already initialised,
 the run reports that the region key already exists, starts OpenBao, regenerates
 the volatile environment files, and finishes the platform health check.
 
