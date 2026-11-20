@@ -811,7 +811,9 @@ grep -q '^Default: .*allow (outgoing)' <<<"$ufw_status" ||
 [ "$(sysctl -n net.ipv4.ip_forward)" = 1 ] ||
   fail forwarding "net.ipv4.ip_forward is off, so no container can reach the tunnel. Docker turns it on when it starts"
 
-host_addresses="$(ip -4 -o addr show | awk '{ print $4 }')"
+# One line per address: the link, then the address with its prefix.
+host_links="$(ip -4 -o addr show | awk '{ print $2, $4 }')"
+host_addresses="$(awk '{ print $2 }' <<<"$host_links")"
 on_host=0
 grep -q "^$VPN_SITE_PUBLIC_ADDRESS/" <<<"$host_addresses" && on_host=1
 if [ "$VPN_BEHIND_NAT" = false ] && [ "$on_host" = 0 ]; then
@@ -834,6 +836,21 @@ while read -r address; do
   ! in_network "${address%/*}" "$VPN_VPC_CIDR" ||
     fail routes "$address on this host is inside $VPN_VPC_CIDR"
 done <<<"$host_addresses"
+
+# No address on the host may overlap a tunnel's inside /30, either way round:
+# the /30's connected route on the tunnel interface would take the host's own
+# traffic to the addresses it covers. That covers the host's networks and every
+# Docker bridge, whose gateway address is on the host. The tunnel interfaces
+# hold their own /30s after a first run, so they are exempt.
+while read -r link address; do
+  [ -n "${address:-}" ] || continue
+  link="${link%@*}"
+  case "$link" in "$(tunnel_link 1)" | "$(tunnel_link 2)") continue ;; esac
+  for inside in "$VPN_TUNNEL1_INSIDE_LOCAL" "$VPN_TUNNEL2_INSIDE_LOCAL"; do
+    ! overlaps "$address" "$inside" ||
+      fail "host addresses" "$address on $link overlaps the tunnel inside network $inside"
+  done
+done <<<"$host_links"
 
 # The container subnets allowed into the tunnel, from Docker.
 VPN_CLIENT_SOURCES=""
