@@ -11,7 +11,7 @@
 SHELL := /bin/bash
 
 .PHONY: check
-check: check-tofu check-shell check-compose check-bind-mounts
+check: check-tofu check-shell check-script-tests check-compose check-bind-mounts
 
 # -backend=false because validating a root does not need its state, and reaching
 # the state bucket would need credentials the CI job does not have.
@@ -35,9 +35,28 @@ check-tofu:
 # The CI scripts source nothing, so they need neither flag.
 .PHONY: check-shell
 check-shell:
-	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
+	shellcheck -x -P SCRIPTDIR scripts/host/*.sh $(SCRIPT_TESTS) scripts/operator/*.sh
 	find nodes -name entrypoint.sh -exec shellcheck {} +
 	shellcheck scripts/ci/*.sh scripts/ci/*/*.sh
+
+# Every *.test.sh in the repository, at any depth, committed or new. Listed
+# through git, so a git worktree nested in the checkout, such as one under
+# .claude/worktrees, and ignored files are left out. $(wildcard) drops a
+# committed test deleted from the working tree.
+SCRIPT_TESTS := $(wildcard $(shell git ls-files --cached --others --exclude-standard -- '*.test.sh'))
+
+# The scripts' own tests: every *.test.sh in SCRIPT_TESTS. Each runs the script
+# under test against stub commands in a temporary directory, so it needs no
+# root and no node. Finding none means the listing broke, not that there is
+# nothing to test.
+.PHONY: check-script-tests
+check-script-tests:
+	@set -euo pipefail; \
+	[ -n "$(SCRIPT_TESTS)" ] || { echo "no *.test.sh found; is this a git checkout?" >&2; exit 1; }; \
+	for test in $(SCRIPT_TESTS); do \
+	  echo "==> $$test"; \
+	  bash "$$test"; \
+	done
 
 # `compose config` resolves every interpolation, so it catches a variable a
 # compose file expects and no env file supplies — which on a node shows up as a

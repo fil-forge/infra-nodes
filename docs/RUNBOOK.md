@@ -863,6 +863,54 @@ on the match. So switch in two steps, validating and restarting after each as in
 Saved queries, dashboards and alerts that select `job="piri"` stop matching once Piri reports the
 namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every Forge service.
 
+#### The prod/us-east-2 appliance on IST-1
+
+The host arrives with its ZFS pool, key unit and Docker drop-in built as
+[the storage record](decisions/2026-11-prod-us-east-2.md) describes, and with SSH
+admitted only from the jump host. The host has no out-of-band console, so keep a session open
+through every step here. Check out this repository on the host, then run, as root:
+
+```sh
+JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
+```
+
+Bootstrap first checks the pool, its encryption, that the key file unlocks it, the key unit, that
+the Docker drop-in holds exactly what the storage record gives, Compose 2.40 or later, the
+UFW rule admitting port 22 from `JUMP_HOST_ADDRESS`, the `filone` network's subnet if it exists,
+`/etc/docker/daemon.json`, and any datasets already under `data/fil-one`. It stops on the first
+check that fails, names it, and changes nothing. It never changes a firewall rule. The SSH rule
+counts only when it names no interface and no destination address, since a scoped rule may not
+admit the address SSH arrives on. Existing
+datasets with other quotas, reservations or mount points, that are unmounted, that have `canmount`
+set to anything but `on`, or that have an encryption root other than the pool are all reported
+before it stops, and are left for you to change by hand. So is a quota or reservation on `data`,
+`data/fil-one`, `data/fil-one/control` or `data/fil-one/ingot`, which must set neither.
+
+SSH depends on the UFW rule admitting port 22 from the jump host's address, the one passed as
+`JUMP_HOST_ADDRESS`. Keep that rule through every firewall change. Before any change to UFW or
+sshd, keep a session open, and close it only after a second login through the jump host succeeds.
+A broken jump host is repaired through AWS Session Manager, as
+[infra-central's jump host guide](https://github.com/fil-forge/infra-central/blob/main/docs/jump-host.md)
+describes. A lost rule or a broken sshd leaves a ticket with the provider as the only way back in.
+While nobody can log in, the containers keep running, and once step 7 enables the timers,
+reconcile still deploys merged changes every five minutes and the seal token still renews daily.
+On a node that takes backups, the OpenBao snapshot still uploads daily.
+
+It then creates the datasets under `data/fil-one` with their quotas and reservations and checks
+each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when there is none, and
+restarts Docker for it only when no container runs; an existing file that differs is shown as a
+diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
+systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value for
+the node's `node.env`.
+
+Reboot before anything holds state, and confirm the key loads, every dataset mounts and Docker
+starts:
+
+```sh
+zfs list -o name,quota,reservation,mounted -r data
+systemctl is-active docker.service
+```
+
 ### 4. The unseal token
 
 Central mints it, and only now: the token is bound to the node's address. For the appliance that is
