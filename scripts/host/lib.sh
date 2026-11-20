@@ -437,10 +437,13 @@ mark() {
 # outside the service block, so a change to one of them would otherwise read as
 # no change to any service. Without a service name, the whole project's
 # definition is hashed.
+#
+# With `definition` as the third argument, the bind-mounted files are left out,
+# so the hash changes only when the service definition itself does.
 compose_config_hash() {
-  local compose_fn="$1" service="${2:-}"
+  local compose_fn="$1" service="${2:-}" scope="${3:-}"
   "$compose_fn" config --format json |
-    FILONE_HASH_ROOT="$FILONE_NODE_DIR" python3 -c '
+    FILONE_HASH_ROOT="$FILONE_NODE_DIR" FILONE_HASH_SCOPE="$scope" python3 -c '
 import hashlib, json, os, sys
 
 document = json.load(sys.stdin)
@@ -466,7 +469,7 @@ else:
     config = document
 
 mounted = {}
-for name in sorted(services):
+for name in sorted(services) if os.environ["FILONE_HASH_SCOPE"] != "definition" else []:
     for volume in services[name].get("volumes") or []:
         if not isinstance(volume, dict) or volume.get("type") != "bind":
             continue
@@ -510,6 +513,36 @@ image_differs() {
   running="$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null || echo none)"
   desired="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo unknown)"
   [ "$running" != "$desired" ]
+}
+
+# --- Caddy -----------------------------------------------------------------
+
+# Whether the platform's Caddy changed in its Caddyfile alone: same image, same
+# definition as the last deploy recorded under platform-caddy-definition. Such a
+# change, like the site block for a new Piri, is applied by reload_caddy without
+# a restart. A Caddy that has never recorded a definition is not one, and
+# neither is a stopped Caddy, which has nothing to reload into and needs the
+# recreate that starts it.
+caddy_only_caddyfile_changed() {
+  [ -n "$(compose_platform ps -q caddy)" ] &&
+    ! image_differs compose_platform caddy &&
+    ! config_changed platform-caddy-definition "$(compose_config_hash compose_platform caddy definition)"
+}
+
+# Load the checkout's Caddyfile into the running Caddy. Caddy validates the new
+# config before it swaps it in and keeps serving the old one if it is invalid.
+#
+# Sent over stdin rather than read from Caddy's bind mount: the mount holds the
+# file the container started with, and the checkout replaces the file rather
+# than writing into it, so the mounted copy goes stale.
+reload_caddy() {
+  local container
+  container="$(compose_platform ps -q caddy)"
+  [ -n "$container" ] || die "Caddy is not running, so there is nothing to reload"
+  docker exec -i "$container" sh -c \
+    'cat >/tmp/Caddyfile && caddy reload --config /tmp/Caddyfile --adapter caddyfile' \
+    <"$FILONE_NODE_DIR/platform/config/caddy/Caddyfile" ||
+    die "Caddy refused the new Caddyfile and kept serving the old one"
 }
 
 # --- Piri ------------------------------------------------------------------
