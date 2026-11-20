@@ -11,8 +11,12 @@
 # directory shares its parent's filesystem (dev, staging) and on one where it
 # is a mount point of its own (prod/us-east-2's control/openbao dataset); the
 # node.env values provision-apps.sh and deploy-apps.sh require for the
-# apps, and the secrets they need in OpenBao; and the
-# node.env placeholders deploy-apps.sh and deploy-platform.sh refuse.
+# apps, and the secrets they need in OpenBao; the
+# node.env placeholders deploy-apps.sh and deploy-platform.sh refuse; and the
+# import service's helpers: its placeholders, address, password file, DSN
+# check and site secret file, the hash a changed render forgets, the container
+# removed when a setting is a placeholder again, and the key source its compose
+# definition gives it.
 #
 # No real mount is made. Stub stat, mv, cp and install come first on PATH: stat
 # reports a directory named in $STUB_STATE/mounts as on a device of its own,
@@ -428,6 +432,320 @@ while read -r _ name placeholder; do
     2>/dev/null || result=refuse
   check "$name $placeholder: refuse" test "$result" = refuse
 done <<<"$refusals"
+
+echo "==> the import service"
+
+# Each case runs in a subshell with the node's node.env loaded, as filone_init
+# loads it, and the node directory copied so versions.env can be edited.
+import_case() { # import_case <name>
+  new_case "$1"
+  "$REAL_CP" -R "$NODES/prod/us-east-2" "$CASE/node"
+}
+placeholders() { # placeholders [NAME=value...]: what import_service_placeholders prints
+  # shellcheck disable=SC1091
+  (set -a; . "$CASE/node/node.env"; set +a; FILONE_NODE_DIR="$CASE/node"
+    for assignment in "$@"; do export "${assignment?}"; done
+    import_service_placeholders)
+}
+configured=(IMPORT_SERVICE_ALLOWED_CLIENTS=box-1 IMPORT_SERVICE_LEASE_HOLDER=site-a
+  IMPORT_SERVICE_S3_BUCKET=packs IMPORT_SERVICE_RECOVERY_PUBLIC_KEY=00ff)
+has_line() { grep -qxF -- "$1" <<<"$2"; }
+lacks_line() { ! has_line "$@"; }
+pin_image() { # pin_image <reference>
+  grep -v '^IMPORT_SERVICE_IMAGE=' "$CASE/node/apps/versions.env" >"$CASE/versions.env"
+  echo "IMPORT_SERVICE_IMAGE=$1" >>"$CASE/versions.env"
+  "$REAL_MV" "$CASE/versions.env" "$CASE/node/apps/versions.env"
+}
+
+import_case "prod/us-east-2 as committed"
+got="$(placeholders)"
+for name in IMPORT_SERVICE_IMAGE IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
+  IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
+  check "names $name" has_line "$name" "$got"
+done
+check "names nothing else" test "$(grep -c . <<<"$got")" -eq 5
+check "accepts the committed port" lacks_line IMPORT_SERVICE_PORT "$got"
+check "accepts the empty prefix" lacks_line IMPORT_SERVICE_S3_PREFIX "$got"
+
+import_case "every setting and the pin filled"
+pin_image "registry.example/import:v1@sha256:$(printf '%064d' 0)"
+check "names nothing" test -z "$(placeholders "${configured[@]}")"
+
+import_case "one setting left"
+pin_image "registry.example/import:v1@sha256:$(printf '%064d' 0)"
+check "names it" test "$(placeholders "${configured[@]}" IMPORT_SERVICE_LEASE_HOLDER=PLACEHOLDER)" = \
+  IMPORT_SERVICE_LEASE_HOLDER
+check "names an empty one too" test "$(placeholders "${configured[@]}" IMPORT_SERVICE_S3_BUCKET=)" = \
+  IMPORT_SERVICE_S3_BUCKET
+
+import_case "pin left"
+check "names the image" test "$(placeholders "${configured[@]}")" = IMPORT_SERVICE_IMAGE
+
+# The deploy that waits on Piri and Ingot leaves the service to deploy-import.sh.
+if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
+  import_case "the apps deploy's services"
+  core="$(FILONE_NODE_DIR="$CASE/node" FILONE_NODE=prod/us-east-2 apps_core_services)"
+  check "leave the import service out" lacks_line import-service "$core"
+  check "keep Ingot" has_line ingot "$core"
+  check "keep the Piri" has_line piri-0 "$core"
+else
+  echo "  skip the apps deploy's services: no docker compose here"
+fi
+
+# deploy-import.sh's address, password file and DSN check. Documentation
+# networks and made-up values only.
+new_case "the import service's address on the filone network"
+check "is the last usable address of a /16" \
+  test "$(import_service_address 172.18.0.0/16)" = 172.18.255.254
+check "is the last usable address of a /30" \
+  test "$(import_service_address 192.0.2.0/30)" = 192.0.2.2
+check "refuses a network with no room" eval '! import_service_address 192.0.2.0/31 2>/dev/null'
+check "refuses an IPv6 network" eval '! import_service_address 2001:db8::/64 2>/dev/null'
+check "refuses something that is no network" eval '! import_service_address filone 2>/dev/null'
+
+new_case "the ledger's password file line"
+check "matches any host, port, database and user" \
+  test "$(import_pgpass_line 'plain')" = '*:*:*:*:plain'
+check "escapes a colon and a backslash" \
+  test "$(import_pgpass_line 'a:b\c')" = '*:*:*:*:a\:b\\c'
+
+new_case "a ledger DSN carrying a password"
+for dsn in 'host=db.example dbname=ledger password=x' 'host=db.example PASSWORD=x' \
+  'postgresql://import:x@db.example/ledger' 'postgresql://db.example/ledger?password=x'; do
+  check "is refused: $dsn" ledger_dsn_has_password "$dsn"
+done
+for dsn in 'host=db.example dbname=ledger user=import' 'postgresql://import@db.example/ledger' \
+  'postgresql://import@db.example:5432/ledger' 'postgresql://db.example:5432/ledger'; do
+  check "is accepted without one: $dsn" eval "! ledger_dsn_has_password '$dsn'"
+done
+
+# The site secret file: OpenBao's base64 decoded to the bytes the service
+# reads, with the service's own refusal of a secret shorter than 32 bytes once
+# surrounding whitespace is stripped. Made-up secrets only. Each case runs in a
+# subshell, as die exits.
+site_secret_case() { # site_secret_case <name>
+  new_case "$1"
+  SECRETS="$CASE/secrets"
+  "$REAL_MKDIR" -p "$SECRETS"
+}
+write_site_secret() { # write_site_secret <base64>: import_site_secret_file's status
+  site_status=0
+  (FILONE_SECRETS_DIR="$SECRETS"
+    import_site_secret_file filone/import-service#site_secret "$SECRETS/site-secret" "$1") \
+    >"$CASE/stdout" 2>"$CASE/stderr" || site_status=$?
+}
+no_temp_left() { test -z "$(find "$SECRETS" -name '.write.*')"; }
+says_nothing_of() { ! grep -qF -- "$1" "$CASE/stdout" "$CASE/stderr"; }
+secret_a="$(printf 'a%.0s' $(seq 32) | base64)"
+secret_b="$(printf 'b%.0s' $(seq 40) | base64)"
+
+site_secret_case "a site secret, first written"
+write_site_secret "$secret_a"
+check "reports the change" test "$site_status" -eq 0
+check "holds the decoded bytes" test "$(cat "$SECRETS/site-secret")" = "$(printf 'a%.0s' $(seq 32))"
+check "is read-only to its owner alone" test -n "$(find "$SECRETS/site-secret" -perm 400)"
+check "leaves no temp file" no_temp_left
+write_site_secret "$secret_a"
+check "reports no change when written again" test "$site_status" -eq 1
+check "leaves no temp file then either" no_temp_left
+write_site_secret "$secret_b"
+check "reports a changed secret as a change" test "$site_status" -eq 0
+check "holds the changed secret" test "$(cat "$SECRETS/site-secret")" = "$(printf 'b%.0s' $(seq 40))"
+
+site_secret_case "a site secret with a trailing newline on the base64"
+write_site_secret "$secret_a
+"
+check "is accepted" test "$site_status" -eq 0
+
+site_secret_case "a site secret of 31 bytes"
+short="$(printf 'c%.0s' $(seq 31) | base64)"
+write_site_secret "$short"
+check "is refused" test "$site_status" -ne 0
+check "names the field" grep -q 'filone/import-service#site_secret' "$CASE/stderr"
+check "says why" grep -q 'fewer than 32 bytes' "$CASE/stderr"
+check "does not print the value" says_nothing_of "$short"
+check "writes no file" test ! -e "$SECRETS/site-secret"
+check "leaves no temp file" no_temp_left
+
+site_secret_case "a site secret of 32 bytes, two of them surrounding spaces"
+padded="$(printf ' %s ' "$(printf 'd%.0s' $(seq 30))" | base64)"
+write_site_secret "$padded"
+check "is refused, as the service strips them" test "$site_status" -ne 0
+check "writes no file" test ! -e "$SECRETS/site-secret"
+
+site_secret_case "a site secret that is not base64"
+write_site_secret 'not base64 at all!'
+check "is refused" test "$site_status" -ne 0
+check "names the field" grep -q 'filone/import-service#site_secret' "$CASE/stderr"
+check "says why" grep -q 'not base64' "$CASE/stderr"
+check "does not print the value" says_nothing_of 'not base64 at all!'
+check "writes no file" test ! -e "$SECRETS/site-secret"
+check "leaves no temp file" no_temp_left
+
+site_secret_case "a changed site secret, replacing the file the last deploy wrote"
+write_site_secret "$secret_a"
+STATE="$CASE/state-dir"
+"$REAL_MKDIR" -p "$STATE"
+echo recorded >"$STATE/apps-import-service.sha256"
+site_status=0
+(FILONE_SECRETS_DIR="$SECRETS" FILONE_STATE_DIR="$STATE" forget_hash_on_change apps-import-service \
+  import_site_secret_file filone/import-service#site_secret "$SECRETS/site-secret" "$secret_b") ||
+  site_status=$?
+check "reports the change" test "$site_status" -eq 0
+check "forgets the recorded hash, so the service is recreated" \
+  test ! -e "$STATE/apps-import-service.sha256"
+
+# A run that writes one changed secret and dies before the next leaves the
+# recorded hash gone, so the retry, which reads that file as unchanged, still
+# recreates the service. true and false stand in for a render that changed its
+# file and one that did not: write_secret_file itself needs root to write the
+# 0400 file it creates.
+render_case() { # render_case <name> <command>: forget_hash_on_change's status
+  new_case "$1"
+  STATE="$CASE/state-dir"
+  "$REAL_MKDIR" -p "$STATE"
+  echo recorded >"$STATE/apps-import-service.sha256"
+  render_status=0
+  (FILONE_STATE_DIR="$STATE" forget_hash_on_change apps-import-service "$2") ||
+    render_status=$?
+}
+
+render_case "a render that changes a file" true
+check "reports the change" test "$render_status" -eq 0
+check "forgets the recorded hash at once" test ! -e "$STATE/apps-import-service.sha256"
+
+render_case "a render that changes nothing" false
+check "reports no change" test "$render_status" -eq 1
+check "keeps the recorded hash" test -e "$STATE/apps-import-service.sha256"
+
+# A hash that cannot be removed, here through an rm that fails as it would on
+# a read-only state directory, would leave a changed render looking unchanged.
+# The call sits in an if, as it does inside mark, where errexit is off, so only
+# an exit stops the run.
+new_case "a render that changes a file, with the hash not removable"
+STATE="$CASE/state-dir"
+"$REAL_MKDIR" -p "$STATE"
+echo recorded >"$STATE/apps-import-service.sha256"
+render_status=0
+(rm() { return 1; }
+if FILONE_STATE_DIR="$STATE" forget_hash_on_change apps-import-service true; then :; fi
+touch "$CASE/continued") 2>"$CASE/stderr" || render_status=$?
+check "stops the run" test "$render_status" -ne 0
+check "goes no further" test ! -e "$CASE/continued"
+check "says why" grep -q 'could not forget' "$CASE/stderr"
+
+# A docker stand-in for import_service_remove: inspect succeeds for a container
+# named in $STUB_STATE/containers and otherwise answers as Docker does for a
+# missing container, unless $STUB_STATE/docker-down makes it answer as a CLI
+# that cannot reach the daemon. Every call is logged.
+remove_service() {
+  status=0
+  (docker() {
+    echo "docker $*" >>"$STUB_STATE/calls"
+    if [ -e "$STUB_STATE/docker-down" ]; then
+      echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2
+      return 1
+    fi
+    case "$1" in
+      inspect)
+        grep -qxF "${*: -1}" "$STUB_STATE/containers" 2>/dev/null && return 0
+        echo "Error: No such container: ${*: -1}" >&2
+        return 1
+        ;;
+      rm) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  import_service_remove filone-import-service) >"$CASE/stdout" 2>"$CASE/stderr" || status=$?
+}
+
+new_case "settings back to a placeholder, with the service running"
+echo filone-import-service >"$STUB_STATE/containers"
+remove_service
+check "succeeds" test "$status" -eq 0
+check "inspects it as a container" called '^docker inspect --type container filone-import-service$'
+check "removes the container" called '^docker rm -f filone-import-service$'
+check "does not claim it is running" eval "! grep -q 'still runs' '$CASE/stdout'"
+check "says what it removes" grep -q 'removing filone-import-service' "$CASE/stdout"
+
+new_case "settings back to a placeholder, with no container"
+remove_service
+check "succeeds" test "$status" -eq 0
+check "removes nothing" not_called '^docker rm'
+
+new_case "settings back to a placeholder, with the Docker daemon not answering"
+touch "$STUB_STATE/docker-down"
+remove_service
+check "fails" test "$status" -ne 0
+check "removes nothing" not_called '^docker rm'
+check "says why" grep -q 'could not ask Docker' "$CASE/stderr"
+
+# container_exists tells a missing container from a daemon that did not answer.
+exists_status() { # exists_status: container_exists's status under the stub above
+  status=0
+  (docker() {
+    if [ -e "$STUB_STATE/docker-down" ]; then
+      echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2
+      return 1
+    fi
+    grep -qxF "${*: -1}" "$STUB_STATE/containers" 2>/dev/null && return 0
+    echo "Error: No such container: ${*: -1}" >&2
+    return 1
+  }
+  container_exists filone-import-service) 2>/dev/null || status=$?
+}
+
+new_case "container_exists"
+exists_status
+check "returns 1 for no such container" test "$status" -eq 1
+echo filone-import-service >"$STUB_STATE/containers"
+exists_status
+check "returns 0 for a container" test "$status" -eq 0
+touch "$STUB_STATE/docker-down"
+exists_status
+check "returns 2 when the daemon does not answer" test "$status" -eq 2
+
+current="deploy-import.sh"
+# shellcheck disable=SC2016 # the literal line deploy-import.sh holds
+check "removes the service while a setting is a placeholder" \
+  grep -qxF '  import_service_remove "$CONTAINER"' "$SCRIPTS/deploy-import.sh"
+check "renders every secret through forget_hash_on_change" \
+  test "$(grep -cE '^mark rendered (write_secret_file|render_template)' \
+    "$SCRIPTS/deploy-import.sh")" -eq 0
+# shellcheck disable=SC2016 # the literal line deploy-import.sh holds
+check "defines render() through forget_hash_on_change" \
+  grep -qxF 'render() { mark rendered forget_hash_on_change "$hash_name" "$@"; }' \
+  "$SCRIPTS/deploy-import.sh"
+check "defines render() once" \
+  test "$(grep -cE '^render\(\)' "$SCRIPTS/deploy-import.sh")" -eq 1
+check "renders all six files that way" \
+  test "$(grep -cE '^render (write_secret_file|render_template) ' "$SCRIPTS/deploy-import.sh")" -eq 6
+check "renders the site secret that way too" \
+  test "$(grep -cE '^render import_site_secret_file ' "$SCRIPTS/deploy-import.sh")" -eq 1
+# shellcheck disable=SC2016 # the literal line deploy-import.sh holds
+check "renders the site secret before giving the files to the service's user" \
+  test "$(grep -nE '^render import_site_secret_file ' "$SCRIPTS/deploy-import.sh" | cut -d: -f1)" \
+    -lt "$(grep -nE '^chown "\$SERVICE_UID' "$SCRIPTS/deploy-import.sh" | cut -d: -f1)"
+check "reads no key service login" \
+  eval "! grep -qE 'keys_role_id|keys_secret_id|KEYS_ADDR' '$SCRIPTS/deploy-import.sh'"
+
+current="the import service's compose definition"
+IMPORT_COMPOSE="$NODES/prod/us-east-2/apps/compose.yml"
+IMPORT_ENV_TEMPLATE="$NODES/prod/us-east-2/apps/templates/import-service.env.tpl"
+check "points the service at the rendered site secret" \
+  grep -qxF '      IST1_PACK_SITE_SECRET: /run/import/site-secret' "$IMPORT_COMPOSE"
+check "sets no OpenBao key source, since the service takes exactly one" \
+  eval "! grep -q 'IST1_PACK_OPENBAO_' '$IMPORT_COMPOSE' '$IMPORT_ENV_TEMPLATE'"
+mounts_read_only() {
+  grep -A3 -F 'source: /run/fil-one/secrets/import-service' "$IMPORT_COMPOSE" |
+    grep -qF 'read_only: true'
+}
+check "mounts the secrets directory read-only" mounts_read_only
+
+current="deploy-apps.sh"
+# shellcheck disable=SC2016 # the literal line deploy-apps.sh holds
+check "hands the import service to deploy-import.sh, outside its own success" \
+  grep -qxF '"$SCRIPT_DIR/deploy-import.sh" || true' "$SCRIPTS/deploy-apps.sh"
 
 echo
 if [ "$failures" -ne 0 ]; then

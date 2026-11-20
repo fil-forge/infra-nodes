@@ -370,6 +370,38 @@ stops, as it does for every appliance container. Nothing alerts on an engine tha
 requests, or that a deploy never started or left unhealthy; the two queries above cover those. Add alerts for them
 before the engine runs on a node that serves customers.
 
+### The import service
+
+On prod/us-east-2, `import-service` ships its container logs and cAdvisor metrics like the other
+containers, under `service_name="appliance-prod-us-east-2-import-service"`. It is not on Piri's or
+Ingot's path: when it is down, imports stop and Piri and Ingot keep serving. The apps deploy hands
+it to `deploy-import.sh` after it has recorded the Piris and Ingot as deployed. While any of its
+settings is a placeholder, that script logs which ones, starts nothing, removes a container an
+earlier deploy left and records no retry. Removing that container fires the "Appliance container
+is not running" alert below for `import-service`, which stays on until it is silenced or the
+service is deployed again. When the service fails to deploy or to come up healthy, it logs a
+warning to the reconcile journal, and every reconcile pass retries it on its own until it comes
+up. The `apps` stamp does not cover it, so the warning is the signal:
+
+```logql
+{node="prod/us-east-2", unit="filone-reconcile.service"} |= "WARNING: the import service"
+```
+
+infra-central's "Appliance container is not running" alert fires when `import-service` stops, as
+it does for every appliance container. Nothing alerts on a service that runs and fails its imports.
+Once the service has come up, every reconcile pass applies its firewall table, which puts back a
+table that went missing or was flushed, or whose client set was changed by hand; a pass that cannot
+apply it logs `WARNING: the import service's firewall`, which the query above matches. When that
+pass also finds no table loaded, it stops the service, so the "Appliance container is not running"
+alert fires, and the next pass's deploy loads the table before it starts the service again. A pass
+that cannot stop it, or cannot leave the retry marker after stopping it, fails, and the reconcile
+deadman goes stale. `scripts/host/import-firewall.sh status` says what the loaded table's client set admits, and exits non-zero when the table is gone
+or has lost its drop rule, or its client set differs from the list, or the list has not been
+applied. Add an alert on that warning, and one for failing imports, before the service takes production
+imports.
+[Set up the import service](runbook/set-up-import-service.md) covers its settings, deploy and
+checks.
+
 ### The deploy stamp
 
 `deploy_last_success_timestamp` is the Unix time of the last successful pass of each project, with
