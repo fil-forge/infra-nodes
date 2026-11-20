@@ -51,13 +51,14 @@ status="$(gen -status -format=json </dev/null)" || die "could not read the root 
      'bao operator generate-root -cancel'."
 
 otp="$(gen -generate-otp </dev/null)"
-nonce="$(gen -init -otp="$otp" -format=json </dev/null | jq -r .nonce)"
 
 # Cancel this script's own attempt unless it completes, so a wrong key or an
-# interrupted run leaves nothing in progress.
+# interrupted run leaves nothing in progress. Set before -init, which may start
+# the attempt even when its output never arrives.
 completed=false
 trap '[ "$completed" = true ] || gen -cancel </dev/null >/dev/null 2>&1 || true' EXIT
 trap 'exit 130' INT TERM HUP
+nonce="$(gen -init -otp="$otp" -format=json </dev/null | jq -r .nonce)"
 [ -n "$nonce" ] || die "OpenBao started no attempt"
 
 echo "  Paste this node's recovery key. It is not echoed here."
@@ -71,6 +72,7 @@ encoded="$(printf '%s' "$recovery_key" | gen -nonce="$nonce" -format=json - | jq
 unset recovery_key
 [ -n "$encoded" ] || die "OpenBao returned no token; check that the key is this node's recovery key"
 completed=true
+mark_openbao_written
 
 echo
 echo "  New root token, shown once:"
@@ -81,3 +83,5 @@ echo
 echo "  Store it in 1Password, replacing the lost one, and at central with the"
 echo "  unchanged recovery key: 'make store-appliance-root-credentials' in"
 echo "  infra-central. Then clear this terminal's scrollback."
+echo
+request_openbao_snapshot
