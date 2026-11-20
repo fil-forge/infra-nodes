@@ -33,7 +33,9 @@ How it is wired:
   missing list closes the port to everyone. `deploy-import.sh` applies the list on every run, before
   it starts the service. After a reboot the service cannot start until that deploy renders its
   certificates. Once the service has come up, every reconcile pass applies the list as well, so a
-  table flushed or deleted by hand is back within five minutes.
+  table flushed or deleted by hand, or a client set changed by hand, is back within five minutes.
+  When a pass finds the table gone and cannot load it, it stops the service, which fires the
+  container alert, and the next pass's deploy loads the table before it starts the service again.
 
 ## Settings and secrets
 
@@ -115,6 +117,8 @@ The script refuses a line that is not an IPv4 address or a network with no host 
 that overlaps another, and `0.0.0.0/0`, and a refused list changes nothing. It replaces the whole
 table in one load, so an address taken off the list loses its access, open connections included.
 It touches no other table and no UFW rule. A second run with the same list loads nothing.
+`status` reports the addresses the loaded table's client set holds, and fails when they differ
+from the list.
 
 The table filters only what reaches the host. When the provider runs a firewall or translates the
 host's address in front of it, as `VPN_BEHIND_NAT` allows for the VPN, that firewall must also

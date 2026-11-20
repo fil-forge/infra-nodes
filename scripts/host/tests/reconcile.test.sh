@@ -53,6 +53,7 @@ write_stubs() {
   cat >"$bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >>"$STUB_STATE/calls"
+[ "$1" != stop ] || [ ! -e "$STUB_STATE/docker-stop-fails" ] || exit 1
 [ "$1" = exec ] || exit 0
 while [ "$#" -gt 0 ] && [ "$1" != bao ]; do shift; done
 shift
@@ -115,6 +116,11 @@ write_deploy_stub() {
   local name="$1"
   {
     echo '#!/usr/bin/env bash'
+    if [ "$name" = import-firewall.sh ]; then
+      # `loaded` answers whether the table is in force, from a file.
+      # shellcheck disable=SC2016 # expanded by the stub, not here
+      echo 'if [ "${1:-}" = loaded ]; then echo "import-firewall.sh loaded" >>"$STUB_STATE/deploys"; [ -e "$STUB_STATE/firewall-loaded" ]; exit; fi'
+    fi
     # shellcheck disable=SC2016 # expanded by the stub, not here
     printf 'echo %s >>"$STUB_STATE/deploys"\n' "$name"
     # shellcheck disable=SC2016 # expanded by the stub, not here
@@ -221,6 +227,8 @@ not_deployed() { ! deployed "$1"; }
 no_deploys() { [ ! -s "$STUB_STATE/deploys" ]; }
 only_deployed() { [ "$(cat "$STUB_STATE/deploys")" = "$1" ]; }
 stamped() { [ -f "$ROOT/mnt/fil-one/control/state/deploys/$1" ]; }
+stopped() { grep -qx "docker stop $1" "$STUB_STATE/calls"; }
+not_stopped() { ! grep -q '^docker stop' "$STUB_STATE/calls"; }
 
 show_output_on_failure() {
   local before="$1"
@@ -304,14 +312,51 @@ check "applies the import service's firewall" deployed import-firewall.sh
 check "and deploys nothing" only_deployed import-firewall.sh
 show_output_on_failure "$before"
 
-current="deployed, the import service deployed before, its firewall fails"
-touch "$STUB_STATE/fail-import-firewall.sh"
+current="deployed, the import service deployed before, its firewall fails with the table loaded"
+touch "$STUB_STATE/fail-import-firewall.sh" "$STUB_STATE/firewall-loaded"
 before=$failures
 run_reconcile
 check "exits zero" succeeded
 check "tried the firewall" deployed import-firewall.sh
 check "warns" said "WARNING: the import service's firewall"
+check "says the earlier table stays" said "the table loaded before stays in force"
+check "leaves the service running" not_stopped
+check "asks for no retry" test ! -e "$ROOT/mnt/fil-one/control/state/import-retry"
 check "stamps the reconcile pass" stamped reconcile
+show_output_on_failure "$before"
+
+new_case "deployed, the import service deployed before, its firewall fails with no table"
+deployed_at_head
+touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" "$STUB_STATE/fail-import-firewall.sh"
+before=$failures
+run_reconcile
+check "exits zero" succeeded
+check "asks whether the table is loaded" deployed "import-firewall.sh loaded"
+check "warns" said "stopping the import service so its port is not open to every address"
+check "stops the service" stopped filone-import-service
+check "leaves a retry for the next pass" test -e "$ROOT/mnt/fil-one/control/state/import-retry"
+check "stamps the reconcile pass" stamped reconcile
+show_output_on_failure "$before"
+
+current="deployed, the import service's firewall fails with no table, the next pass"
+rm -f "$STUB_STATE/fail-import-firewall.sh"
+: >"$STUB_STATE/calls"
+before=$failures
+run_reconcile
+check "exits zero" succeeded
+check "runs the service's deploy, which loads the table and starts it" deployed deploy-import.sh
+check "stops nothing" not_stopped
+show_output_on_failure "$before"
+
+new_case "deployed, the import service's firewall fails with no table and it cannot be stopped"
+deployed_at_head
+touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" \
+  "$STUB_STATE/fail-import-firewall.sh" "$STUB_STATE/docker-stop-fails"
+before=$failures
+run_reconcile
+check "exits non-zero" failed
+check "says why" said "could not stop filone-import-service"
+check "does not stamp the reconcile pass" eval '! stamped reconcile'
 show_output_on_failure "$before"
 
 new_case "deployed, both retries"

@@ -197,11 +197,23 @@ fi
 # deploy records its configuration hash. Its port is open to every address
 # whenever its firewall table is gone, and deploy-import.sh loads the table only
 # when it runs. The script loads nothing when the table matches the list. A
-# failure is a warning, as for the service's own deploy: Piri and Ingot are not
-# involved.
-if [ -e "$FILONE_STATE_DIR/apps-import-service.sha256" ]; then
-  "$FILONE_CHECKOUT/scripts/host/import-firewall.sh" ||
-    echo "WARNING: the import service's firewall table could not be applied; see above." >&2
+# failure that leaves the table loaded, such as a refused edit to the list, is a
+# warning, as for the service's own deploy: the table loaded before still
+# admits only the earlier list, and Piri and Ingot are not involved. A failure
+# that leaves no table stops the service, so its port is never open to every
+# address. That fires the container alert, and the retry marker has the next
+# pass run deploy-import.sh, which loads the table before it starts the service
+# again. The container is named in nodes/<node>/apps/compose.yml.
+if [ -e "$FILONE_STATE_DIR/apps-import-service.sha256" ] &&
+  ! "$FILONE_CHECKOUT/scripts/host/import-firewall.sh"; then
+  if "$FILONE_CHECKOUT/scripts/host/import-firewall.sh" loaded; then
+    echo "WARNING: the import service's firewall table could not be applied; the table loaded before stays in force. See above." >&2
+  else
+    echo "WARNING: the import service's firewall table is gone and could not be loaded; stopping the import service so its port is not open to every address. See above." >&2
+    touch "$FILONE_STATE_DIR/import-retry"
+    docker stop filone-import-service >/dev/null ||
+      die "could not stop filone-import-service, whose port is open to every address"
+  fi
 fi
 
 # Stamped on every pass that gets this far, including a pass that deployed
