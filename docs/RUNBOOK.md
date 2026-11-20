@@ -1229,7 +1229,9 @@ waits for staging to reach the commit and pass its smoke and end-to-end tests, t
 hold prod back; a staging failure leaves the prod pull requests as they were, and the `main`
 ruleset keeps them from merging until a later push passes. Running `promote-prod.yml` by hand
 rebuilds every prod pull request on current `main` without waiting for staging, and the pull
-request says so.
+request says so. That is also the way to bring a prod pull request that is behind `main` up to
+date; "Update branch" works too, but it makes a person the committer, so the bot then leaves the
+branch alone.
 
 Holding a service back and auto-merge work as for staging: push to the node's branch yourself,
 and the bot leaves it alone while its pull request is open. A prod pin by hand is

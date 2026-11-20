@@ -17,7 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CI="$HERE/.."
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/promote-test.XXXXXX")"
-trap '[ -n "${KEEP-}" ] || rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"' EXIT
 
 # The global git config of whoever runs this, commit signing say, stays out.
 printf '[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' >"$WORK/gitconfig"
@@ -157,6 +157,7 @@ promote() {
 
 origin_head() { git --git-dir="$CASE/origin.git" rev-parse --verify --quiet "refs/heads/$1"; }
 has_branch() { origin_head "$1" >/dev/null; }
+not() { ! "$@" >/dev/null 2>&1; }
 calls_contain() { grep -qF -- "$1" "$STUB_STATE/calls"; }
 changed_files() { git --git-dir="$CASE/origin.git" diff --name-only "$1^" "$1"; }
 
@@ -285,7 +286,7 @@ done
 
 setup "a run without a staging job"
 echo '{"jobs": [{"name": "Test dev", "conclusion": "success"}]}' >"$STUB_STATE/jobs.json"
-check "prints passed=false" test "$(scripts/ci/promote-prod/staging-passed.sh 77 2>/dev/null)" = "passed=false"
+check "fails" not scripts/ci/promote-prod/staging-passed.sh 77
 
 echo
 if [ "$failures" -gt 0 ]; then

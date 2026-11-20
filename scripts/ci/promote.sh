@@ -267,6 +267,7 @@ moving=()
     echo "This pull request is rebuilt each time $SOURCE passes Test nodes after a push to"
     echo "\`main\`, and closed once $TARGET matches $SOURCE."
   fi
+  echo
   echo "To hold a service back, push to \`$BRANCH\` by hand: the bot leaves the branch"
   echo "alone while this pull request is open."
 } >"$body"

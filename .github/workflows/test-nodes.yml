@@ -191,6 +191,8 @@ jobs:
   # job records how it ended, and the report job below turns those records
   # into one alert.
   test:
+    # scripts/ci/promote-prod/staging-passed.sh finds staging's job by this
+    # name; change both together.
     name: Test ${{ matrix.node }}
     needs: select
     # A stage whose every node sets FILONE_TESTED=false selects nothing, and a
