@@ -628,6 +628,11 @@ new_case "an inside remote outside its /30"
 set_input VPN_TUNNEL2_INSIDE_REMOTE 169.254.200.9
 expect_input_failure inputs "is not another address in VPN_TUNNEL2_INSIDE_LOCAL"
 
+new_case "both tunnels in one inside /30"
+set_input VPN_TUNNEL2_INSIDE_LOCAL 169.254.200.1/30
+set_input VPN_TUNNEL2_INSIDE_REMOTE 169.254.200.2
+expect_input_failure inputs "VPN_TUNNEL1_INSIDE_LOCAL $INSIDE1_LOCAL and VPN_TUNNEL2_INSIDE_LOCAL 169.254.200.1/30 overlap"
+
 new_case "VPN_BEHIND_NAT neither true nor false"
 set_input VPN_BEHIND_NAT maybe
 expect_input_failure inputs "must be true or false"

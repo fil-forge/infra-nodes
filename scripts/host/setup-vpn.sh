@@ -192,6 +192,12 @@ in_network() { # in_network <address> <address[/prefix]>
   [ $((address & mask)) -eq $((network & mask)) ]
 }
 
+# Two prefixes are either nested or apart, so they overlap when either one's
+# address lies in the other. Host bits in either are harmless.
+overlaps() { # overlaps <address[/prefix]> <address[/prefix]>
+  in_network "${1%/*}" "$2" || in_network "${2%/*}" "$1"
+}
+
 is_network() { # an address/prefix with no host bits set
   local address prefix="${1#*/}" mask
   is_cidr "$1" || return 1
@@ -711,6 +717,10 @@ for n in 1 2; do
   in_network "${!remote_var}" "${!local_var}" && [ "${!remote_var}" != "${!local_var%/*}" ] ||
     fail inputs "$remote_var ${!remote_var} is not another address in $local_var ${!local_var}"
 done
+# Each tunnel needs a /30 of its own: on a shared one, both interfaces would
+# claim the same connected route.
+! overlaps "$VPN_TUNNEL1_INSIDE_LOCAL" "$VPN_TUNNEL2_INSIDE_LOCAL" ||
+  fail inputs "VPN_TUNNEL1_INSIDE_LOCAL $VPN_TUNNEL1_INSIDE_LOCAL and VPN_TUNNEL2_INSIDE_LOCAL $VPN_TUNNEL2_INSIDE_LOCAL overlap"
 
 # The keys. Read into the environment of this run only, and checked without
 # printing them: a message names the file or path, never the value.
