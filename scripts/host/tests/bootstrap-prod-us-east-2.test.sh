@@ -72,7 +72,8 @@ STUB
   # each property is a file in its directory. An unset quota or reservation
   # reads 0, which is what `zfs get -p` prints for none, and an unset
   # mountpoint is inherited from the nearest ancestor that sets one. An unset
-  # encryptionroot reads data, as for a dataset that inherits the pool's key.
+  # encryptionroot reads data, as for a dataset that inherits the pool's key,
+  # and an unset canmount reads on, its default.
   # A file get-fails-<property> makes reading that property fail.
   cat >"$bin/zfs" <<'STUB'
 #!/usr/bin/env bash
@@ -99,7 +100,7 @@ case "$1" in
       done
       echo "$(cat "$root/$(key "$d")/mountpoint")$rest"
     else
-      case "$prop" in quota|reservation) echo 0 ;; encryptionroot) echo data ;; *) echo - ;; esac
+      case "$prop" in quota|reservation) echo 0 ;; encryptionroot) echo data ;; canmount) echo on ;; *) echo - ;; esac
     fi ;;
   create)
     shift
@@ -490,6 +491,10 @@ new_case "pool not mounted"
 zfs_set data mounted no
 expect_check_failure "pool mounted"
 
+new_case "pool mounted by hand with canmount=noauto"
+zfs_set data canmount noauto
+expect_check_failure "pool canmount"
+
 new_case "pool degraded"
 echo DEGRADED >"$STATE/zpool-health"
 expect_check_failure "pool health"
@@ -872,6 +877,38 @@ check "reports the encryption root" \
   said "data/fil-one/control/state: encryptionroot is data/fil-one/control/state, expected data"
 check "creates none of the missing ones" not_called '^zfs create'
 check "changes nothing" changed_nothing
+
+new_case "existing dataset mounted by hand with canmount=noauto"
+zfs_set data/fil-one/control/state quota "$EXPECT_STATE_QUOTA"
+zfs_set data/fil-one/control/state mounted yes
+zfs_set data/fil-one/control/state canmount noauto
+run_bootstrap
+check "exits non-zero" failed
+check "reports canmount" said "data/fil-one/control/state: canmount is noauto, expected on"
+check "creates none of the missing ones" not_called '^zfs create'
+check "changes nothing" changed_nothing
+
+new_case "existing parent dataset mounted by hand with canmount=noauto"
+zfs_set data/fil-one mounted yes
+zfs_set data/fil-one canmount noauto
+run_bootstrap
+check "exits non-zero" failed
+check "reports canmount" said "data/fil-one: canmount is noauto, expected on"
+check "changes nothing" changed_nothing
+
+for property in quota reservation; do
+  for dataset in data data/fil-one data/fil-one/ingot; do
+    new_case "$dataset with a $property"
+    zfs_set "$dataset" mounted yes
+    zfs_set "$dataset" "$property" 1000000
+    run_bootstrap
+    check "exits non-zero" failed
+    check "reports the $property" said "$dataset: $property is 1000000, expected 0"
+    check "leaves the $property alone" prop_is "$dataset" "$property" 1000000
+    check "creates none of the missing ones" not_called '^zfs create'
+    check "changes nothing" changed_nothing
+  done
+done
 
 new_case "created datasets that do not mount"
 touch "$STATE/create-unmounted"

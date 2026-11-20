@@ -881,9 +881,10 @@ UFW rule admitting port 22 from `JUMP_HOST_ADDRESS`, the `filone` network's subn
 check that fails, names it, and changes nothing. It never changes a firewall rule. The SSH rule
 counts only when it names no interface and no destination address, since a scoped rule may not
 admit the address SSH arrives on. Existing
-datasets with other quotas, reservations or mount points, that are unmounted, or that have an
-encryption root other than the pool are all reported before it stops, and are left for you to
-change by hand.
+datasets with other quotas, reservations or mount points, that are unmounted, that have `canmount`
+set to anything but `on`, or that have an encryption root other than the pool are all reported
+before it stops, and are left for you to change by hand. So is a quota or reservation on `data`,
+`data/fil-one`, `data/fil-one/control` or `data/fil-one/ingot`, which must set neither.
 
 SSH depends on the UFW rule admitting port 22 from the jump host's address, the one passed as
 `JUMP_HOST_ADDRESS`. Keep that rule through every firewall change. Before any change to UFW or

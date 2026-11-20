@@ -199,6 +199,11 @@ value="$(pool_value "pool mountpoint" mountpoint)"
   fail "pool mountpoint" "$POOL is mounted at '$value', expected $POOL_MOUNTPOINT"
 value="$(pool_value "pool mounted" mounted)"
 [ "$value" = yes ] || fail "pool mounted" "$POOL is not mounted"
+# A dataset with canmount=noauto or off can be mounted by hand, and still stays
+# unmounted at boot, where the Docker drop-in then refuses to start Docker.
+value="$(pool_value "pool canmount" canmount)"
+[ "$value" = on ] ||
+  fail "pool canmount" "$POOL canmount is '$value', expected on; it would not mount at boot"
 
 value="$(zpool get -H -o value health "$POOL")" ||
   fail "pool health" "cannot read the health of $POOL"
@@ -450,20 +455,30 @@ mismatch() { # mismatch <dataset> <property> <actual> <expected>
   mismatches=$((mismatches + 1))
 }
 # What every existing dataset must be, parent or not: mounted where it
-# belongs, so that a dataset created under it lands on it, and unlocked by the
-# pool's key, the only one the key unit loads at boot.
+# belongs, so that a dataset created under it lands on it, mounted again at
+# boot, and unlocked by the pool's key, the only one the key unit loads at boot.
 check_existing() { # check_existing <dataset> <mount point>
   actual="$(dataset_value mountpoint "$1")"
   [ "$actual" = "$2" ] || mismatch "$1" mountpoint "$actual" "$2"
   actual="$(dataset_value mounted "$1")"
   [ "$actual" = yes ] || mismatch "$1" mounted "$actual" yes
+  actual="$(dataset_value canmount "$1")"
+  [ "$actual" = on ] || mismatch "$1" canmount "$actual" on
   actual="$(dataset_value encryptionroot "$1")"
   [ "$actual" = "$POOL" ] || mismatch "$1" encryptionroot "$actual" "$POOL"
 }
-for name in $parents; do
-  dataset="$POOL/$name"
+# A quota above the six datasets caps them all together, and a reservation
+# there takes space they were promised, so the pool's root dataset and the
+# parents must set neither. zfs get -p reads none as 0.
+for name in "" $parents; do
+  dataset="$POOL${name:+/$name}"
   zfs list -H -o name "$dataset" >/dev/null 2>&1 || continue
-  check_existing "$dataset" "$POOL_MOUNTPOINT/$name"
+  for check_property in quota reservation; do
+    actual="$(dataset_value "$check_property" "$dataset")"
+    [ "$actual" = 0 ] || mismatch "$dataset" "$check_property" "$actual" 0
+  done
+  # The pool checks above cover the root dataset's mount and key.
+  [ -z "$name" ] || check_existing "$dataset" "$POOL_MOUNTPOINT/$name"
 done
 while read -r name property want; do
   [ -n "$name" ] || continue
@@ -481,6 +496,7 @@ done <<<"$datasets"
 [ "$mismatches" -eq 0 ] ||
   fail datasets "$mismatches dataset value(s) differ from this script's and were left alone.
        Change them by hand with 'zfs set' or 'zfs mount', or change this script, then run it again.
+       A quota or reservation expected to be 0 is cleared with 'zfs set <property>=none'.
        A dataset with an encryption root of its own must be created again under the pool's key."
 
 # --- 2. Datasets -------------------------------------------------------------
