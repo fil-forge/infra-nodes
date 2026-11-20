@@ -25,8 +25,9 @@ that, and nothing in that one can read this node's keys.
 
 A node's host decides how it is built. Terraform creates the dev node's EC2 host, which you then
 provision over SSM. The eu-central-3 appliance is bare metal that already runs Lotus, Caddy and
-Alloy; Terraform only points DNS at it. Each stage has one node today, so step 3 names both — but
-hosting is what decides, not stage.
+Alloy; Terraform only points DNS at it. The prod/us-east-2 appliance is bare metal on the IST-1 host,
+with its state on a ZFS pool and Caddy and Alloy in its platform project. Each stage has one node
+today, so step 3 names all three, but hosting is what decides, not stage.
 
 Steps 1 and 2 are the same for any node. Step 3 is where they differ. Steps 4 to 7 are one
 procedure run with the values step 3 establishes.
@@ -88,8 +89,8 @@ they get it. It is a public address, so any channel will do.
 `INGOT_LOCAL_BLOB_MAX_BYTES` becomes Ingot's `local_blob_max_bytes`: one byte budget for its spool
 (bodies being written or waiting for upload to Piri) and its cache (copies of bodies Piri already
 holds). Every 30 seconds a sweeper evicts cached bodies, oldest first, down to 90% of it. Ingot reads
-0 as no budget, and its cache then keeps every body until the disk fills, so `deploy-apps.sh`
-refuses anything but a positive byte count. On the EC2 nodes Ingot has the data volume to itself,
+0 as no budget, and its cache then keeps every body until the disk fills, so `provision-apps.sh`
+and `deploy-apps.sh` refuse anything but a positive byte count. On the EC2 nodes Ingot has the data volume to itself,
 so size the budget from that volume's filesystem:
 
 1. Start from 90% of the filesystem's size, the most it can hold before infra-central's "Ingot
@@ -131,6 +132,25 @@ to 2026-10-26. With the 5% root reserve
 and what was already there, it leaves the root filesystem about half used. The staging host is not
 the forge-perf box, so its own rate may be lower; the budget errs on the large side.
 
+Prod/us-east-2: Ingot's spool and cache have the `ingot/blobs` dataset to themselves, and its
+catalog log has `ingot/segments`. Bootstrap sets the blobs quota to 50% of the pool and prints the
+budget, 80% of that quota, which leaves room for bodies in flight and stays under the 10%-free
+alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB ten-minute peak.
+Bootstrap's run on 2026-11-20 printed 3071760610099 (80% of the 3839700762624-byte quota), which
+`node.env` commits. A second host needs its own printed value committed before step 6.
+`provision-apps.sh` and `deploy-apps.sh` refuse anything but a positive byte count.
+
+Central's prod files name no PDP verifier or FWSS view address, so the node's two come from the
+FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` return them.
+
+Prod/us-east-2's Piri keeps its blobs in S3-compatible object storage, through the `[repo.s3]`
+section of its base config, because the piri dataset's 50 GiB quota is sized for its config and
+state. Commit `PIRI_S3_ENDPOINT` and `PIRI_S3_BUCKET_PREFIX` from the storage provider's details
+before step 6: `provision-apps.sh` refuses to start while either is empty, and asks for the access
+key id and secret key, which it stores as `filone/external`'s `piri_s3_access_key_id` and
+`piri_s3_secret_access_key`. `deploy-apps.sh` refuses to start a Piri without all four.
+`piri init` copies the credentials into the config it writes on the piri dataset.
+
 Add `FILONE_TESTED=false` to a new node's node.env. `test-nodes.yml` tests every node under
 `nodes/` of a tested stage from the moment its node.env merges, and a node that is not serving yet
 would fail every hour. Step 7 removes the line once the node is up.
@@ -140,17 +160,18 @@ would fail every hour. Step 7 removes the line once the node is up.
 Everything before this step is the same for any node; everything after it is the same procedure run
 with this node's own values:
 
-| | dev | eu-central-3 |
-|---|---|---|
-| `STAGE` | `dev` | `staging` |
-| `REGION` | `us-east-9` | `eu-central-3` |
-| `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` |
-| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` |
-| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` |
-| Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy |
-| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 |
-| Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` |
-| `provision-platform.sh` also asks for | the chain.love and Grafana Cloud tokens | the chain.love token; Alloy is the host's |
+| | dev | eu-central-3 | prod/us-east-2 |
+|---|---|---|---|
+| `STAGE` | `dev` | `staging` | `prod` |
+| `REGION` | `us-east-9` | `eu-central-3` | `us-east-2` |
+| `NODE_IP` | the Elastic IP the apply allocated | `23.83.66.244` | the host's egress address, recorded at provisioning |
+| Shell on the node | `scripts/operator/ssm-session.sh dev`, then `sudo -i` | `ssh root@23.83.66.244` | SSH through the jump host |
+| Checkout | `/opt/fil-one/infra-nodes` | `/root/fil-one/infra-nodes` | `/opt/fil-one/infra-nodes`, on the OS disk |
+| Platform services | Postgres, Caddy, Alloy | Postgres; the host owns Caddy and Alloy | Postgres 18, Caddy, Alloy |
+| Piris | `piri-0` to `piri-2`, each on its own EBS volume at `/mnt/fil-one/piri-<n>`, in `piri-<n>/` on it | `piri-0` to `piri-2`, in `/mnt/data/fil-one/data/piri-<n>`, on loopback ports 15100 to 15102 | `piri-0`, in `piri-0/` on the `piri` dataset at `/mnt/data/fil-one/piri` |
+| Piri hostnames | `piri-<n>.us-east-9.latest.dev.fil-forge.com` | `piri-<n>.eu-central-3.staging.fil-forge.com` | `piri-0.us-east-2.fil-forge.com` |
+| `provision-platform.sh` also asks for | the Grafana Cloud token | nothing; Alloy is the host's | the Grafana Cloud token |
+| `provision-apps.sh` asks for | the chain.love token | the chain.love token | the chain.love token and the object storage credentials |
 
 #### The dev node on EC2
 
@@ -868,11 +889,20 @@ namespace. Change them to `job="forge/piri"`, or to `job=~"forge/.+"` for every 
 The host arrives with its ZFS pool, key unit and Docker drop-in built as
 [the storage record](decisions/2026-11-prod-us-east-2.md) describes, and with SSH
 admitted only from the jump host. The host has no out-of-band console, so keep a session open
-through every step here. Check out this repository on the host, then run, as root:
+through every step here.
+
+Clone this repository to `/opt/fil-one/infra-nodes`, on the OS disk, then run bootstrap from
+there, as root:
 
 ```sh
+git clone --branch main https://github.com/fil-forge/infra-nodes.git /opt/fil-one/infra-nodes
+cd /opt/fil-one/infra-nodes
 JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
 ```
+
+Bootstrap refuses to run from a checkout anywhere else.
+[The storage record](decisions/2026-11-prod-us-east-2.md#the-checkout) says why the
+checkout is not on the pool.
 
 Bootstrap first checks the pool, its encryption, that the key file unlocks it, the key unit, that
 the Docker drop-in holds exactly what the storage record gives, Compose 2.40 or later, the
@@ -900,8 +930,20 @@ It then creates the datasets under `data/fil-one` with their quotas and reservat
 each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when there is none, and
 restarts Docker for it only when no container runs; an existing file that differs is shown as a
 diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
-systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value for
-the node's `node.env`.
+systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value;
+commit it in `nodes/prod/us-east-2/node.env`, with the object storage endpoint and bucket prefix,
+before step 6. The file already holds the value the 2026-11-20 run printed; the endpoint and
+bucket prefix are still to commit.
+
+`nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao, the state directory, Caddy's
+state and Alloy's write-ahead log to their `control/` datasets (Caddy's to `data/` and `config/`
+on `control/caddy`), Piri to `piri-0/` on `piri`, and Ingot's data directory to `ingot/blobs` with
+`ingot/segments` over its `segments`.
+
+Caddy publishes 80 and 443 on every host address. The host has one public address, so that is the
+address it serves. If the host gains a second address, publish the two ports on the public one
+alone, as `"<address>:80:80"` and `"<address>:443:443"` in
+`nodes/prod/us-east-2/platform/compose.yml`, and open them only there.
 
 Reboot before anything holds state, and confirm the key loads, every dataset mounts and Docker
 starts:
@@ -998,10 +1040,12 @@ While central works on that, fund each Piri's owner wallet. Every Piri has its o
 provider registry allows one provider per address. A Piri registers itself in the registry on its
 first start, and that transaction sends 5 tFIL from its wallet, so send each one at least 6 from a
 Calibration faucet. The addresses are printed by `onboarding-request.sh`, and also readable
-directly:
+directly, for the Piris the node's apps compose file defines:
 
 ```sh
-for piri in piri-0 piri-1 piri-2; do
+. /etc/fil-one/node.conf
+for piri in $(docker compose --project-directory "$FILONE_CHECKOUT/nodes/$FILONE_NODE/apps" \
+    config --no-interpolate --services | grep -E '^piri-[0-9]+$' | sort -V); do
   address="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec \
     -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN filone-openbao \
     bao kv get -mount=filone -field=owner_wallet_address "$piri")"
@@ -1034,6 +1078,12 @@ script strips whitespace, so the extra newline does no harm. Then start the apps
 ```sh
 scripts/host/provision-apps.sh
 ```
+
+It first checks that `node.env` holds what the apps need from step 2, Ingot's byte budget and, on
+a node whose Piris keep their blobs in object storage, its endpoint and bucket prefix, and stops
+before it asks for anything if one is missing. It then asks for the chain.love token and, on such a
+node, the object storage access key id and secret key, skipping any OpenBao holds already.
+`deploy-apps.sh` refuses to start the apps while OpenBao lacks one of them, and names it.
 
 A second onboarding run at central is safe. It performs only what is missing and returns the same
 delegation byte for byte, so a node that lost its copy can ask for it again.
@@ -1082,7 +1132,8 @@ starts testing the node after every merge and every hour.
 ## Day-to-day operations
 
 Commands in this section run from the infra-nodes checkout: `/opt/fil-one/infra-nodes` on the
-cloud nodes and `/root/fil-one/infra-nodes` on staging, the `FILONE_CHECKOUT` value in
+cloud nodes and on prod/us-east-2, and `/root/fil-one/infra-nodes` on staging, the
+`FILONE_CHECKOUT` value in
 `/etc/fil-one/node.conf`.
 
 ### Open a shell on a node.
@@ -1953,9 +2004,12 @@ period needs [Recover an expired unseal token](runbook/recover-expired-unseal-to
 
 If a volume did not mount, nothing starts on it. Docker refuses every container whose data lives
 there (`bind source path does not exist` in `docker start` output). Without the control volume,
-every host script stops with `the control volume is not mounted`. Without a Piri's volume, the apps
-deploy leaves that Piri stopped, deploys the rest and fails, so reconcile retries every pass. Mount
-the volume; for the control volume, then run `scripts/host/deploy-platform.sh`.
+every host script stops with `the control volume is not mounted`. On a node whose `node.env` sets
+`FILONE_STATE_DIR_IS_MOUNT=true`, as prod/us-east-2's does for its `control/state` dataset, every
+host script also stops with `the state directory ... is not a mount point` while that dataset is
+unmounted. Without a Piri's volume, the apps deploy leaves that Piri stopped, deploys the rest and
+fails, so reconcile retries every pass. Mount the volume; for the control volume or the state
+dataset, then run `scripts/host/deploy-platform.sh`.
 
 Reconcile starts the apps on every boot, including in the middle of a manual recovery where you
 stopped them on purpose. Before rebooting during one, disable the timer, so it stays off across the

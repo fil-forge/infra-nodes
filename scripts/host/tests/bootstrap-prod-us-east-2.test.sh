@@ -4,7 +4,7 @@
 #   scripts/host/tests/bootstrap-prod-us-east-2.test.sh
 #
 # The script runs as root against a real pool, so here it runs against stubs.
-# Each case puts stub zfs, zpool, docker, ufw, systemctl and id commands first
+# Each case puts stub zfs, zpool, docker, ufw, systemctl, git and id commands first
 # on PATH. They answer from files in a temporary directory and append every
 # call to a log the assertions read. Stub install, cmp, diff and rm commands
 # absorb the file reads and writes: a path under /etc, /run, /mnt, /var/lib or
@@ -37,6 +37,8 @@ OTHER=198.51.100.7
 EXPECT_POSTGRES_RESERVATION=$((POOL_SIZE * 20 / 100 / MIB * MIB))
 EXPECT_OPENBAO_RESERVATION=$((10 * GIB))
 EXPECT_STATE_QUOTA=$((50 * GIB))
+EXPECT_CADDY_QUOTA=$((1 * GIB))
+EXPECT_ALLOY_QUOTA=$((10 * GIB))
 EXPECT_PIRI_QUOTA=$((50 * GIB))
 EXPECT_SEGMENTS_QUOTA=$((POOL_SIZE * 5 / 100 / MIB * MIB))
 EXPECT_BLOBS_QUOTA=$((POOL_SIZE * 50 / 100 / MIB * MIB))
@@ -66,6 +68,15 @@ write_stubs() {
 echo "id $*" >>"$STUB_STATE/calls"
 [ "$1" = -u ] && { cat "$STUB_STATE/uid"; exit 0; }
 exit 1
+STUB
+
+  # Where git says the checkout the script runs from is. No file means the
+  # script is not in a checkout.
+  cat >"$bin/git" <<'STUB'
+#!/usr/bin/env bash
+echo "git $*" >>"$STUB_STATE/calls"
+[ "$*" = "-C $STUB_RUNNING_FROM rev-parse --show-toplevel" ] || exit 1
+cat "$STUB_STATE/checkout" 2>/dev/null
 STUB
 
   # Datasets are directories under $STUB_STATE/zfs, named with % for /, and
@@ -278,6 +289,7 @@ new_case() {
   : >"$STATE/calls"
 
   echo 0 >"$STATE/uid"
+  echo /opt/fil-one/infra-nodes >"$STATE/checkout"
   echo 2.40.3 >"$STATE/compose-version"
   : >"$STATE/containers"
 
@@ -413,6 +425,7 @@ run_bootstrap() {
   set +e
   env "${jump[@]}" PATH="$CASE/bin:$PATH" \
     STUB_STATE="$STATE" STUB_ROOT="$ROOT" TMPDIR="$CASE/tmp" \
+    STUB_RUNNING_FROM="$(cd "$HERE/../../.." && pwd -P)" \
     REAL_CMP="$REAL_CMP" REAL_DIFF="$REAL_DIFF" REAL_RM="$REAL_RM" \
     bash "$SCRIPT" >"$CASE/stdout" 2>"$CASE/stderr"
   status=$?
@@ -474,6 +487,17 @@ echo "bootstrap-prod-us-east-2.sh"
 new_case "not root"
 echo 1000 >"$STATE/uid"
 expect_check_failure root
+
+new_case "not in a git checkout"
+rm "$STATE/checkout"
+expect_check_failure checkout
+
+for elsewhere in /root/fil-one/infra-nodes /mnt/data/fil-one/infra-nodes; do
+  new_case "checkout at $elsewhere"
+  echo "$elsewhere" >"$STATE/checkout"
+  expect_check_failure checkout
+  check "names the expected location" said "belongs at /opt/fil-one/infra-nodes"
+done
 
 new_case "old Compose"
 echo 2.39.1 >"$STATE/compose-version"
@@ -777,6 +801,10 @@ check "creates control/openbao with its reservation" \
   prop_is data/fil-one/control/openbao reservation "$EXPECT_OPENBAO_RESERVATION"
 check "creates control/state with its quota" \
   prop_is data/fil-one/control/state quota "$EXPECT_STATE_QUOTA"
+check "creates control/caddy with its quota" \
+  prop_is data/fil-one/control/caddy quota "$EXPECT_CADDY_QUOTA"
+check "creates control/alloy with its quota" \
+  prop_is data/fil-one/control/alloy quota "$EXPECT_ALLOY_QUOTA"
 check "creates piri with its quota" \
   prop_is data/fil-one/piri quota "$EXPECT_PIRI_QUOTA"
 check "creates ingot/segments with its quota" \
@@ -784,8 +812,8 @@ check "creates ingot/segments with its quota" \
 check "creates ingot/blobs with its quota" \
   prop_is data/fil-one/ingot/blobs quota "$EXPECT_BLOBS_QUOTA"
 check "tries the key file without loading it" called '^zfs load-key -n data$'
-check "creates exactly six datasets" \
-  test "$(grep -c '^zfs create' "$STATE/calls")" -eq 6
+check "creates exactly eight datasets" \
+  test "$(grep -c '^zfs create' "$STATE/calls")" -eq 8
 check "checks where the blobs dataset mounted" called '^zfs get .*mountpoint data/fil-one/ingot/blobs$'
 check "writes daemon.json with json-file rotation" \
   grep -q '"log-driver": "json-file"' "$ROOT/etc/docker/daemon.json"
@@ -793,7 +821,7 @@ check "restarts Docker for the new daemon.json" called '^systemctl restart docke
 check "creates the filone network" called '^docker network create --subnet 172\.18\.0\.0/16 filone'
 check "writes node.conf for prod/us-east-2" grep -qx 'FILONE_NODE=prod/us-east-2' "$ROOT/etc/fil-one/node.conf"
 check "node.conf tracks main" grep -qx 'FILONE_GIT_REF=main' "$ROOT/etc/fil-one/node.conf"
-check "node.conf names the checkout" grep -q '^FILONE_CHECKOUT=/' "$ROOT/etc/fil-one/node.conf"
+check "node.conf names the checkout" grep -qx 'FILONE_CHECKOUT=/opt/fil-one/infra-nodes' "$ROOT/etc/fil-one/node.conf"
 check "writes the tmpfiles.d entries" grep -qx 'd /run/fil-one/secrets 0700 root root -' "$ROOT/etc/tmpfiles.d/filone.conf"
 check "creates the secrets tmpfs directory" test -d "$ROOT/run/fil-one/secrets"
 check "installs the systemd units" test -f "$ROOT/etc/systemd/system/filone-reconcile.timer"
@@ -922,6 +950,75 @@ touch "$STATE/restart-fails"
 run_bootstrap
 check "exits non-zero" failed
 check "names the check 'docker restart'" said "check 'docker restart' failed"
+
+# --- The node directory ------------------------------------------------------
+
+# nodes/prod/us-east-2 binds the datasets this script creates. Read statically,
+# without docker: every bind in its compose files is written as a source line
+# followed by its target line.
+NODE_DIR="$HERE/../../../nodes/prod/us-east-2"
+
+new_case "the node directory matches the datasets"
+run_bootstrap
+check "succeeds" succeeded
+# Each dataset the run created, as the mount point bootstrap checked it at.
+mounts="$(sed -nE 's#^zfs create .* data/(fil-one/[^ ]+)$#/mnt/data/\1#p' "$STATE/calls")"
+# One line per bind: project, source, target.
+binds="$(for project in platform apps; do
+  awk -v project="$project" '
+    $1 == "source:" { source = $2; next }
+    $1 == "target:" && source != "" { print project " " source " " $2 }
+    { source = "" }
+  ' "$NODE_DIR/$project/compose.yml"
+done)"
+bind_source() { # bind_source <project> <target>: the source bound at that target
+  awk -v project="$1" -v target="$2" '$1 == project && $3 == target { print $2 }' <<<"$binds"
+}
+mount_of() { # mount_of <path>: the created dataset whose mount point holds it
+  local mount best=""
+  for mount in $mounts; do
+    case "$1/" in "$mount"/*) [ "${#mount}" -le "${#best}" ] || best="$mount" ;; esac
+  done
+  printf '%s' "$best"
+}
+node_value() { sed -nE "s/^$1=(.*)$/\\1/p" "$NODE_DIR/node.env" | tail -1; }
+
+check "node.env's control directory is the control datasets' parent" \
+  test "$(node_value FILONE_CONTROL_DIR)" = /mnt/data/fil-one/control
+check "node.env has filone_init require control/state to be mounted" \
+  test "$(node_value FILONE_STATE_DIR_IS_MOUNT)" = true
+check "node.env's data directory is the Ingot datasets' parent" \
+  test "$(node_value FILONE_DATA_DIR)" = /mnt/data/fil-one/ingot
+check "Postgres is bound to control/postgres" \
+  test "$(mount_of "$(bind_source platform /var/lib/postgresql)")" = /mnt/data/fil-one/control/postgres
+check "OpenBao is bound to control/openbao" \
+  test "$(mount_of "$(bind_source platform /openbao/file)")" = /mnt/data/fil-one/control/openbao
+check "the status document is served from control/state" \
+  test "$(mount_of "$(bind_source platform /srv/filone/.well-known)")" = /mnt/data/fil-one/control/state
+check "the deploy stamps are read from control/state" \
+  test "$(mount_of "$(bind_source platform /metrics)")" = /mnt/data/fil-one/control/state
+check "Caddy's certificates are on control/caddy" \
+  test "$(mount_of "$(bind_source platform /data)")" = /mnt/data/fil-one/control/caddy
+check "Caddy's autosaved config is on control/caddy" \
+  test "$(mount_of "$(bind_source platform /config)")" = /mnt/data/fil-one/control/caddy
+check "Alloy's write-ahead log is control/alloy" \
+  test "$(bind_source platform /var/lib/alloy/data)" = /mnt/data/fil-one/control/alloy
+check "the Piri is bound to a directory on the piri dataset" \
+  test "$(mount_of "$(bind_source apps /data/piri)")" = /mnt/data/fil-one/piri
+check "the Piri's directory is below the dataset's mount point" \
+  test "$(bind_source apps /data/piri)" != /mnt/data/fil-one/piri
+check "Ingot's data directory is ingot/blobs" \
+  test "$(bind_source apps /data)" = /mnt/data/fil-one/ingot/blobs
+check "Ingot's segments are ingot/segments" \
+  test "$(bind_source apps /data/segments)" = /mnt/data/fil-one/ingot/segments
+# Every bind from /mnt, named above or not, lies on a dataset the run created
+# rather than on a parent such as control, which has no quota of its own.
+off_dataset=""
+while read -r _ source _; do
+  case "$source" in /mnt/*) ;; *) continue ;; esac
+  [ -n "$(mount_of "$source")" ] || off_dataset="$off_dataset $source"
+done <<<"$binds"
+check "binds nothing from /mnt outside the created datasets" test -z "$off_dataset"
 
 echo
 if [ "$failures" -ne 0 ]; then

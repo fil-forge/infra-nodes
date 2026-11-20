@@ -1,0 +1,43 @@
+# Ingot's config for the prod/us-east-2 node. A secret: it embeds the Postgres
+# DSN and the region-key token, so it is rendered into the root-only tmpfs.
+#
+# Caddy terminates TLS and forwards here over the filone network. Path-style
+# only, as on dev: there is no wildcard certificate for bucket hostnames.
+addr: "0.0.0.0:9000"
+region: ${REGION_LABEL}
+data_dir: /data
+# Byte budget for the spool and the cache under data_dir, which is the
+# ingot/blobs dataset; node.env says how it is sized.
+local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
+log_level: info
+# Browser origins the S3 listener answers CORS for.
+cors_allowed_origins:
+  - "https://app.filone.com"
+  - "https://app.filone.ai"
+  - "https://app.fil.one"
+identity:
+  key_file: /keys/ingot.pem
+  service_id: ${INGOT_DID}
+postgres_dsn: "postgres://ingot:${INGOT_POSTGRES_PASSWORD}@postgres:5432/ingot?sslmode=disable"
+upload_service_url: "${SPRUE_URL}"
+upload_service_did: "${SPRUE_DID}"
+upload_receipts_url: "${SPRUE_URL}/receipt"
+auth_service_url: "${HILT_URL}"
+auth_service_did: "${HILT_DID}"
+auth_service_proofs: "/proofs/hilt-ingot-proof.txt"
+
+# Swarf's revocation firehose. Hilt publishes a UCAN revocation for every key a
+# bucket policy change or key deletion affects; Ingot drops those keys from its
+# per-key authorization caches. Without it, a cached key keeps its old
+# permissions until the cache entry expires.
+revocation_service_url: "${SWARF_URL}"
+revocation_service_did: "${SWARF_DID}"
+regionkey:
+  provider: openbao
+  openbao:
+    address: "unix:///run/openbao/api.sock"
+    token: "${INGOT_REGIONKEY_TOKEN}"
+    mount: transit
+    key: "${FILONE_REGIONKEY_NAME}"
+tenantkey:
+  plc_directory_url: "${PLC_DIRECTORY_URL}"

@@ -81,9 +81,12 @@ if [ ! -d $drill_dir/openbao ] || [ -e $drill_dir/openbao.restored ]; then
   exit 1
 fi
 
+# For move_dir_back, which renames, or copies where the raft directory is a
+# mount point of its own.
+. $script_dir/lib.sh
+
 docker stop $FILONE_BAO_CONTAINER >/dev/null
-mv -T $raft_dir $drill_dir/openbao.restored
-mv -T $drill_dir/openbao $raft_dir
+move_dir_back $raft_dir $drill_dir/openbao $drill_dir/openbao.restored
 [ ! -e $drill_dir/bao-token ] || mv -f $drill_dir/bao-token $FILONE_BAO_TOKEN_FILE
 [ -e $FILONE_SEAL_TOKEN_FILE ] || mv $drill_dir/seal-token $FILONE_SEAL_TOKEN_FILE
 $script_dir/deploy-platform.sh

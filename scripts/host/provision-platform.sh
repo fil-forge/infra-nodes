@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Bring a new node's platform up for the first time.
 #
-# Interactive and run once, by an operator in an SSM session. It and
-# provision-backups.sh, which it calls, are the only scripts that create
-# secrets, and the only points at which anything is typed into this node by a
-# human.
+# Interactive and run once, by an operator in an SSM session. It,
+# provision-backups.sh, which it calls, and provision-apps.sh are the only
+# scripts that create secrets, and the only points at which anything is typed
+# into this node by a human. This one asks for what the platform needs, and
+# provision-apps.sh for what only the apps read.
 #
 # Safe to re-run: OpenBao is initialised only if it is not already, and every
 # secret is written only if absent, so a run that fails halfway can be repeated.
@@ -158,20 +159,6 @@ done
 # --- 8. Operator-supplied secrets -------------------------------------------
 
 echo "[8/9] Operator-supplied secrets"
-prompt_secret() {
-  local path="$1" field="$2" description="$3" value
-  if bao_has "$path" "$field"; then
-    echo "  $description already stored"
-    return 0
-  fi
-  read -rsp "  $description: " value
-  echo
-  [ -n "$value" ] || die "no value given for $description"
-  bao_put_if_absent "$path" "$field" "$value"
-}
-
-prompt_secret external chain_rpc_token "chain.love access token"
-
 if node_ships_telemetry; then
   prompt_secret external grafana_push_token "Grafana Cloud push token"
 else

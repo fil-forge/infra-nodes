@@ -8,7 +8,13 @@
 # Run as root from the node's checkout, once before anything holds state and
 # again whenever in doubt. A second run changes nothing:
 #
+#   cd /opt/fil-one/infra-nodes
 #   JUMP_HOST_ADDRESS=<jump host address> scripts/host/bootstrap-prod-us-east-2.sh
+#
+# The checkout is at /opt/fil-one/infra-nodes on the OS disk, as on the cloud
+# nodes, and section 1 refuses to run from anywhere else. It holds no state, so
+# it needs nothing the pool gives, and on the OS disk the scripts are still
+# there for whoever repairs a pool that is locked or missing.
 #
 # The host arrives with its ZFS pool built, its key unit and Docker drop-in in
 # place, and SSH admitted from the jump host only, all as
@@ -34,7 +40,9 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-CHECKOUT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
+CHECKOUT=/opt/fil-one/infra-nodes
+# Where this script runs from, which section 1 checks is $CHECKOUT.
+RUNNING_FROM="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 NODE=prod/us-east-2
 POOL=data
 POOL_MOUNTPOINT=/mnt/data
@@ -162,7 +170,13 @@ INI
 # --- 1. Verify, changing nothing ---------------------------------------------
 
 [ "$(id -u)" -eq 0 ] || fail root "must run as root"
-[ -e "$CHECKOUT/.git" ] || fail checkout "expected a git checkout at $CHECKOUT"
+# git prints the real path, so a symlink at $CHECKOUT that leads to the pool
+# is refused as well. Its own message stays visible: it also refuses a
+# checkout another user owns.
+toplevel="$(git -C "$RUNNING_FROM" rev-parse --show-toplevel)" ||
+  fail checkout "expected a git checkout at $RUNNING_FROM"
+[ "$toplevel" = "$CHECKOUT" ] ||
+  fail checkout "this script runs from the checkout at $toplevel; the node's checkout belongs at $CHECKOUT, on the OS disk. Clone the repository there and run it from there"
 
 # The address SSH is admitted from. Read at run time rather than committed:
 # this repository is public.
@@ -421,20 +435,31 @@ esac
 # piri holds what piri init writes and the config provision-apps.sh renders;
 # its blobs go to object storage.
 #
-# nodes/prod/us-east-2 (a later change) binds these mount points, under
-# /mnt/data/fil-one, into the containers. Two things there depend on this
-# layout. Its node.env sets FILONE_CONTROL_DIR=/mnt/data/fil-one/control and
-# a FILONE_DATA_DIR under /mnt/data/fil-one, as staging's does, because
-# lib.sh's defaults are the cloud nodes' /mnt/fil-one paths and filone_init
-# refuses to run when the control directory is not a mount. And Ingot keeps
-# segments, spool and cache under one data directory, so its compose file
-# binds segments from ingot/segments and spool and cache from ingot/blobs.
+# caddy holds Caddy's certificates, ACME account keys and autosaved config, and
+# alloy the write-ahead log Alloy buffers telemetry in while Grafana Cloud is
+# unreachable. Each has a quota of its own so that neither can grow into the
+# pool the other datasets share. The two sizes are this script's choice; no
+# record sets them.
+#
+# nodes/prod/us-east-2 binds these mount points, under /mnt/data/fil-one, into
+# the containers, and tests/ checks that every bind there under /mnt lies in
+# one of them.
+# Two things there depend on this layout. Its node.env sets
+# FILONE_CONTROL_DIR=/mnt/data/fil-one/control and
+# FILONE_DATA_DIR=/mnt/data/fil-one/ingot, because lib.sh's defaults are the
+# cloud nodes' /mnt/fil-one paths, and FILONE_STATE_DIR_IS_MOUNT=true, so that
+# filone_init refuses to run while control/state is unmounted as well as while
+# the control directory is. And Ingot keeps segments, spool and cache
+# under one data directory, so its compose file binds ingot/blobs as that
+# directory, for the spool and cache, and ingot/segments over its segments.
 percent() { echo $((pool_size * $1 / 100 / MIB * MIB)); }
 blobs_quota="$(percent 50)"
 datasets="
 control/postgres reservation $(percent 20)
 control/openbao reservation $((10 * GIB))
 control/state quota $((50 * GIB))
+control/caddy quota $((1 * GIB))
+control/alloy quota $((10 * GIB))
 piri quota $((50 * GIB))
 ingot/segments quota $(percent 5)
 ingot/blobs quota $blobs_quota
@@ -546,15 +571,14 @@ docker network inspect filone >/dev/null 2>&1 ||
   docker network create --subnet "$FILONE_SUBNET" filone ||
   fail "filone network" "could not create the filone network"
 
-# filone_init reads this and then nodes/$NODE/node.env, which a later change
-# adds; until then the deploy scripts stop at the missing node directory.
+# filone_init reads this and then nodes/$NODE/node.env.
 install_if_changed /etc/fil-one/node.conf <<CONF
 FILONE_NODE=$NODE
 FILONE_CHECKOUT=$CHECKOUT
 FILONE_GIT_REF=main
 CONF
 
-FILONE_CHECKOUT="$CHECKOUT"
+FILONE_CHECKOUT="$RUNNING_FROM"
 sync_systemd_units
 
 # When bootstrap first finished. Written once, so a later run changes nothing.
@@ -562,9 +586,9 @@ if [ "$(compare_file "$STAMP" </dev/null)" = absent ]; then
   date -u +%Y-%m-%dT%H:%M:%SZ | install_if_changed "$STAMP"
 fi
 
-# The node.env of the later change commits this value, so it is printed rather
-# than written: 80% of the blobs quota, leaving room above the budget for
-# bodies in flight and under the 10%-free alert.
+# node.env commits this value, so it is printed rather than written: 80% of
+# the blobs quota, leaving room above the budget for bodies in flight and under
+# the 10%-free alert. provision-apps.sh refuses to start until it is set.
 echo "prod/us-east-2 bootstrap complete"
 echo "Set this in nodes/$NODE/node.env:"
 echo "  INGOT_LOCAL_BLOB_MAX_BYTES=$((blobs_quota * 80 / 100))"
