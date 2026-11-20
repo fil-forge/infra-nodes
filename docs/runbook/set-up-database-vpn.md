@@ -71,7 +71,7 @@ support is in `libstrongswan-standard-plugins`, a recommended package that an in
 recommends leaves out, so the script names it. It then checks strongSwan's unit, UFW, IP
 forwarding, the public address against the host's addresses, any existing route for the VPC's
 CIDR or a part of it other than the script's own `unreachable` fallback, and that no subnet of
-the Docker networks overlaps the VPC's CIDR either way round. A failed check names itself and
+the Docker networks overlaps the VPC's CIDR or either tunnel's inside /30, either way round. A failed check names itself and
 changes nothing; a failed input check also installs nothing. It never prints a key.
 
 It then admits UDP 500 and 4500 and ESP from the two tunnel addresses in UFW, and no other address,

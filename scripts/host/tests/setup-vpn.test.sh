@@ -665,6 +665,17 @@ new_case "a Docker network inside the VPC"
 echo "10.20.200.0/24 " >"$STATE/docker-network-filone"
 expect_input_failure "docker networks" "uses 10.20.200.0/24, which overlaps $VPC"
 
+new_case "a Docker network that holds a tunnel's inside /30"
+# Its base address lies outside the /30, but the /30 lies inside it.
+set_input VPN_TUNNEL2_INSIDE_LOCAL 172.18.5.2/30
+set_input VPN_TUNNEL2_INSIDE_REMOTE 172.18.5.1
+echo "172.18.0.0/16 " >"$STATE/docker-network-filone"
+expect_input_failure "docker networks" "uses 172.18.0.0/16, which overlaps the tunnel inside network 172.18.5.2/30"
+
+new_case "a Docker network inside a tunnel's inside /30"
+echo "169.254.200.0/31 " >"$STATE/docker-network-filone"
+expect_input_failure "docker networks" "uses 169.254.200.0/31, which overlaps the tunnel inside network $INSIDE1_LOCAL"
+
 new_case "no filone Docker network"
 rm "$STATE/docker-network-filone"
 expect_input_failure "docker networks" "no Docker network 'filone'"
