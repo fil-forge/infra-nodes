@@ -653,6 +653,17 @@ new_case "an unreachable route of someone else's inside the VPC"
 echo "unreachable 10.20.200.0/24 metric 100" >"$STATE/routes"
 expect_input_failure routes "something else routes $VPC: unreachable 10.20.200.0/24 metric 100"
 
+new_case "a host network that holds a tunnel's inside /30"
+# The /30 lies inside eth0's /24, whose own address lies outside the /30.
+set_input VPN_TUNNEL1_INSIDE_LOCAL 192.0.2.2/30
+set_input VPN_TUNNEL1_INSIDE_REMOTE 192.0.2.1
+expect_input_failure "host addresses" "$PUBLIC/24 on eth0 overlaps the tunnel inside network 192.0.2.2/30"
+
+new_case "a host address inside a tunnel's inside /30"
+mkdir "$STATE/links/eth1"
+echo 169.254.200.5/32 >"$STATE/links/eth1/addrs"
+expect_input_failure "host addresses" "169.254.200.5/32 on eth1 overlaps the tunnel inside network $INSIDE2_LOCAL"
+
 new_case "no strongSwan"
 touch "$STATE/no-strongswan"
 expect_input_failure strongswan "libstrongswan-standard-plugins"
@@ -757,6 +768,9 @@ check "checks both tunnels loaded" called '^swanctl --list-conns$'
 check "clears the restart marker" test ! -e "$ROOT/run/fil-one/vpn-restart-pending"
 check "never shows a key" key_never_shown
 check "leaves no temporary file" tmp_empty
+
+check "puts tunnel 1's inside /30 on its interface" grep -qx "$INSIDE1_LOCAL" "$STATE/links/filone-tun1/addrs"
+check "puts tunnel 2's inside /30 on its interface" grep -qx "$INSIDE2_LOCAL" "$STATE/links/filone-tun2/addrs"
 
 current="second run"
 : >"$STATE/calls"
