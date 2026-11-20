@@ -1130,9 +1130,9 @@ echo "$SECRETS" >"$STATE/mv-fails"
 run_vpn
 check "exits non-zero" failed
 check "says so" said "could not move $SECRETS.new into place"
-check "keeps the connections it renamed" in_file "$SWAN" "remote_addrs = $TUNNEL3"
+check "puts back the connections it renamed" in_file "$SWAN" "remote_addrs = $TUNNEL2"
 check "leaves the keys as they were" in_file "$SECRETS" "id-2 = $TUNNEL2"
-check "leaves no new copy" test -z "$(find "$ROOT" -name '*.new')"
+check "leaves no new or old copy" test -z "$(find "$ROOT" -name '*.new' -o -name '*.old')"
 check "never shows a key" key_never_shown
 rm "$STATE/mv-fails"
 : >"$STATE/calls"
@@ -1140,15 +1140,31 @@ run_vpn
 check "a re-run succeeds" succeeded
 check "and renders the new keys" in_file "$SECRETS" "id-2 = $TUNNEL3"
 
+new_case "a failed rename on the first run"
+echo /etc/fil-one/vpn.conf >"$STATE/mv-fails"
+run_vpn
+check "exits non-zero" failed
+check "says so" said "could not move /etc/fil-one/vpn.conf.new into place"
+check "removes the connections it created" test ! -e "$ROOT$SWAN"
+check "removes the keys it created" test ! -e "$ROOT$SECRETS"
+check "leaves no new or old copy" test -z "$(find "$ROOT" -name '*.new' -o -name '*.old')"
+rm "$STATE/mv-fails"
+: >"$STATE/calls"
+run_vpn
+check "a re-run succeeds" succeeded
+
 new_case "a copy left by a run that stopped while writing"
 run_vpn
 check "provisions" succeeded
 cp "$ROOT$SECRETS" "$ROOT$SECRETS.new"
+cp "$ROOT$SECRETS" "$ROOT$SECRETS.old"
 : >"$STATE/calls"
 run_vpn
 check "a re-run succeeds" succeeded
 check "removes the copy" test ! -e "$ROOT$SECRETS.new"
 check "says so" printed "removed $SECRETS.new"
+check "removes the previous copy" test ! -e "$ROOT$SECRETS.old"
+check "says so" printed "removed $SECRETS.old"
 check "never shows a key" key_never_shown
 
 new_case "a failed write of the keys file"
