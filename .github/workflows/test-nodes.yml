@@ -23,9 +23,10 @@
 #   drift on either side, such as a rotated partner key;
 # - a manual run tests the chosen stages or nodes.
 #
-# After a push, once staging/eu-central-3 has passed, the run calls Promote to
-# prod (promote-prod.yml), which builds each prod node's promotion pull request
-# on the pushed commit.
+# After a push, the run calls Promote to staging (promote-staging.yml) and
+# Promote to prod (promote-prod.yml). Each checks that its source node passed,
+# dev for staging and staging/eu-central-3 for prod, and builds its promotion
+# pull requests on the pushed commit.
 #
 # Every run leaves Hilt's records of its tenant behind in Sprue and the PLC,
 # because Hilt does not yet delete them (FIL-1488).
@@ -191,8 +192,8 @@ jobs:
   # job records how it ended, and the report job below turns those records
   # into one alert.
   test:
-    # scripts/ci/promote-prod/staging-passed.sh finds staging's job by this
-    # name; change both together.
+    # scripts/ci/node-passed.sh finds a node's job by this name; change both
+    # together.
     name: Test ${{ matrix.node }}
     needs: select
     # A stage whose every node sets FILONE_TESTED=false selects nothing, and a
@@ -375,10 +376,24 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload-file-path: ${{ runner.temp }}/slack-payload.json
 
-  # Refreshes prod's promotion pull requests from the pins staging just passed
-  # with. Runs whatever dev's result, because only staging's job counts, and
-  # promote-prod.yml reads that job's outcome itself: needs.test.result covers
-  # every node at once. Only a push has a commit staging was waited on for.
+  # Refresh the promotion pull requests from the pins their source node just
+  # passed with. Each runs whatever the other nodes' results, because only its
+  # source node's job counts, and each called workflow reads that job's
+  # outcome itself: needs.test.result covers every node at once. Only a push
+  # has a commit the nodes were waited on for.
+  promote-staging:
+    name: Promote to staging
+    needs: [select, test]
+    if: >-
+      always() && !cancelled() && github.event_name == 'push'
+      && needs.select.result == 'success' && needs.test.result != 'skipped'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/promote-staging.yml
+    secrets:
+      FORGE_BOT_PRIVATE_KEY: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
   promote-prod:
     name: Promote to prod
     needs: [select, test]

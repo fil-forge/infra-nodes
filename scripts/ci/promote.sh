@@ -31,10 +31,10 @@
 # Reads from the environment:
 #   APP_SLUG       the GitHub App that opens the pull request and whose identity
 #                  its commit carries
-#   BASE           the commit to build on, origin/main by default; for a prod
-#                  node CI passes the commit staging just passed Test nodes on
-#   TEST_RUN_URL   for a prod node, the Test nodes run in which staging passed;
-#                  empty for a manual run, and the pull request says so
+#   BASE           the commit to build on, origin/main by default; CI passes
+#                  the commit the source just passed Test nodes on
+#   TEST_RUN_URL   the Test nodes run in which the source passed; empty for a
+#                  manual run, and the pull request says so
 # gh reads its own credentials, GH_TOKEN included.
 #
 # Prerequisites:
@@ -254,19 +254,14 @@ moving=()
   echo "Merging this is the promotion: the node picks it up on its next reconcile pass, waits"
   echo "for a safe proving window and restarts each service that changed."
   echo
-  if [ "$SOURCE" = dev ]; then
-    echo "This pull request is rebuilt on every push to \`main\`, and closed once $TARGET"
-    echo "matches $SOURCE."
+  if [ -n "$TEST_RUN_URL" ]; then
+    echo "$SOURCE passed Test nodes on that commit in $TEST_RUN_URL."
   else
-    if [ -n "$TEST_RUN_URL" ]; then
-      echo "$SOURCE passed Test nodes on that commit in $TEST_RUN_URL."
-    else
-      echo "Built by a manual run, which does not wait for $SOURCE to pass Test nodes."
-    fi
-    echo
-    echo "This pull request is rebuilt each time $SOURCE passes Test nodes after a push to"
-    echo "\`main\`, and closed once $TARGET matches $SOURCE."
+    echo "Built by a manual run, which does not wait for $SOURCE to pass Test nodes."
   fi
+  echo
+  echo "This pull request is rebuilt each time $SOURCE passes Test nodes after a push to"
+  echo "\`main\`, and closed once $TARGET matches $SOURCE."
   echo
   echo "To hold a service back, push to \`$BRANCH\` by hand: the bot leaves the branch"
   echo "alone while this pull request is open."

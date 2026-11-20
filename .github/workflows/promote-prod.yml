@@ -10,7 +10,7 @@
 #
 # What it opens, refreshes and closes: scripts/ci/promote.sh. Which nodes:
 # scripts/ci/promote-prod/select.sh. The staging check:
-# scripts/ci/promote-prod/staging-passed.sh.
+# scripts/ci/node-passed.sh.
 name: Promote to prod
 
 on:
@@ -54,7 +54,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
-        run: scripts/ci/promote-prod/staging-passed.sh "$RUN_ID"
+        run: scripts/ci/node-passed.sh "$RUN_ID" staging/eu-central-3
 
       - name: Select the prod nodes
         id: select

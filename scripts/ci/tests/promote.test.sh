@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Tests for scripts/ci/promote.sh and the helpers of promote-prod.yml, run from
-# any machine:
+# Tests for scripts/ci/promote.sh, scripts/ci/node-passed.sh and the helpers of
+# promote-prod.yml, run from any machine:
 #
 #   scripts/ci/tests/promote.test.sh
 #
 # promote.sh pushes to origin and opens pull requests, so it never runs against
-# this checkout. Each case copies it, set-node-pin.sh and the prod helpers into
+# this checkout. Each case copies the scripts into
 # a fresh git repository with a bare origin and a few nodes, and puts a stub gh
 # first on PATH. The stub answers from files in a temporary directory and
 # appends every call to a log the assertions read.
@@ -109,7 +109,7 @@ setup() {
   git init --quiet --bare "$CASE/origin.git"
   cd "$REPO"
   git init --quiet
-  cp "$CI/promote.sh" "$CI/set-node-pin.sh" scripts/ci/
+  cp "$CI/promote.sh" "$CI/set-node-pin.sh" "$CI/node-passed.sh" scripts/ci/
   cp "$CI/promote-prod/"*.sh scripts/ci/promote-prod/
   for node in staging/eu-central-3 prod/us-east-2 prod/eu-west-1; do
     pins "nodes/$node/apps/versions.env" "$(digest 0)"
@@ -178,6 +178,14 @@ commit "Bump piri on dev (#13)"
 git push --quiet origin main
 promote staging --dry-run
 check "the commit is titled Promote dev's images to staging" grep -qxF "Promote dev's images to staging" "$CASE/out"
+
+setup "a staging pull request links the dev test"
+pins nodes/dev/apps/versions.env "$(digest 3)"
+commit "Bump piri on dev (#13)"
+git push --quiet origin main
+TEST_RUN_URL=https://github.com/fil-forge/infra-nodes/actions/runs/76 promote staging
+check "the body names the Test nodes run" \
+  grep -qF "dev passed Test nodes on that commit in https://github.com/fil-forge/infra-nodes/actions/runs/76." "$STUB_STATE/body"
 
 setup "a prod node gets a branch of its own"
 promote prod/us-east-2
@@ -266,27 +274,31 @@ setup "select lists every prod node"
 check "both prod nodes are in the matrix" \
   test "$(scripts/ci/promote-prod/select.sh)" = '{"include":[{"node":"prod/eu-west-1"},{"node":"prod/us-east-2"}]}'
 
-echo "promote-prod/staging-passed.sh"
+echo "node-passed.sh"
 
-# jobs <staging conclusion> <dev conclusion>: a run's jobs, as the API lists them.
+# jobs <dev conclusion> <staging conclusion>: a run's jobs, as the API lists them.
 jobs() {
-  jq -n --arg staging "$1" --arg dev "$2" \
+  jq -n --arg dev "$1" --arg staging "$2" \
     '{jobs: [{name: "Test dev", conclusion: $dev}, {name: "Test staging/eu-central-3", conclusion: $staging}]}'
 }
-gate_cases="success:success:true success:failure:true failure:success:false cancelled:success:false"
+# <node>:<dev conclusion>:<staging conclusion>:<expected>
+gate_cases="dev:success:failure:true dev:failure:success:false dev:cancelled:success:false
+staging/eu-central-3:failure:success:true staging/eu-central-3:success:failure:false"
 for gate_case in $gate_cases; do
-  staging=${gate_case%%:*}
+  gate_node=${gate_case%%:*}
   rest=${gate_case#*:}
   dev=${rest%%:*}
+  rest=${rest#*:}
+  staging=${rest%%:*}
   expected=${rest#*:}
-  setup "staging $staging, dev $dev"
-  jobs "$staging" "$dev" >"$STUB_STATE/jobs.json"
-  check "prints passed=$expected" test "$(scripts/ci/promote-prod/staging-passed.sh 77 2>/dev/null)" = "passed=$expected"
+  setup "$gate_node, with dev $dev and staging $staging"
+  jobs "$dev" "$staging" >"$STUB_STATE/jobs.json"
+  check "prints passed=$expected" test "$(scripts/ci/node-passed.sh 77 "$gate_node" 2>/dev/null)" = "passed=$expected"
 done
 
-setup "a run without a staging job"
+setup "a run without the node's job"
 echo '{"jobs": [{"name": "Test dev", "conclusion": "success"}]}' >"$STUB_STATE/jobs.json"
-check "fails" not scripts/ci/promote-prod/staging-passed.sh 77
+check "fails" not scripts/ci/node-passed.sh 77 staging/eu-central-3
 
 echo
 if [ "$failures" -gt 0 ]; then

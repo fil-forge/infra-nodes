@@ -1208,8 +1208,12 @@ malformed digest or a pin somebody moved to another tag. It pins dev unless `--n
 node, as in `--node staging/eu-central-3`.
 
 **Promote to staging.** Merge the open "Promote dev's images to staging" pull request.
-`promote-staging.yml` keeps it on every push to `main`: it sets each of staging's pins to what dev
-pins, lists what each service brings over staging's current pin, and closes itself once the two
+After every push to `main`, Test nodes waits for dev to reach the commit and pass its smoke and
+end-to-end tests, then calls `promote-staging.yml`, which rebuilds the pull request on that commit.
+A staging failure does not hold staging's promotion back; a dev failure leaves the pull request as
+it was, and the `main` ruleset keeps it from merging until a later push passes. Running
+`promote-staging.yml` by hand rebuilds it on current `main` without waiting for dev. The pull
+request sets each of staging's pins to what dev pins, lists what each service brings over staging's current pin, and closes itself once the two
 match. It never enables auto-merge, and disables one enabled for an earlier head, since a new head
 is a new set of images. Staging then deploys as dev does, on its next reconcile pass and after the
 proving window.
