@@ -188,6 +188,7 @@ case "$1" in
     case "$*" in
       *DropInPaths*) cat "$STUB_STATE/docker-dropins" ;;
       *ExecStartPre*) cat "$STUB_STATE/docker-execstartpre" ;;
+      *ExecStart*) cat "$STUB_STATE/key-execstart" ;;
       *) exit 1 ;;
     esac ;;
   restart) [ ! -f "$STUB_STATE/restart-fails" ] ;;
@@ -303,6 +304,8 @@ new_case() {
   # As systemctl show prints a command: its argv joined by spaces.
   printf '%s\n' "{ path=/bin/sh ; argv[]=/bin/sh -c $GUARD ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }" \
     >"$STATE/docker-execstartpre"
+  printf '%s\n' "{ path=/bin/sh ; argv[]=/bin/sh -c $LOAD_KEY ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }" \
+    >"$STATE/key-execstart"
 
   write_ufw_status "22/tcp                     ALLOW       $JUMP"
   ROOT_BEFORE="$(root_tree)"
@@ -333,6 +336,9 @@ ExecStart=/bin/sh -c 'zfs get -H -o value keystatus data | grep -qx available ||
 WantedBy=zfs-mount.service
 INI
 }
+
+# The command the key unit runs to load the pool's key.
+LOAD_KEY='zfs get -H -o value keystatus data | grep -qx available || zfs load-key data'
 
 # The mount guard the drop-in runs before Docker starts.
 GUARD='zfs list -H -o name data >/dev/null && ! zfs get -H -r -t filesystem -o value mounted data | grep -vqx yes'
@@ -601,6 +607,16 @@ ExecStart=/sbin/zfs load-key data
 ROOT_BEFORE="$(root_tree)"
 expect_check_failure "key unit"
 check "shows how the unit differs" said '+WantedBy=zfs-mount.service'
+
+new_case "a drop-in replaces the key unit's ExecStart"
+printf '%s\n' "{ path=/bin/true ; argv[]=/bin/true ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }" \
+  >"$STATE/key-execstart"
+expect_check_failure "key unit"
+
+new_case "a drop-in ignores the key-loading command's failure"
+printf '%s\n' "{ path=/bin/sh ; argv[]=/bin/sh -c $LOAD_KEY ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }" \
+  >"$STATE/key-execstart"
+expect_check_failure "key unit"
 
 new_case "key file does not unlock the pool"
 touch "$STATE/load-key-fails"

@@ -296,6 +296,12 @@ esac
 value="$(systemctl is-enabled "$KEY_UNIT" 2>/dev/null)" || true
 [ "$value" = enabled ] ||
   fail "key unit" "$KEY_UNIT is '${value:-unknown}', not enabled, so the pool would stay locked after a reboot"
+# A drop-in can empty ExecStart and put another command in its place, so the
+# key-loading command must be among the commands systemd will run, with its
+# failure failing the unit.
+load_key="$(key_unit | sed -n "s/^ExecStart=\/bin\/sh -c '\(.*\)'\$/\1/p")"
+grep -qF -- "argv[]=/bin/sh -c $load_key ; ignore_errors=no" <<<"$(systemctl show -p ExecStart --value "$KEY_UNIT")" ||
+  fail "key unit" "$KEY_UNIT does not run the key-loading command, so a drop-in overrides $KEY_UNIT_FILE and the pool would stay locked after a reboot"
 # The drop-in must hold exactly what the storage record gives, and systemd
 # must have loaded it.
 case "$(docker_dropin | compare_file "$DOCKER_DROPIN")" in
