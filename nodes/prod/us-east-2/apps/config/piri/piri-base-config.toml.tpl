@@ -23,17 +23,17 @@ service_view = "${FWSS_VIEW_ADDRESS}"
 payments = "${FILECOIN_PAY_ADDRESS}"
 usdfc_token = "${USDFC_TOKEN_ADDRESS}"
 
-# Piri keeps its blobs in S3-compatible object storage, in buckets named from
-# bucket_prefix: the piri dataset is sized for its config and state alone.
-# deploy-apps.sh refuses to start a Piri while the endpoint or bucket prefix in
-# node.env is empty or OpenBao lacks the credentials, which it renders into this
-# file in the secrets tmpfs. `piri init` copies the section, credentials
-# included, into the config it writes on the piri dataset; the entrypoint keeps
-# only the chain RPC token off that dataset. One section for every Piri on the
-# node, so a second Piri here needs a bucket prefix of its own first.
+# Piri keeps its blobs in S3-compatible object storage, in the bucket and folder
+# that path names: the piri dataset is sized for its config and state alone.
+# deploy-apps.sh refuses to start a Piri while the endpoint or path in node.env
+# is empty or OpenBao lacks the credentials, which it renders into this file in
+# the secrets tmpfs. `piri init` copies the section, credentials included, into
+# the config it writes on the piri dataset; the entrypoint keeps only the chain
+# RPC token off that dataset. One section for every Piri on the node, so a
+# second Piri here needs a path of its own first.
 [repo.s3]
 endpoint = "${PIRI_S3_ENDPOINT}"
-bucket_prefix = "${PIRI_S3_BUCKET_PREFIX}"
+path = "${PIRI_S3_PATH}"
 
 [repo.s3.credentials]
 access_key_id = "${PIRI_S3_ACCESS_KEY_ID}"
