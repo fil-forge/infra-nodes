@@ -1,0 +1,110 @@
+# Keeps one pull request per prod node that promotes staging's images to it, and
+# never merges it: merging it is how a person promotes. One per node, so each
+# region is upgraded on its own.
+#
+# Test nodes calls this after a push to main, once staging/eu-central-3 has
+# reached the pushed commit and passed its smoke and end-to-end tests. Each pull
+# request is built on that commit, so it only ever proposes pins staging has
+# passed with. A dev failure does not hold prod back. A manual run rebuilds
+# every prod node's pull request on current main without waiting for staging.
+#
+# What it opens, refreshes and closes: scripts/ci/promote.sh. Which nodes:
+# scripts/ci/promote-prod/select.sh. The staging check:
+# scripts/ci/node-passed.sh.
+name: Promote to prod
+
+on:
+  workflow_call:
+    secrets:
+      FORGE_BOT_PRIVATE_KEY:
+        required: true
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    name: Select prod nodes
+    # A promotion pull request targets main, and only main's history carries
+    # the dev bumps its change list is read from.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # To read the outcome of the Test nodes jobs in the calling run.
+      actions: read
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      has_nodes: ${{ steps.select.outputs.has_nodes }}
+      # Under workflow_call the event is the caller's push. A manual run has
+      # no test to wait for.
+      passed: ${{ github.event_name == 'push' && steps.gate.outputs.passed || 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      # Under workflow_call, github.run_id is the Test nodes run that called
+      # this, whose test jobs have all ended by now.
+      - name: Check that staging passed Test nodes
+        id: gate
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: scripts/ci/node-passed.sh "$RUN_ID" staging/eu-central-3
+
+      - name: Select the prod nodes
+        id: select
+        run: scripts/ci/promote-prod/select.sh
+
+  promote:
+    name: Promote staging's images to ${{ matrix.node }}
+    needs: select
+    if: needs.select.outputs.passed == 'true' && needs.select.outputs.has_nodes == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One run per node at a time. Two runs would force-push the branch from two
+    # different commits, and the pull request would show whichever lost. A
+    # literal prefix, because under workflow_call github.workflow names the
+    # caller.
+    concurrency:
+      group: promote-${{ matrix.node }}
+      cancel-in-progress: false
+    steps:
+      # Not GITHUB_TOKEN: a pull request it opens or a push it makes starts no
+      # workflows, so the checks the pull request needs would never run.
+      - name: Mint fil-forge-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+
+      # The commit staging was tested on, not main's tip: main may have moved
+      # past it to pins staging has not passed with yet. Full history, because
+      # each pin's source commit is read off the dev bump that first carried
+      # its digest.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ steps.bot.outputs.token }}
+
+      - name: Open, refresh or close the promotion
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          APP_SLUG: ${{ steps.bot.outputs.app-slug }}
+          NODE: ${{ matrix.node }}
+          BASE: ${{ github.sha }}
+          TEST_RUN_URL: >-
+            ${{ github.event_name == 'push'
+            && format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id)
+            || '' }}
+        run: scripts/ci/promote.sh "$NODE"

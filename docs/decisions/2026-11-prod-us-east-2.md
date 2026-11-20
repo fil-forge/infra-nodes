@@ -178,6 +178,12 @@ a database keeps the one it was created with.
 production runs only an image someone reviewed. Nothing bumps the pins automatically: a new one is
 a hand edit, reviewed like any other change to the node.
 
+**Piri and Ingot are promoted from staging, one region at a time.** The node takes
+`nodes/staging/eu-central-3`'s app pins through a pull request the bot keeps on
+`bot/promote-prod-us-east-2`, built on a commit staging passed Test nodes on, and merged by a
+person. Each prod node has its own, so a later region can be upgraded apart from this one. The
+[runbook](../RUNBOOK.md) describes the pull request.
+
 **The node takes backups.** `FILONE_TAKES_BACKUPS=true`, as on staging: provisioning stores the
 access key for central's production backup bucket and uploads the first OpenBao snapshot, and a
 timer takes one daily from then on. The node will push Postgres backups to the same bucket once

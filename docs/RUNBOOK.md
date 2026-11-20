@@ -1209,8 +1209,12 @@ malformed digest or a pin somebody moved to another tag. It pins dev unless `--n
 node, as in `--node staging/eu-central-3`.
 
 **Promote to staging.** Merge the open "Promote dev's images to staging" pull request.
-`promote-staging.yml` keeps it on every push to `main`: it sets each of staging's pins to what dev
-pins, lists what each service brings over staging's current pin, and closes itself once the two
+After every push to `main`, Test nodes waits for dev to reach the commit and pass its smoke and
+end-to-end tests, then calls `promote-staging.yml`, which rebuilds the pull request on that commit.
+A staging failure does not hold staging's promotion back; a dev failure leaves the pull request as
+it was, and the `main` ruleset keeps it from merging until a later push passes. Running
+`promote-staging.yml` by hand rebuilds it on current `main` without waiting for dev. The pull
+request sets each of staging's pins to what dev pins, lists what each service brings over staging's current pin, and closes itself once the two
 match. It never enables auto-merge, and disables one enabled for an earlier head, since a new head
 is a new set of images. Staging then deploys as dev does, on its next reconcile pass and after the
 proving window.
@@ -1219,6 +1223,31 @@ To hold one service back, push to `bot/promote-staging` yourself: while its pull
 the workflow neither rebuilds nor closes a branch whose head the bot did not both author and
 commit, so an amended bot commit counts as a push. Or promote by hand in a branch of your own,
 with `set-node-pin.sh --node staging/eu-central-3`.
+
+**Promote to prod.** Each prod node has a pull request of its own, such as "Promote staging's
+images to prod/us-east-2" on `bot/promote-prod-us-east-2`, so each region is upgraded when you
+merge its pull request and not before. It sets each of the node's pins to what
+`nodes/staging/eu-central-3/apps/versions.env` pins, lists what each service brings over the
+node's current pin, and closes itself once the two match. After every push to `main`, Test nodes
+waits for staging to reach the commit and pass its smoke and end-to-end tests, then calls
+`promote-prod.yml`, which rebuilds each prod pull request on that commit. A dev failure does not
+hold prod back; a staging failure leaves the prod pull requests as they were, and the `main`
+ruleset keeps them from merging until a later push passes. Running `promote-prod.yml` by hand
+rebuilds every prod pull request on current `main` without waiting for staging, and the pull
+request says so. That is also the way to bring a prod pull request that is behind `main` up to
+date; "Update branch" works too, but it makes a person the committer, so the bot then leaves the
+branch alone.
+
+Holding a service back and auto-merge work as for staging: push to the node's branch yourself,
+and the bot leaves it alone while its pull request is open. A prod pin by hand is
+`set-node-pin.sh --node prod/us-east-2` in a branch of your own.
+
+Both promotions run `scripts/ci/promote.sh`, which takes `staging` or a prod node and prints the
+commit it would push with `--dry-run`:
+
+```sh
+APP_SLUG=fil-forge-bot scripts/ci/promote.sh prod/us-east-2 --dry-run
+```
 
 A deploy that fails is retried on the next pass. Each project records the revision it was last
 deployed from, so reconcile compares against that rather than against the previous HEAD; the failed
