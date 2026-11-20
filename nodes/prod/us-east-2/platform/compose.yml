@@ -150,7 +150,15 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
-    networks: [filone]
+    # The provider's NAT does not route the host's own traffic back to its
+    # public address, so a container that dials a public hostname times out.
+    # Ingot uploads blobs to Piri by its public URL. The aliases have the
+    # node's containers resolve those names to Caddy on this network.
+    networks:
+      filone:
+        aliases:
+          - piri-0.${PIRI_HOSTNAME_SUFFIX}
+          - ${INGOT_HOSTNAME}
 
   # Ships journald, container logs, host metrics and the apps' OTLP metrics and
   # traces to Grafana Cloud, with push-only credentials.
