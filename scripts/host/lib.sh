@@ -176,7 +176,7 @@ piri_uses_s3() {
 
 # Fail on a node.env that lacks a value the apps need and only the host or the
 # storage provider can supply: Ingot's byte budget, and on a node whose Piris
-# keep their blobs in object storage, its endpoint and bucket prefix.
+# keep their blobs in object storage, its endpoint and path.
 # provision-apps.sh checks these before it asks for anything, and deploy-apps.sh
 # on every deploy.
 require_apps_inputs() {
@@ -189,10 +189,10 @@ require_apps_inputs() {
   # dataset, which is sized for its config and state, and fill it.
   if piri_uses_s3; then
     local name
-    for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX; do
+    for name in PIRI_S3_ENDPOINT PIRI_S3_PATH; do
       [ -n "${!name:-}" ] ||
         die "$name in $FILONE_NODE_DIR/node.env is empty. This node's Piris keep their blobs in
-       object storage; commit its endpoint and bucket prefix."
+       object storage; commit its endpoint and path."
     done
   fi
 }
