@@ -1119,6 +1119,13 @@ systemctl enable --now filone-seal-token-renew.timer
 systemctl list-timers | grep filone
 ```
 
+On a node whose state is on a ZFS pool, `prod/us-east-2` today, enable the pool report as well. It
+writes what the last scrub found and the pool's error counters for Alloy, every five minutes:
+
+```sh
+systemctl enable --now filone-pool-health.timer
+```
+
 `filone-openbao-snapshot.timer` is not on that list on purpose. `provision-backups.sh` enables it
 on a node that takes backups, once the stored key has written to the bucket, and a node without a
 working key has nothing to upload with.
@@ -1579,6 +1586,32 @@ means the host token still holds `filone-deploy`: run `provision-host-token.sh`.
 `provision-backups.sh --replace`. Any other S3 error, or none at all, is easier to read from
 `check-backup-target.sh`, which tests the key and the bucket on their own. A timer that stopped
 firing shows in `systemctl list-timers filone-openbao-snapshot.timer`.
+
+**The ZFS pool is not online.** On a mirror, `DEGRADED` means one drive has failed or gone missing
+and every dataset is running on the other. Nothing else on the node changes, so this alert is the
+only sign, and a second failure loses the pool. `zpool status -x data` on the host names the drive
+and its state. Have the provider replace it, then run `zpool replace data <old device> <new device>`
+and follow the resilver with `zpool status data`; the alert clears when the pool is `ONLINE` again.
+A pool that is `FAULTED`, `SUSPENDED` or `UNAVAIL` has stopped serving I/O, the node's state is out
+of reach, and its telemetry usually stops too, so "Appliance has stopped reporting" fires with it.
+
+**The ZFS pool has data errors.** A scrub or resilver found blocks that neither drive could repair,
+or the pool lists files with permanent errors. `zpool status -v data` lists those files, and the
+dataset each is in says which service owns it (the datasets are in [the IST-1
+section](#the-produs-east-2-appliance-on-ist-1)). Restore or rebuild them from that service's own
+recovery path, then `zpool clear data` and `zpool scrub data` to confirm. Checksum errors on one
+drive with no data errors were repaired from the other copy; a count that keeps growing between
+scrubs is a drive to have replaced.
+
+**The ZFS pool's health is not reporting.** One of the two sources has stopped. A stale report, or
+none, means `filone-pool-health.timer` has not written in thirty minutes or was never enabled, so
+scrub results and error counts are not reaching Grafana; the pool's state still is.
+`systemctl list-timers filone-pool-health.timer` shows whether the timer runs, and
+`journalctl -u filone-pool-health.service` why a run failed. A run that times out after a minute is
+a `zpool status` that hung, which happens when the pool's I/O is suspended. A report with no pool
+state means Alloy's zfs collector is failing, and a degraded pool would raise no alert until it is
+fixed: `docker logs filone-platform-alloy-1` says why, and `zpool status -x data` on the host shows the pool's
+state in the meantime.
 
 **OpenBao is sealed.** `docker logs filone-openbao` names which half failed: the token was refused
 (revoked, expired, or the request came from an address the token is not bound to) or the transit key

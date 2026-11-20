@@ -250,6 +250,10 @@ sync_systemd_units
 
 echo
 echo "=== node provisioned ==="
-echo "Last step, both timers:"
+echo "Last step, the timers:"
 echo "  systemctl enable --now filone-reconcile.timer"
 echo "  systemctl enable --now filone-seal-token-renew.timer"
+# The same test as the unit's ConditionPathExists: a node with a ZFS pool.
+if [ -d /proc/spl/kstat/zfs ]; then
+  echo "  systemctl enable --now filone-pool-health.timer"
+fi
