@@ -68,7 +68,7 @@ variable "root_volume_size" {
 }
 
 variable "region_label" {
-  description = "The virtual S3 region this node presents, e.g. us-east-9. Deliberately not a real AWS region. It is the first label of Ingot's hostname, and so of the did:web central derives for this appliance, as well as a tag on the instance; it must match Ingot's config, hilt's provider registration and the AWS_REGION clients sign with."
+  description = "The virtual S3 region this node presents, e.g. us-east-9. On non-production stages it is deliberately not a real AWS region. It is the first label of Ingot's hostname, and so of the did:web central derives for this appliance, as well as a tag on the instance; it must match Ingot's config, hilt's provider registration and the AWS_REGION clients sign with."
   type        = string
 }
 

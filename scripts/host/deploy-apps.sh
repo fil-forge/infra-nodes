@@ -38,11 +38,17 @@ bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
   die "PAYER_ADDRESS in nodes/$FILONE_NODE/node.env is still the placeholder.
        Read the real address from the central dev stage (docs/RUNBOOK.md says how) and commit it."
 
-# Ingot reads 0 as no budget, and then its cache keeps every body until the
-# disk fills.
-[[ "${INGOT_LOCAL_BLOB_MAX_BYTES:-}" =~ ^[1-9][0-9]*$ ]] ||
-  die "INGOT_LOCAL_BLOB_MAX_BYTES in nodes/$FILONE_NODE/node.env is '${INGOT_LOCAL_BLOB_MAX_BYTES:-}', not a
-       positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
+require_apps_inputs
+
+# Values a new node's node.env may still hold at a placeholder. Each reaches
+# Piri's config or its on-chain registration, where a wrong one fails far from
+# here. Every committed node carries real values, which pass.
+require_configured PDP_VERIFIER_ADDRESS 0x0000000000000000000000000000000000000000
+require_configured FWSS_VIEW_ADDRESS 0x0000000000000000000000000000000000000000
+require_configured LOTUS_RPC_URL PLACEHOLDER
+require_configured OPERATOR_EMAIL PLACEHOLDER
+
+require_apps_secrets
 
 piri_services="$(piri_services)"
 # A Piri whose volume is not mounted is left out of this deploy, and the rest go
@@ -100,8 +106,14 @@ for service in "${piris[@]}"; do
 done
 unset identity_pem owner_wallet_key owner_wallet_hex
 
-# Piri's base config carries no secret, only addresses and URLs from node.env.
-# Every Piri on the node reads the same one.
+# Piri's base config carries addresses and URLs from node.env, and on a node
+# whose Piris use object storage its credentials too. Every Piri on the node
+# reads the same one.
+if piri_uses_s3; then
+  PIRI_S3_ACCESS_KEY_ID="$(bao_get external piri_s3_access_key_id)"
+  PIRI_S3_SECRET_ACCESS_KEY="$(bao_get external piri_s3_secret_access_key)"
+  export PIRI_S3_ACCESS_KEY_ID PIRI_S3_SECRET_ACCESS_KEY
+fi
 mark piris_changed render_template \
   "$FILONE_NODE_DIR/apps/config/piri/piri-base-config.toml.tpl" \
   "$FILONE_SECRETS_DIR/piri-base-config.toml"

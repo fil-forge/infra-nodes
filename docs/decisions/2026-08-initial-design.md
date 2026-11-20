@@ -93,10 +93,13 @@ An appliance now runs one Piri per storage volume; see
 
 ### The region label is `us-east-9`
 
-Ingot presents an S3 API, and S3 clients sign requests with a region. The production naming scheme
-gives each appliance a virtual region name that is deliberately not a real AWS region, so nobody
-mistakes a Forge endpoint for an AWS one and no client's region-guessing heuristics accidentally
-work. The dev node is **`us-east-9`**.
+Ingot presents an S3 API, and S3 clients sign requests with a region. On the non-production stages
+each appliance has a virtual region name that is deliberately not a real AWS region, so nobody
+mistakes a dev or staging endpoint for an AWS one and no client's region-guessing heuristics
+accidentally work. The dev node is **`us-east-9`**.
+
+UPDATE: A production node carries a real AWS region name; see
+[The first production appliance, `prod/us-east-2`, runs on the IST-1 host](2026-11-prod-us-east-2.md#the-region-label-is-a-real-aws-region-name).
 
 This string has to be identical in three places or requests fail in ways that do not name the cause:
 Ingot's `region:` config key, hilt's `provider add <did> us-east-9`, and the `AWS_REGION` a client

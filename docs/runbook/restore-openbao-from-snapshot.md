@@ -172,7 +172,9 @@ scripts/host/restore-openbao.sh /run/fil-one/bao/restore.snap
 
 The script refuses a raft directory that still holds a store. When that is the damaged store, run it
 with `--move-aside-damaged-store`, which moves the store to `openbao.damaged-<timestamp>` next to
-the raft directory once OpenBao has stopped:
+the raft directory once OpenBao has stopped. Where the raft directory is a mount point of its own,
+as the `control/openbao` dataset is on prod/us-east-2, it cannot be renamed, so the script copies
+the store there and empties the mount point once the copy is complete:
 
 ```sh
 scripts/host/restore-openbao.sh --move-aside-damaged-store /run/fil-one/bao/restore.snap

@@ -68,8 +68,9 @@ filone_init() {
     die "node.env says node '$FILONE_NODE' but this box is '$host_node'"
 
   # Before the mkdir below, which would otherwise create the state directory on
-  # the root disk under an empty mountpoint. Only the control volume: every
-  # script needs it, while a missing data volume only stops its own services.
+  # the root disk under an empty mountpoint. Only the control volume and the
+  # state directory: every script needs them, while a missing data volume only
+  # stops its own services.
   is_mounted "$FILONE_CONTROL_DIR" ||
     die "the control volume is not mounted at $FILONE_CONTROL_DIR; refusing to run.
        'findmnt $FILONE_CONTROL_DIR' and 'lsblk -f' show what is attached."
@@ -77,6 +78,8 @@ filone_init() {
   FILONE_STATE_DIR="$FILONE_CONTROL_DIR/state"
   FILONE_METRICS_DIR="$FILONE_STATE_DIR/metrics"
   FILONE_REVISIONS_DIR="$FILONE_STATE_DIR/revisions"
+
+  require_state_mount
 
   mkdir -p "$FILONE_STATE_DIR" "$FILONE_METRICS_DIR"
   install -d -m 0700 -o root -g root "$FILONE_SECRETS_DIR"
@@ -103,6 +106,31 @@ filone_init() {
 is_mounted() {
   local dev
   dev="$(stat -c %d "$1" 2>/dev/null)" && [ "$dev" != "$(stat -c %d /)" ]
+}
+
+# Refuse to run on a node whose node.env sets FILONE_STATE_DIR_IS_MOUNT=true
+# while the state directory is not a mount point of its own. On prod/us-east-2
+# the control directory is a parent ZFS dataset and the state directory the
+# control/state dataset under it. filone_init's check on the control directory
+# passes while control/state is unmounted, and its mkdir would then create the
+# state directory on the parent.
+#
+# Declared in node.env, because a state directory that is missing because its
+# dataset is not mounted looks the same as one that was never created. Left out,
+# it is false, as on dev and staging, where the state directory is a plain
+# directory on the control volume.
+require_state_mount() {
+  case "${FILONE_STATE_DIR_IS_MOUNT-false}" in
+    false) return 0 ;;
+    true) ;;
+    *)
+      die "FILONE_STATE_DIR_IS_MOUNT is '$FILONE_STATE_DIR_IS_MOUNT' in $FILONE_NODE_DIR/node.env;
+       it must be true or false." ;;
+  esac
+  { [ -d "$FILONE_STATE_DIR" ] && is_mount_root "$FILONE_STATE_DIR"; } ||
+    die "the state directory $FILONE_STATE_DIR is not a mount point; refusing to run.
+       'findmnt $FILONE_STATE_DIR' shows what is mounted there, and
+       'zfs list -o name,mounted,mountpoint' which dataset is not."
 }
 
 # Create the bind sources a compose project keeps on the control and data
@@ -137,6 +165,50 @@ require_configured() {
   local name="$1" placeholder="$2"
   [ "${!name}" != "$placeholder" ] ||
     die "$name is still the placeholder $placeholder; set it in $FILONE_NODE_DIR/node.env"
+}
+
+# Whether this node's Piris keep their blobs in S3-compatible object storage,
+# from whether its node.env defines PIRI_S3_ENDPOINT, empty or not. Its Piri
+# base config then has a [repo.s3] section rendered from these settings.
+piri_uses_s3() {
+  [ -n "${PIRI_S3_ENDPOINT+set}" ]
+}
+
+# Fail on a node.env that lacks a value the apps need and only the host or the
+# storage provider can supply: Ingot's byte budget, and on a node whose Piris
+# keep their blobs in object storage, its endpoint and bucket prefix.
+# provision-apps.sh checks these before it asks for anything, and deploy-apps.sh
+# on every deploy.
+require_apps_inputs() {
+  # Ingot reads 0 as no budget, and then its cache keeps every body until the
+  # disk fills.
+  [[ "${INGOT_LOCAL_BLOB_MAX_BYTES:-}" =~ ^[1-9][0-9]*$ ]] ||
+    die "INGOT_LOCAL_BLOB_MAX_BYTES in $FILONE_NODE_DIR/node.env is '${INGOT_LOCAL_BLOB_MAX_BYTES:-}', not a
+       positive byte count. Size it by the rule in docs/RUNBOOK.md and commit it."
+  # A Piri started without its object storage would keep its blobs on its own
+  # dataset, which is sized for its config and state, and fill it.
+  if piri_uses_s3; then
+    local name
+    for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX; do
+      [ -n "${!name:-}" ] ||
+        die "$name in $FILONE_NODE_DIR/node.env is empty. This node's Piris keep their blobs in
+       object storage; commit its endpoint and bucket prefix."
+    done
+  fi
+}
+
+# Refuse an apps deploy while OpenBao lacks a secret provision-apps.sh asks
+# for: the chain.love token, and on a node whose Piris use object storage its
+# credentials. A store restored from a snapshot taken before provision-apps.sh
+# ran holds none of them.
+require_apps_secrets() {
+  local names=(chain_rpc_token) name
+  ! piri_uses_s3 || names+=(piri_s3_access_key_id piri_s3_secret_access_key)
+  for name in "${names[@]}"; do
+    bao_has external "$name" ||
+      die "OpenBao has no $FILONE_BAO_MOUNT/external#$name. Run provision-apps.sh,
+       which asks for it."
+  done
 }
 
 # Whether this node ships its own telemetry, from whether its node.env carries
