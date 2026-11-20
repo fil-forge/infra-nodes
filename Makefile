@@ -11,7 +11,7 @@
 SHELL := /bin/bash
 
 .PHONY: check
-check: check-tofu check-shell check-compose check-bind-mounts
+check: check-tofu check-shell check-script-tests check-compose check-bind-mounts
 
 # -backend=false because validating a root does not need its state, and reaching
 # the state bucket would need credentials the CI job does not have.
@@ -35,9 +35,21 @@ check-tofu:
 # The CI scripts source nothing, so they need neither flag.
 .PHONY: check-shell
 check-shell:
-	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/operator/*.sh
+	shellcheck -x -P SCRIPTDIR scripts/host/*.sh scripts/*/tests/*.sh scripts/operator/*.sh
 	find nodes -name entrypoint.sh -exec shellcheck {} +
 	shellcheck scripts/ci/*.sh scripts/ci/*/*.sh
+
+# The scripts' own tests: every scripts/<dir>/tests/*.test.sh. Each runs the
+# script under test against stub commands in a temporary directory, so it needs
+# no root and no node.
+.PHONY: check-script-tests
+check-script-tests:
+	@set -euo pipefail; \
+	for test in scripts/*/tests/*.test.sh; do \
+	  [ -f "$$test" ] || continue; \
+	  echo "==> $$test"; \
+	  bash "$$test"; \
+	done
 
 # `compose config` resolves every interpolation, so it catches a variable a
 # compose file expects and no env file supplies — which on a node shows up as a
