@@ -194,8 +194,9 @@ is implemented. The dev node takes none.
 
 IST-1's storage is a disk array of many petabytes that the site exposes over an S3 interface. Piri
 therefore uses its S3 blob backend, and the node runs one Piri. Piri keeps blob bytes, uploads
-staged before their digest is known, and its IPNI adverts in one bucket on the array, named from the
-bucket prefix with `pdp` appended. Its records go to the node's Postgres: allocations, acceptances,
+staged before their digest is known, and its IPNI adverts in a folder of the bucket `fil-one`, which
+the site shares with other data: blobs and staged uploads under `piri-0/pdp/`, adverts under
+`piri-0/ipni/`. Its records go to the node's Postgres: allocations, acceptances,
 claims, receipts, the PDP pipeline's tasks and proof cache, and the index of staged uploads.
 
 The `piri` dataset holds the rest: the config file `piri init` writes, the entrypoint's init
@@ -207,8 +208,8 @@ the dataset when the egress tracker runs, in batches of up to 100 MiB that Piri 
 tracker has consolidated them. The Piri this node runs does not start the egress tracker, and the
 50 GiB quota leaves room for the journal if egress tracking is turned on.
 
-The endpoint and the bucket prefix are in `node.env`, and the credentials come from OpenBao.
-`provision-apps.sh` refuses to start while the endpoint or the prefix is missing and asks for the
+The endpoint and the path, `fil-one/piri-0/`, are in `node.env`, and the credentials come from OpenBao.
+`provision-apps.sh` refuses to start while the endpoint or the path is missing and asks for the
 credentials, and `deploy-apps.sh` refuses a deploy while OpenBao lacks them. `piri init` copies the
 credentials into the config file it writes on the `piri` dataset, which the pool's encryption
 covers.

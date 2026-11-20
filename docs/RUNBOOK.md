@@ -145,8 +145,10 @@ FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` r
 
 Prod/us-east-2's Piri keeps its blobs in S3-compatible object storage, through the `[repo.s3]`
 section of its base config, because the piri dataset's 50 GiB quota is sized for its config and
-state. Commit `PIRI_S3_ENDPOINT` and `PIRI_S3_BUCKET_PREFIX` from the storage provider's details
-before step 6: `provision-apps.sh` refuses to start while either is empty, and asks for the access
+state. `node.env` commits `PIRI_S3_ENDPOINT` and `PIRI_S3_PATH` from the storage provider's details.
+The path is the provider's bucket followed by this Piri's folder in it, ending with a slash: with
+`fil-one/piri-0/`, blobs go under `piri-0/pdp/` and IPNI adverts under `piri-0/ipni/` in the bucket
+`fil-one`. `provision-apps.sh` refuses to start while either is empty, and asks for the access
 key id and secret key, which it stores as `filone/external`'s `piri_s3_access_key_id` and
 `piri_s3_secret_access_key`. `deploy-apps.sh` refuses to start a Piri without all four.
 `piri init` copies the credentials into the config it writes on the piri dataset.
@@ -931,9 +933,8 @@ each is mounted where it belongs. It writes `/etc/docker/daemon.json` only when 
 restarts Docker for it only when no container runs; an existing file that differs is shown as a
 diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
 systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value;
-commit it in `nodes/prod/us-east-2/node.env`, with the object storage endpoint and bucket prefix,
-before step 6. The file already holds the value the 2026-11-20 run printed; the endpoint and
-bucket prefix are still to commit.
+commit it in `nodes/prod/us-east-2/node.env` before step 6. The file already holds the value the
+2026-11-20 run printed, and the object storage endpoint and path.
 
 `nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao, the state directory, Caddy's
 state and Alloy's write-ahead log to their `control/` datasets (Caddy's to `data/` and `config/`
@@ -1089,7 +1090,7 @@ scripts/host/provision-apps.sh
 ```
 
 It first checks that `node.env` holds what the apps need from step 2, Ingot's byte budget and, on
-a node whose Piris keep their blobs in object storage, its endpoint and bucket prefix, and stops
+a node whose Piris keep their blobs in object storage, its endpoint and path, and stops
 before it asks for anything if one is missing. It then asks for the chain.love token and, on such a
 node, the object storage access key id and secret key, skipping any OpenBao holds already.
 `deploy-apps.sh` refuses to start the apps while OpenBao lacks one of them, and names it.

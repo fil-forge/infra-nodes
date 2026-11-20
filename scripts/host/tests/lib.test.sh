@@ -240,25 +240,25 @@ echo "==> node.env values the apps need"
 
 FILONE_NODE_DIR=nodes/test
 bao_has() { [ -e "$STUB_STATE/bao/$1/$2" ]; }
-# set_inputs <budget> <endpoint> <prefix>: an endpoint of - leaves both object
+# set_inputs <budget> <endpoint> <path>: an endpoint of - leaves both object
 # storage settings unset, as on a node whose Piris keep their blobs locally.
 set_inputs() {
   # SC2034: read by require_apps_inputs.
   # shellcheck disable=SC2034
   INGOT_LOCAL_BLOB_MAX_BYTES="$1"
   if [ "$2" = - ]; then
-    unset PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX
+    unset PIRI_S3_ENDPOINT PIRI_S3_PATH
   else
     # shellcheck disable=SC2034
-    PIRI_S3_ENDPOINT="$2" PIRI_S3_BUCKET_PREFIX="$3"
+    PIRI_S3_ENDPOINT="$2" PIRI_S3_PATH="$3"
   fi
 }
 
-# description | budget | endpoint | prefix | the name the refusal gives, or -
+# description | budget | endpoint | path | the name the refusal gives, or -
 # for a pass
-while IFS='|' read -r description budget endpoint prefix refused; do
+while IFS='|' read -r description budget endpoint path refused; do
   new_case "require_apps_inputs, $description"
-  set_inputs "$budget" "$endpoint" "$prefix"
+  set_inputs "$budget" "$endpoint" "$path"
   run require_apps_inputs
   if [ "$refused" = - ]; then
     check "passes" test "$status" -eq 0
@@ -272,9 +272,9 @@ budget empty||-||INGOT_LOCAL_BLOB_MAX_BYTES
 budget with a unit|5GiB|-||INGOT_LOCAL_BLOB_MAX_BYTES
 budget negative|-1|-||INGOT_LOCAL_BLOB_MAX_BYTES
 budget set, no object storage|1000|-||-
-endpoint empty|1000||piri-|PIRI_S3_ENDPOINT
-bucket prefix empty|1000|https://objects.example||PIRI_S3_BUCKET_PREFIX
-object storage configured|1000|https://objects.example|piri-|-
+endpoint empty|1000||bucket/piri-0/|PIRI_S3_ENDPOINT
+path empty|1000|https://objects.example||PIRI_S3_PATH
+object storage configured|1000|https://objects.example|bucket/piri-0/|-
 CASES
 
 new_case "node.env without object storage"
@@ -290,7 +290,7 @@ check "is a node whose Piris use it" piri_uses_s3
 while IFS='|' read -r description object_storage stored refused; do
   new_case "require_apps_secrets, $description"
   if [ "$object_storage" = yes ]; then
-    set_inputs 1000 https://objects.example piri-
+    set_inputs 1000 https://objects.example bucket/piri-0/
   else
     set_inputs 1000 -
   fi
@@ -314,7 +314,7 @@ object storage, chain.love token missing|yes|piri_s3_access_key_id piri_s3_secre
 object storage, all three stored|yes|chain_rpc_token piri_s3_access_key_id piri_s3_secret_access_key|-
 CASES
 
-for node in dev staging/eu-central-3; do
+for node in dev staging/eu-central-3 prod/us-east-2; do
   current="$node"
   # shellcheck disable=SC1090
   check "passes require_apps_inputs" \
@@ -338,7 +338,7 @@ current="prod/us-east-2"
 check "is a node whose Piris use object storage" \
   bash -c ". '$NODES/prod/us-east-2/node.env'; [ -n \"\${PIRI_S3_ENDPOINT+set}\" ]"
 template="$NODES/prod/us-east-2/apps/config/piri/piri-base-config.toml.tpl"
-for name in PIRI_S3_ENDPOINT PIRI_S3_BUCKET_PREFIX PIRI_S3_ACCESS_KEY_ID PIRI_S3_SECRET_ACCESS_KEY; do
+for name in PIRI_S3_ENDPOINT PIRI_S3_PATH PIRI_S3_ACCESS_KEY_ID PIRI_S3_SECRET_ACCESS_KEY; do
   check "its Piri base config renders $name" grep -qF "\${$name}" "$template"
 done
 
