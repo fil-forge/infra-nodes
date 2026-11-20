@@ -327,6 +327,25 @@ if [ "$1" = exec ]; then
   cat "$STUB_STATE/bao-${*: -1}-$field"
   exit 0
 fi
+# Networks are files docker-network-<name> holding the subnets, and a name
+# stands in for its ID. ls -q lists them; inspect with a format that starts with
+# the name prints a line per network, the name then the subnets.
+if [ "$1 $2" = "network ls" ]; then
+  for file in "$STUB_STATE"/docker-network-*; do
+    [ ! -f "$file" ] || echo "${file##*/docker-network-}"
+  done
+  exit 0
+fi
+case "$4" in
+  "{{.Name}} "*)
+    shift 4
+    for network in "$@"; do
+      [ -f "$STUB_STATE/docker-network-$network" ] || exit 1
+      echo "$network $(cat "$STUB_STATE/docker-network-$network")"
+    done
+    exit 0
+    ;;
+esac
 network="${*: -1}"
 [ -f "$STUB_STATE/docker-network-$network" ] || exit 1
 cat "$STUB_STATE/docker-network-$network"
@@ -465,6 +484,8 @@ new_case() {
   echo 0 >"$STATE/uid"
   echo "$PUBLIC/24" >"$STATE/eth0-address"
   echo "$CONTAINERS " >"$STATE/docker-network-filone"
+  # Docker's default bridge, a network the script does not route.
+  echo "172.17.0.0/16 " >"$STATE/docker-network-bridge"
   printf 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\n' \
     >"$STATE/ufw-status"
   printf 'aead:\n  AES_GCM_16[gcm]\nprf:\n  PRF_HMAC_SHA2_384[openssl]\nke:\n  ECP_384[openssl]\n  ECP_521[openssl]\n' \
@@ -691,6 +712,15 @@ expect_input_failure "docker networks" "uses 172.18.0.0/16, which overlaps the t
 new_case "a Docker network inside a tunnel's inside /30"
 echo "169.254.200.0/31 " >"$STATE/docker-network-filone"
 expect_input_failure "docker networks" "uses 169.254.200.0/31, which overlaps the tunnel inside network $INSIDE1_LOCAL"
+
+new_case "an unlisted Docker network that holds a tunnel's inside /30"
+# Its base address lies outside the /30, but the /30 lies inside it.
+echo "169.254.192.0/18 " >"$STATE/docker-network-bridge"
+expect_input_failure "docker networks" "network 'bridge' uses 169.254.192.0/18, which overlaps the tunnel inside network $INSIDE1_LOCAL"
+
+new_case "an unlisted Docker network inside a tunnel's inside /30"
+echo "fd00:1::/64 169.254.200.4/31 " >"$STATE/docker-network-bridge"
+expect_input_failure "docker networks" "network 'bridge' uses 169.254.200.4/31, which overlaps the tunnel inside network $INSIDE2_LOCAL"
 
 new_case "no filone Docker network"
 rm "$STATE/docker-network-filone"
