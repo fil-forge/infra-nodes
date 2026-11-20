@@ -89,7 +89,7 @@ they get it. It is a public address, so any channel will do.
 `INGOT_LOCAL_BLOB_MAX_BYTES` becomes Ingot's `local_blob_max_bytes`: one byte budget for its spool
 (bodies being written or waiting for upload to Piri) and its cache (copies of bodies Piri already
 holds). Every 30 seconds a sweeper evicts cached bodies, oldest first, down to 90% of it. Ingot reads
-0 as no budget, and its cache then keeps every body until the disk fills, so `provision-platform.sh`
+0 as no budget, and its cache then keeps every body until the disk fills, so `provision-apps.sh`
 and `deploy-apps.sh` refuse anything but a positive byte count. On the EC2 nodes Ingot has the data volume to itself,
 so size the budget from that volume's filesystem:
 
@@ -1038,10 +1038,12 @@ While central works on that, fund each Piri's owner wallet. Every Piri has its o
 provider registry allows one provider per address. A Piri registers itself in the registry on its
 first start, and that transaction sends 5 tFIL from its wallet, so send each one at least 6 from a
 Calibration faucet. The addresses are printed by `onboarding-request.sh`, and also readable
-directly:
+directly, for the Piris the node's apps compose file defines:
 
 ```sh
-for piri in piri-0 piri-1 piri-2; do
+. /etc/fil-one/node.conf
+for piri in $(docker compose --project-directory "$FILONE_CHECKOUT/nodes/$FILONE_NODE/apps" \
+    config --no-interpolate --services | grep -E '^piri-[0-9]+$' | sort -V); do
   address="$(BAO_TOKEN="$(cat /etc/fil-one/bao-token)" docker exec \
     -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN filone-openbao \
     bao kv get -mount=filone -field=owner_wallet_address "$piri")"
