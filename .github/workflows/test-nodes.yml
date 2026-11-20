@@ -1,10 +1,12 @@
-# Checks that the dev and staging nodes serve what main pins, and serve a
-# customer.
+# Checks that the dev, staging and prod nodes serve what main pins, and that
+# the dev and staging nodes serve a customer.
 #
 # For each node: wait until it has deployed the pushed commit, run the smoke
-# test (scripts/ci/smoke-test.sh), then the end-to-end test
-# (scripts/ci/e2e-test.sh), which creates a tenant through Hilt and a bucket on
-# the node's Ingot, uploads two objects, reads them back and deletes everything.
+# test (scripts/ci/smoke-test.sh), then, on a dev or staging node, the
+# end-to-end test (scripts/ci/e2e-test.sh), which creates a tenant through Hilt
+# and a bucket on the node's Ingot, uploads two objects, reads them back and
+# deletes everything. A prod node gets the smoke test alone until FIL-1491;
+# E2E_STAGES in scripts/ci/test-nodes/select.sh says which stages get both.
 # One message to filone-alerts covers every node that failed, because one cause
 # started the run.
 #
@@ -43,14 +45,14 @@ name: Test nodes
 # The other titles follow the same shape. infra-central sends change_title,
 # its subject with the pull request written as infra-central#N, because a bare
 # #N would read as a pull request in this repository. A manual run names the
-# nodes it was given, else the stages with all their nodes. "dev & staging"
-# repeats TESTED_STAGES in scripts/ci/test-nodes/select.sh, because run-name
-# cannot read a file; change both together.
+# nodes it was given, else the stages with all their nodes. "dev, staging &
+# prod" repeats TESTED_STAGES in scripts/ci/test-nodes/select.sh, because
+# run-name cannot read a file; change both together.
 run-name: >-
   ${{
     github.event_name == 'repository_dispatch' && (github.event.client_payload.change_title || format('{0} (infra-central)', github.event.client_payload.change_subject))
-    || github.event_name == 'schedule' && 'Hourly run (dev & staging: all nodes)'
-    || github.event_name == 'workflow_dispatch' && format('Manual run ({0})', inputs.nodes || format('{0}: all nodes', inputs.stages || 'dev & staging'))
+    || github.event_name == 'schedule' && 'Hourly run (dev, staging & prod: all nodes)'
+    || github.event_name == 'workflow_dispatch' && format('Manual run ({0})', inputs.nodes || format('{0}: all nodes', inputs.stages || 'dev, staging & prod'))
     || ''
   }}
 
@@ -206,7 +208,9 @@ jobs:
     # HILT_PARTNER_KEY can manage every tenant on the stage's Hilt. Each
     # Environment admits only main, so a pushed branch cannot read it, and this
     # workflow cannot be dispatched from a branch. deployment: false, because
-    # a test is not a deployment and should not appear as one.
+    # a test is not a deployment and should not appear as one. A node without
+    # the end-to-end test has an empty env and runs with no Environment: prod
+    # has none, and naming a missing one would create it with no branch rule.
     environment:
       name: ${{ matrix.env }}
       deployment: false
@@ -265,11 +269,13 @@ jobs:
 
       # Runs only on a node that passed its smoke test: a node that does not
       # answer has already failed, and a write would fail for the same reason.
+      # And only on a node of E2E_STAGES in scripts/ci/test-nodes/select.sh.
       #
       # Not retried: a retry would hide an upload path that fails some of the
       # time. Each run creates its own tenant, so the next run starts clean.
       - name: Run the end-to-end test
         id: e2e
+        if: matrix.e2e
         timeout-minutes: 10
         env:
           HILT_PARTNER_KEY: ${{ secrets.HILT_PARTNER_KEY }}
@@ -295,6 +301,7 @@ jobs:
         env:
           NODE: ${{ matrix.node }}
           WAITED: ${{ github.event_name == 'push' }}
+          E2E: ${{ matrix.e2e }}
           WAIT_OUTCOME: ${{ steps.wait.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           E2E_OUTCOME: ${{ steps.e2e.outcome }}
