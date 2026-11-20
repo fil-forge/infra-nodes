@@ -20,7 +20,8 @@
 # than the one line.
 #
 # The node is a directory under nodes/, dev unless --node names another. The
-# bump workflow pins dev; the staging promotion pins staging/eu-central-3.
+# bump workflow pins dev; promote.sh pins staging/eu-central-3 and each prod
+# node.
 #
 # Prerequisites:
 #   - a git work tree, because the one-line assertion reads `git diff`

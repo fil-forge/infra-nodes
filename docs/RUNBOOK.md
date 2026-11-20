@@ -1219,6 +1219,29 @@ the workflow neither rebuilds nor closes a branch whose head the bot did not bot
 commit, so an amended bot commit counts as a push. Or promote by hand in a branch of your own,
 with `set-node-pin.sh --node staging/eu-central-3`.
 
+**Promote to prod.** Each prod node has a pull request of its own, such as "Promote staging's
+images to prod/us-east-2" on `bot/promote-prod-us-east-2`, so each region is upgraded when you
+merge its pull request and not before. It sets each of the node's pins to what
+`nodes/staging/eu-central-3/apps/versions.env` pins, lists what each service brings over the
+node's current pin, and closes itself once the two match. After every push to `main`, Test nodes
+waits for staging to reach the commit and pass its smoke and end-to-end tests, then calls
+`promote-prod.yml`, which rebuilds each prod pull request on that commit. A dev failure does not
+hold prod back; a staging failure leaves the prod pull requests as they were, and the `main`
+ruleset keeps them from merging until a later push passes. Running `promote-prod.yml` by hand
+rebuilds every prod pull request on current `main` without waiting for staging, and the pull
+request says so.
+
+Holding a service back and auto-merge work as for staging: push to the node's branch yourself,
+and the bot leaves it alone while its pull request is open. A prod pin by hand is
+`set-node-pin.sh --node prod/us-east-2` in a branch of your own.
+
+Both promotions run `scripts/ci/promote.sh`, which takes `staging` or a prod node and prints the
+commit it would push with `--dry-run`:
+
+```sh
+APP_SLUG=fil-forge-bot scripts/ci/promote.sh prod/us-east-2 --dry-run
+```
+
 A deploy that fails is retried on the next pass. Each project records the revision it was last
 deployed from, so reconcile compares against that rather than against the previous HEAD; the failed
 commit stays outstanding until a deploy of it succeeds.

@@ -4,7 +4,8 @@
 # other push only moves it onto current main, which the ruleset requires before
 # it can merge.
 #
-# What it opens, refreshes and closes: scripts/ci/promote-staging.sh.
+# What it opens, refreshes and closes: scripts/ci/promote.sh, which also
+# keeps prod's pull requests for promote-prod.yml.
 name: Promote to staging
 
 # One at a time. Two runs would force-push the branch from two different
@@ -48,4 +49,4 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           APP_SLUG: ${{ steps.bot.outputs.app-slug }}
-        run: scripts/ci/promote-staging.sh
+        run: scripts/ci/promote.sh staging
