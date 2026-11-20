@@ -48,7 +48,8 @@ trap 'warn_unless_deployed $?' EXIT
 bao_is_unsealed || die "OpenBao is sealed; run deploy-platform.sh first"
 
 # compose_apps reads apps.env, which deploy-apps.sh renders into the tmpfs. A
-# reboot empties it, and only an apps deploy renders it again.
+# reboot empties it, and the first reconcile pass after boot runs the apps
+# deploy that renders it again.
 [ -f "$FILONE_SECRETS_DIR/apps.env" ] ||
   die "$FILONE_SECRETS_DIR/apps.env is missing; run deploy-apps.sh"
 

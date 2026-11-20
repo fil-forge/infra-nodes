@@ -230,6 +230,11 @@ resource "aws_instance" "node" {
     encrypted   = true
   }
 
+  # Bootstrap installs Docker Compose from Ubuntu's archive. Its comment says
+  # noble ships 2.24, but noble's updates ship 2.40, which the dev node runs.
+  # 2.40 is the minimum the deploy scripts support: it is the oldest Compose
+  # verified to have `pull --policy missing`, which deploy-apps.sh uses. The
+  # note lives here because any edit to the template replaces the instance.
   user_data = templatefile("${path.module}/files/bootstrap.sh.tftpl", {
     node_name         = var.node_name
     control_volume_id = aws_ebs_volume.control.id
