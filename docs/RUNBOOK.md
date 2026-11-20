@@ -897,8 +897,9 @@ scripts/host/provision-platform.sh
 
 It asks for the unseal-token wrapping token, exchanges it at central for the unseal token,
 initialises OpenBao, and prints **one recovery key and one root token**.
-Both are printed once and stored nowhere on the node. Put both in 1Password before continuing: with
-neither, the only way back into this OpenBao is to rebuild the node and re-onboard it. Then store
+Both are printed once and stored nowhere on the node. With neither of them, nobody can administer
+this OpenBao again, and a rebuild is no way back: it starts an empty OpenBao, without the region key
+that every stored object is encrypted under. Put both in 1Password before continuing, then store
 the second copy at central, from infra-central:
 
 ```sh

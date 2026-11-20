@@ -328,41 +328,23 @@ the restore, until those snapshots expire as well.
 ## Regenerate a lost root token
 
 When no valid root token exists, the recovery key authorises a new one. OpenBao serves root
-generation only to an authenticated caller, so the commands run as the host token, whose policy
+generation only to an authenticated caller, so the script runs as the host token, whose policy
 allows the attempt and still needs the recovery key to finish it. A node provisioned before that
 grant needs `provision-host-token.sh` first, which itself takes the root token: run it on every
 such node while the root token is still at hand.
 
 Open a root Bash shell on the node as in [step 1](#1-open-a-root-bash-shell-on-the-node), outside
-any recorded session, and define `gen`:
+any recorded session, and run:
 
 ```sh
-. scripts/host/lib.sh
-gen() { BAO_TOKEN="$(cat /etc/fil-one/bao-token)" bao_in filone-openbao operator generate-root "$@"; }
+scripts/host/regenerate-root-token.sh
 ```
 
-```sh
-gen -generate-otp
-```
-
-```sh
-gen -init -otp=<otp>
-```
-
-```sh
-read -rsp "recovery key (1Password): " recovery_key; echo
-printf '%s' "$recovery_key" | gen -nonce=<nonce> -
-unset recovery_key
-```
-
-```sh
-gen -decode=<encoded token> -otp=<otp>
-```
-
-The first prints a one-time password. The second starts the attempt with it and prints a nonce. The
-third hands the recovery key to OpenBao on stdin and prints the encoded token. The fourth decodes
-that into the new root token. `gen -cancel` abandons an attempt. The flow was checked on OpenBao 2.6;
-on another version read `gen -h` first, because its defaults changed across 2.x.
+It asks for the recovery key from 1Password, or from central's copy, and prints the new root token
+once. It refuses to start while another root generation attempt is in progress, because whoever
+started that attempt chose its one-time password and would receive the token. The host token can
+start one, so an attempt nobody on the team started means someone holds the host token: treat it as
+a leak of that token, and cancel the attempt only once you know who started it.
 
 Then update both copies: the 1Password entry, and central's by running
 `make store-appliance-root-credentials` in infra-central again with the new root token and the same
