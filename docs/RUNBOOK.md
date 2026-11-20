@@ -946,6 +946,12 @@ address it serves. If the host gains a second address, publish the two ports on 
 alone, as `"<address>:80:80"` and `"<address>:443:443"` in
 `nodes/prod/us-east-2/platform/compose.yml`, and open them only there.
 
+The provider's NAT does not route the host's own traffic back to its public address: a connection
+from the host, or from a container, to `162.43.174.98` times out. Ingot uploads blobs to Piri by
+Piri's public URL, so Caddy carries the node's public hostnames as aliases on the `filone`
+network, and the containers reach Caddy there directly. A public hostname added to the node needs
+an alias too.
+
 Reboot before anything holds state, and confirm the key loads, every dataset mounts and Docker
 starts:
 
