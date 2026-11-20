@@ -864,17 +864,31 @@ for network in ${VPN_DOCKER_NETWORKS:-filone}; do
     if in_network "${subnet%/*}" "$VPN_VPC_CIDR" || in_network "${VPN_VPC_CIDR%/*}" "$subnet"; then
       fail "docker networks" "network '$network' uses $subnet, which overlaps $VPN_VPC_CIDR"
     fi
-    # The same for each tunnel's inside /30, whose connected route would take
-    # the containers' addresses it covers.
-    for inside in "$VPN_TUNNEL1_INSIDE_LOCAL" "$VPN_TUNNEL2_INSIDE_LOCAL"; do
-      if in_network "${subnet%/*}" "$inside" || in_network "${inside%/*}" "$subnet"; then
-        fail "docker networks" "network '$network' uses $subnet, which overlaps the tunnel inside network $inside"
-      fi
-    done
     VPN_CLIENT_SOURCES="${VPN_CLIENT_SOURCES:+$VPN_CLIENT_SOURCES }$subnet"
   done
 done
 [ -n "$VPN_CLIENT_SOURCES" ] || fail "docker networks" "no IPv4 subnet on ${VPN_DOCKER_NETWORKS:-filone}"
+
+# Every Docker network's subnets, listed in VPN_DOCKER_NETWORKS or not, against
+# each tunnel's inside /30, either way round: the /30's connected route would
+# take the containers' addresses it covers. A bridge's gateway is on the host
+# and was checked above; this also covers drivers with no host address.
+all_networks="$(docker network ls -q)" || fail "docker networks" "could not list Docker's networks"
+network_subnets=""
+if [ -n "$all_networks" ]; then
+  # shellcheck disable=SC2086 # one word per network
+  network_subnets="$(docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}' $all_networks)" ||
+    fail "docker networks" "could not read the subnets of Docker's networks"
+fi
+while read -r network subnets; do
+  for subnet in ${subnets:-}; do
+    is_cidr "$subnet" || continue # an IPv6 subnet
+    for inside in "$VPN_TUNNEL1_INSIDE_LOCAL" "$VPN_TUNNEL2_INSIDE_LOCAL"; do
+      ! overlaps "$subnet" "$inside" ||
+        fail "docker networks" "network '$network' uses $subnet, which overlaps the tunnel inside network $inside"
+    done
+  done
+done <<<"$network_subnets"
 
 # The outside addresses a previous run admitted, whose rules go if they changed:
 # those vpn.conf names and any other whose rules carry this script's comment, so
