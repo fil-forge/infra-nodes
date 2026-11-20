@@ -460,14 +460,16 @@ remove_vpn_routes() { # remove_vpn_routes [<CIDR to keep>]
     { for (i = 2; i < NF; i++) if ($i == "dev" && $(i + 1) ~ /^filone-tun[12]$/) { print $1, $(i + 1); next } }')
 }
 
-# The <file>.new copies a run that stopped while writing the set left behind.
-# One may hold the keys.
+# The <file>.new and <file>.old copies a run that stopped while writing the set
+# left behind. One may hold the keys.
 remove_staged_copies() {
-  local file
+  local file copy
   for file in $STAGED_FILES; do
-    cat "$file.new" >/dev/null 2>&1 || continue
-    rm -f "$file.new" || die "could not remove $file.new"
-    echo "  removed $file.new"
+    for copy in "$file.new" "$file.old"; do
+      cat "$copy" >/dev/null 2>&1 || continue
+      rm -f "$copy" || die "could not remove $copy"
+      echo "  removed $copy"
+    done
   done
 }
 
@@ -975,18 +977,23 @@ bring_up
 # now on, go in as one set so that a reboot after a failed run finds either all
 # new or all old. Each changed file is written beside itself as <file>.new,
 # which no include pattern matches, and only once all are written are they
-# renamed into place, so a failed write leaves every one as it was. A failed
-# rename, which within one filesystem is close to impossible, leaves the files
-# renamed before it new and removes the copies left. A file whose mode or owner
+# renamed into place, so a failed write leaves every one as it was. Each one
+# being replaced is first copied beside itself as <file>.old, so a failed
+# rename, which within one filesystem is close to impossible, puts back the
+# files renamed before it, removes those it created, and leaves the set as it
+# was. The restart marker cannot cover that case, since a reboot clears it and
+# strongSwan then loads the files as they stand. A file whose mode or owner
 # alone drifted is written again without a restart.
 staged_files=""
 for file in $STAGED_FILES; do
   mode="$(file_mode "$file")"
   stage_file "$mode" "$file" < <(render_file "$file")
   if [ "$FILE_STATE" != same ]; then
-    if ! install -m "$mode" -o root -g root "$STAGED" "$file.new"; then
-      rm -f "$STAGED" "$file.new"
-      for staged in $staged_files; do rm -f "$staged.new"; done
+    if ! install -m "$mode" -o root -g root "$STAGED" "$file.new" || {
+      cat "$file" >/dev/null 2>&1 && ! install -m "$mode" -o root -g root "$file" "$file.old"
+    }; then
+      rm -f "$STAGED" "$file.new" "$file.old"
+      for staged in $staged_files; do rm -f "$staged.new" "$staged.old"; done
       die "could not write $file"
     fi
     staged_files="${staged_files:+$staged_files }$file"
@@ -995,18 +1002,35 @@ for file in $STAGED_FILES; do
 done
 # A copy rm cannot remove is left for the next run's remove_staged_copies; the
 # error that matters is the rename.
+renamed=""
 unmoved=""
 for file in $staged_files; do
   if [ -n "$unmoved" ]; then
-    rm -f "$file.new" || true
+    rm -f "$file.new" "$file.old" || true
   elif mv -f "$file.new" "$file"; then
-    echo "  wrote $file"
+    renamed="${renamed:+$renamed }$file"
   else
     unmoved="$file"
-    rm -f "$file.new" || true
+    rm -f "$file.new" "$file.old" || true
   fi
 done
-[ -z "$unmoved" ] || die "could not move $unmoved.new into place"
+if [ -n "$unmoved" ]; then
+  unrestored=""
+  for file in $renamed; do
+    if cat "$file.old" >/dev/null 2>&1; then
+      mv -f "$file.old" "$file"
+    else
+      rm -f "$file"
+    fi || unrestored="${unrestored:+$unrestored }$file"
+  done
+  [ -z "$unrestored" ] ||
+    die "could not move $unmoved.new into place, nor put back $unrestored; re-run before a reboot"
+  die "could not move $unmoved.new into place; every file is as it was"
+fi
+for file in $renamed; do
+  rm -f "$file.old" || true
+  echo "  wrote $file"
+done
 unset PSK1 PSK2
 
 # The routes boot and the health check no longer own.

@@ -79,9 +79,11 @@ and creates the interfaces, the route and the nftables table. Only then does it 
 strongSwan connections and secrets under `/etc/swanctl/conf.d/` (both 0600, root's) and
 `/etc/fil-one/vpn.conf`, which the boot unit and the health check read, and restart strongSwan if
 its configuration changed. The strongSwan files and `vpn.conf` go in as a set: each is written
-beside itself as `<file>.new` first, and they are renamed into place only once all are written. A
-failed write or rename removes the `.new` copies, and each run and `down` remove any that a run
-killed on the way left behind. A file whose mode or owner alone has drifted is written again
+beside itself as `<file>.new` first, and each file being replaced is copied beside itself as
+`<file>.old`; they are renamed into place only once all are written. A failed write removes the
+copies. A failed rename puts back the files renamed before it from their `.old` copies and removes
+those the run created, so a reboot before the next run still finds the previous set. Each run and
+`down` remove any copies that a run killed on the way left behind. A file whose mode or owner alone has drifted is written again
 without a restart. It checks that charon offers the pinned algorithms and has loaded both tunnels,
 then enables `filone-vpn.service`, which recreates the interfaces after a boot, and
 `filone-vpn-health.timer`. A second run with the same inputs changes nothing.
@@ -164,7 +166,7 @@ scripts/host/setup-vpn.sh down
 It takes the same two locks, stops and disables the health timer, the boot unit and strongSwan,
 deletes the nftables table, removes the tunnel and `unreachable` routes and the three interfaces,
 deletes the UFW rules for the tunnel addresses in `vpn.conf` and for any address whose rules carry
-the `filone-vpn` comment, and removes any `.new` copies a stopped run left, strongSwan's three
+the `filone-vpn` comment, and removes any `.new` and `.old` copies a stopped run left, strongSwan's three
 files, the ruleset, the restart marker and `vpn.conf`, in that order. It never prints a key. A
 second run changes nothing. The packages stay installed, and so do the unit files, which every
 node's checkout installs and which do nothing without `vpn.conf`.
