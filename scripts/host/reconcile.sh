@@ -198,21 +198,34 @@ fi
 # whenever its firewall table is gone, and deploy-import.sh loads the table only
 # when it runs. The script loads nothing when the table matches the list. A
 # failure that leaves the table loaded, such as a refused edit to the list, is a
-# warning, as for the service's own deploy: the table loaded before still
-# admits only the earlier list, and Piri and Ingot are not involved. A failure
-# that leaves no table stops the service, so its port is never open to every
-# address. That fires the container alert, and the retry marker has the next
-# pass run deploy-import.sh, which loads the table before it starts the service
-# again. The container is named in nodes/<node>/apps/compose.yml.
+# warning, as for the service's own deploy: the loaded table stays in force as
+# it is, which is the last list applied unless its client set was changed by
+# hand, and Piri and Ingot are not involved. A failure that leaves no table
+# stops the service, so its port is never open to every address. That fires the
+# container alert, and the retry marker has the next pass run deploy-import.sh,
+# which loads the table before it starts the service again. The service is
+# stopped before the marker is written, so a marker that cannot be written still
+# leaves the port closed. A node set back to placeholders has no container,
+# since deploy-import.sh removes it, and there is nothing to stop. The container
+# is named in nodes/<node>/apps/compose.yml.
 if [ -e "$FILONE_STATE_DIR/apps-import-service.sha256" ] &&
   ! "$FILONE_CHECKOUT/scripts/host/import-firewall.sh"; then
   if "$FILONE_CHECKOUT/scripts/host/import-firewall.sh" loaded; then
-    echo "WARNING: the import service's firewall table could not be applied; the table loaded before stays in force. See above." >&2
+    echo "WARNING: the import service's firewall table could not be applied; the loaded table stays in force as it is. import-firewall.sh status says what it admits. See above." >&2
   else
     echo "WARNING: the import service's firewall table is gone and could not be loaded; stopping the import service so its port is not open to every address. See above." >&2
-    touch "$FILONE_STATE_DIR/import-retry"
-    docker stop filone-import-service >/dev/null ||
-      die "could not stop filone-import-service, whose port is open to every address"
+    import_status=0
+    container_exists filone-import-service || import_status=$?
+    case "$import_status" in
+      0)
+        docker stop filone-import-service >/dev/null ||
+          die "could not stop filone-import-service, whose port is open to every address"
+        ;;
+      1) echo "  filone-import-service does not exist; nothing to stop" ;;
+      *) die "could not ask Docker whether filone-import-service exists, whose port may be open to every address" ;;
+    esac
+    touch "$FILONE_STATE_DIR/import-retry" ||
+      die "could not write $FILONE_STATE_DIR/import-retry, which has the next pass load the firewall table"
   fi
 fi
 

@@ -54,6 +54,12 @@ write_stubs() {
 #!/usr/bin/env bash
 echo "docker $*" >>"$STUB_STATE/calls"
 [ "$1" != stop ] || [ ! -e "$STUB_STATE/docker-stop-fails" ] || exit 1
+# A file docker-no-container makes Docker say no container exists, and
+# docker-not-answering makes it fail as a daemon it cannot reach does.
+if [ "$1" = inspect ]; then
+  [ ! -e "$STUB_STATE/docker-no-container" ] || { echo "Error: No such container: ${*: -1}" >&2; exit 1; }
+  [ ! -e "$STUB_STATE/docker-not-answering" ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+fi
 [ "$1" = exec ] || exit 0
 while [ "$#" -gt 0 ] && [ "$1" != bao ]; do shift; done
 shift
@@ -319,7 +325,7 @@ run_reconcile
 check "exits zero" succeeded
 check "tried the firewall" deployed import-firewall.sh
 check "warns" said "WARNING: the import service's firewall"
-check "says the earlier table stays" said "the table loaded before stays in force"
+check "says the loaded table stays" said "the loaded table stays in force as it is"
 check "leaves the service running" not_stopped
 check "asks for no retry" test ! -e "$ROOT/mnt/fil-one/control/state/import-retry"
 check "stamps the reconcile pass" stamped reconcile
@@ -356,6 +362,46 @@ before=$failures
 run_reconcile
 check "exits non-zero" failed
 check "says why" said "could not stop filone-import-service"
+check "does not stamp the reconcile pass" eval '! stamped reconcile'
+show_output_on_failure "$before"
+
+# What a node set back to placeholders leaves: deploy-import.sh removed the
+# container and kept the configuration hash.
+new_case "deployed, the import service's firewall fails with no table and no container"
+deployed_at_head
+touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" \
+  "$STUB_STATE/fail-import-firewall.sh" "$STUB_STATE/docker-no-container"
+before=$failures
+run_reconcile
+check "exits zero" succeeded
+check "says there is nothing to stop" said "filone-import-service does not exist"
+check "stops nothing" not_stopped
+check "leaves a retry for the next pass" test -e "$ROOT/mnt/fil-one/control/state/import-retry"
+check "stamps the reconcile pass" stamped reconcile
+show_output_on_failure "$before"
+
+new_case "deployed, the import service's firewall fails with no table and Docker does not answer"
+deployed_at_head
+touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" \
+  "$STUB_STATE/fail-import-firewall.sh" "$STUB_STATE/docker-not-answering"
+before=$failures
+run_reconcile
+check "exits non-zero" failed
+check "says why" said "could not ask Docker whether filone-import-service exists"
+check "does not stamp the reconcile pass" eval '! stamped reconcile'
+show_output_on_failure "$before"
+
+# The marker is a link into a directory that does not exist, so it cannot be
+# written.
+new_case "deployed, the import service's firewall fails with no table and the retry cannot be written"
+deployed_at_head
+touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" "$STUB_STATE/fail-import-firewall.sh"
+ln -s "$CASE/nowhere/import-retry" "$ROOT/mnt/fil-one/control/state/import-retry"
+before=$failures
+run_reconcile
+check "stops the service first" stopped filone-import-service
+check "exits non-zero" failed
+check "says why" said "could not write $ROOT/mnt/fil-one/control/state/import-retry"
 check "does not stamp the reconcile pass" eval '! stamped reconcile'
 show_output_on_failure "$before"
 

@@ -394,8 +394,8 @@ table that went missing or was flushed, or whose client set was changed by hand;
 apply it logs `WARNING: the import service's firewall`, which the query above matches. When that
 pass also finds no table loaded, it stops the service, so the "Appliance container is not running"
 alert fires, and the next pass's deploy loads the table before it starts the service again. A pass
-that cannot stop it fails, and the reconcile deadman goes stale. `scripts/host/import-firewall.sh
-status` says what the loaded table's client set admits, and exits non-zero when the table is gone
+that cannot stop it, or cannot leave the retry marker after stopping it, fails, and the reconcile
+deadman goes stale. `scripts/host/import-firewall.sh status` says what the loaded table's client set admits, and exits non-zero when the table is gone
 or has lost its drop rule, or its client set differs from the list, or the list has not been
 applied. Add an alert on that warning, and one for failing imports, before the service takes production
 imports.
