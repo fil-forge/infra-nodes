@@ -136,8 +136,9 @@ Prod/us-east-2: Ingot's spool and cache have the `ingot/blobs` dataset to themse
 catalog log has `ingot/segments`. Bootstrap sets the blobs quota to 50% of the pool and prints the
 budget, 80% of that quota, which leaves room for bodies in flight and stays under the 10%-free
 alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB ten-minute peak.
-Commit the printed value before step 6. `provision-apps.sh` and `deploy-apps.sh` refuse anything
-but a positive byte count.
+Bootstrap's run on 2026-11-20 printed 3071760610099 (80% of the 3839700762624-byte quota), which
+`node.env` commits. A second host needs its own printed value committed before step 6.
+`provision-apps.sh` and `deploy-apps.sh` refuse anything but a positive byte count.
 
 Central's prod files name no PDP verifier or FWSS view address, so the node's two come from the
 FWSS contract itself, whose `pdpVerifierAddress()` and `viewContractAddress()` return them.
@@ -931,7 +932,8 @@ restarts Docker for it only when no container runs; an existing file that differ
 diff for you to merge. It creates the FilOne tmpfs paths, the `filone` network, `node.conf` and the
 systemd units. A second run changes nothing. It prints the `INGOT_LOCAL_BLOB_MAX_BYTES` value;
 commit it in `nodes/prod/us-east-2/node.env`, with the object storage endpoint and bucket prefix,
-before step 6.
+before step 6. The file already holds the value the 2026-11-20 run printed; the endpoint and
+bucket prefix are still to commit.
 
 `nodes/prod/us-east-2` binds those datasets: Postgres, OpenBao, the state directory, Caddy's
 state and Alloy's write-ahead log to their `control/` datasets (Caddy's to `data/` and `config/`

@@ -138,7 +138,7 @@ Ingot's byte budget for its spool and cache, `INGOT_LOCAL_BLOB_MAX_BYTES`, is 80
 `ingot/blobs` quota. Request bodies in flight are written above the budget and need room there, and
 central pages when an Ingot volume has less than 10% free. Bootstrap prints the value, and
 `node.env` commits it before the apps are provisioned: `provision-apps.sh` refuses to start
-without it.
+without it. The 2026-11-20 run printed 3071760610099, 80% of the 3839700762624-byte quota.
 
 ## Bootstrap changes nothing it did not create
 
