@@ -953,6 +953,12 @@ zfs list -o name,quota,reservation,mounted -r data
 systemctl is-active docker.service
 ```
 
+##### The database VPN
+
+The node reaches its database in central's VPC over a site-to-site VPN, which
+`scripts/host/setup-vpn.sh` sets up. [Set up the database VPN](runbook/set-up-database-vpn.md)
+gives its inputs, how to run it, check it and take it off the node.
+
 ### 4. The unseal token
 
 Central mints it, and only now: the token is bound to the node's address. For the appliance that is

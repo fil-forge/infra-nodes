@@ -1,0 +1,14 @@
+[Unit]
+# Move the database route off a tunnel that is down, onto the other one.
+# Started by filone-vpn-health.timer. Fails while both tunnels are down.
+Description=FilOne node database VPN health check
+ConditionPathExists=/etc/fil-one/vpn.conf
+After=filone-vpn.service strongswan.service
+Requires=filone-vpn.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/fil-one/node.conf
+ExecStart=/bin/bash ${FILONE_CHECKOUT}/scripts/host/setup-vpn.sh health
+# Three pings per tunnel, two seconds each at most, with room to spare.
+TimeoutStartSec=30
