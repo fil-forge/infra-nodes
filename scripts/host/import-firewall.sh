@@ -3,8 +3,10 @@
 #
 #   import-firewall.sh           apply the client list in /etc/fil-one/import-clients
 #   import-firewall.sh status    say what the loaded table admits, and fail when the
-#                                table is gone or has lost its drop rule, or the list
-#                                has changed since it loaded
+#                                table is gone or has lost its drop rule, or its client
+#                                set differs from the list
+#   import-firewall.sh loaded    succeed when the table is loaded with its drop rule,
+#                                whatever its client set holds
 #
 # The import service publishes its port through Docker, and UFW does not filter
 # a port Docker publishes. So the rule is an nftables table of the node's own,
@@ -27,7 +29,11 @@
 # and UFW never flush this table, and nothing here adds to, reorders or reads
 # their chains, or any other table. A table that is there but has lost its
 # forward chain or its drop rule, as `nft flush table` leaves it, counts as
-# gone: it admits every address, so it is loaded again.
+# gone: it admits every address, so it is loaded again. So does a table whose
+# client set no longer holds exactly the list, as `nft flush set` or
+# `nft add element` leaves it. The set is compared as the addresses it covers,
+# so the order nft lists them in, a network it prints as a range, and how it
+# wraps and spaces them do not count as a change.
 #
 # deploy-import.sh applies the list before it starts the service, on every run.
 # A reboot empties the table, and the service cannot start until that deploy
@@ -52,7 +58,7 @@ NFT_TABLE=filone_import
 # so the host port node.env chooses does not matter here.
 SERVICE_PORT=8443
 
-usage() { die "usage: $(basename "$0") [status]"; }
+usage() { die "usage: $(basename "$0") [status|loaded]"; }
 
 # --- Addresses -------------------------------------------------------------
 # As in setup-vpn.sh, except that an octet or prefix with a leading zero is
@@ -195,6 +201,49 @@ table_loaded() {
     grep -qF 'saddr != @clients drop' <<<"$listing"
 }
 
+# The loaded client set's elements as nft lists them, space-separated, or fails
+# when the table is not there. nft may wrap them over several lines; an empty
+# set has no elements line.
+loaded_elements() {
+  local listing elements=()
+  listing="$(nft list table ip "$NFT_TABLE" 2>/dev/null)" || return 1
+  listing="$(tr '\n' ' ' <<<"$listing" |
+    sed -n 's/.*elements[[:space:]]*=[[:space:]]*{\([^}]*\)}.*/\1/p')"
+  read -ra elements <<<"${listing//,/ }"
+  echo "${elements[*]:-}"
+}
+
+# The first and last address of each element, one "first last" line per
+# element, sorted; fails on an element it cannot read. An element is an
+# address, an address/prefix, or a first-last range.
+element_ranges() { # element_ranges <space-separated elements>
+  local elements=() element first last
+  read -ra elements <<<"$1"
+  for element in ${elements[@]+"${elements[@]}"}; do
+    case "$element" in
+      *-*)
+        first="$(ipv4_to_int "${element%-*}")" || return 1
+        last="$(ipv4_to_int "${element#*-}")" || return 1
+        echo "$first $last"
+        ;;
+      *)
+        case "$(entry_problem "$element")" in
+          '' | 'would admit every address') entry_range "$element" ;;
+          *) return 1 ;;
+        esac
+        ;;
+    esac
+  done | sort -n
+}
+
+# The loaded client set covers exactly the addresses on the list.
+set_matches() { # set_matches <space-separated clients>
+  local elements loaded
+  elements="$(loaded_elements)" || return 1
+  loaded="$(element_ranges "$elements")" || return 1
+  [ "$loaded" = "$(element_ranges "$1")" ]
+}
+
 describe_clients() { # describe_clients <space-separated clients>
   if [ -z "$1" ]; then
     echo "the client list is empty: the import service's port is closed to every address"
@@ -208,7 +257,7 @@ apply() {
   load_clients
   install -d -m 0700 -o root -g root /run/fil-one "$FILONE_SECRETS_DIR"
   nft_ruleset | install_if_changed "$NFT_RULESET" && changed=1
-  if [ "$changed" = 1 ] || ! table_loaded; then
+  if [ "$changed" = 1 ] || ! table_loaded || ! set_matches "$CLIENTS"; then
     echo "  loading nftables table $NFT_TABLE"
     # The file on disk has to match the loaded table, or the next run would
     # find nothing changed and load nothing. Removing it makes that run load.
@@ -227,9 +276,10 @@ apply() {
   fi
 }
 
-# What the loaded table admits is read from the ruleset file, which apply keeps
-# equal to the last load that succeeded. The list is then checked against it,
-# so an edit not yet applied is reported as such and not as admitted.
+# What the loaded table admits is read from the table itself. The list is then
+# checked against the ruleset file, which apply keeps equal to the last load
+# that succeeded, so an edit not yet applied is reported as such and not as
+# admitted, and against the loaded set, so a set changed by hand is reported.
 status() {
   local ruleset loaded
   if table_loaded; then
@@ -239,17 +289,26 @@ status() {
     echo "Run $(basename "$0") as root to load it."
     return 1
   fi
-  if ! ruleset="$(cat "$NFT_RULESET" 2>/dev/null)"; then
-    echo "$NFT_RULESET is missing, so which addresses the table admits is unknown."
+  if ! loaded="$(loaded_elements)" || ! element_ranges "$loaded" >/dev/null; then
+    echo "The client set of nftables table $NFT_TABLE could not be read."
     echo "Run $(basename "$0") as root to load the list again."
     return 1
   fi
-  loaded="$(sed -n 's/^    elements = { \(.*\) }$/\1/p' <<<"$ruleset")"
-  describe_clients "${loaded//, / }"
+  describe_clients "$loaded"
+  if ! ruleset="$(cat "$NFT_RULESET" 2>/dev/null)"; then
+    echo "$NFT_RULESET is missing. Run $(basename "$0") as root to load the list again."
+    return 1
+  fi
   if [ "$( (load_clients && nft_ruleset) 2>/dev/null)" != "$ruleset" ]; then
     # Again, for the reason a refused list gives.
     (load_clients) || true
     echo "$CLIENTS_FILE has changed and has not been applied. Run $(basename "$0") as root to apply it."
+    return 1
+  fi
+  load_clients
+  if ! set_matches "$CLIENTS"; then
+    echo "The loaded client set differs from $CLIENTS_FILE: it was changed outside this script."
+    echo "Run $(basename "$0") as root to load the list again."
     return 1
   fi
 }
@@ -258,5 +317,6 @@ status() {
 case "${1:-apply}" in
   apply) apply ;;
   status) status ;;
+  loaded) table_loaded ;;
   *) usage ;;
 esac

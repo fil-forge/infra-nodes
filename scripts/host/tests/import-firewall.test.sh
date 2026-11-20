@@ -270,6 +270,53 @@ check "loads the table again" test "$(loads)" -eq 2
 check "with the drop rule" loaded_has "$DROP"
 check "and the same client" loaded_has "    elements = { $CLIENT1 }"
 
+# What `nft flush set` or `nft add element` leaves: the table with its chain and
+# drop rule, and the set holding these elements, or none.
+set_elements() { # set_elements [<elements line>]
+  grep -v '^    elements = ' "$STATE/nft-loaded" >"$STATE/nft-loaded.new"
+  if [ "$#" -gt 0 ]; then
+    sed "s/^    flags interval$/&\\
+    elements = { $1 }/" "$STATE/nft-loaded.new" >"$STATE/nft-loaded"
+  else
+    mv "$STATE/nft-loaded.new" "$STATE/nft-loaded"
+  fi
+  rm -f "$STATE/nft-loaded.new"
+}
+
+new_case "an address added to the loaded set by hand"
+clients "$CLIENT1"
+run_firewall
+set_elements "$CLIENT1, $CLIENT3"
+run_firewall
+check "succeeds" succeeded
+check "loads the table again" test "$(loads)" -eq 2
+check "the added address is no longer admitted" loaded_has "    elements = { $CLIENT1 }"
+
+new_case "the loaded set flushed by hand"
+clients "$CLIENT1" "$CLIENT3"
+run_firewall
+set_elements
+run_firewall
+check "succeeds" succeeded
+check "loads the table again" test "$(loads)" -eq 2
+check "the listed clients are admitted again" loaded_has "    elements = { $CLIENT1, $CLIENT3 }"
+
+# nft lists a set in its own order, may print a network as a range, and wraps
+# long element lists over several lines.
+new_case "the loaded set as nft may format it"
+clients "$CLIENT1" "$CLIENT2" "$CLIENT3"
+run_firewall
+set_elements "$CLIENT3,	198.51.100.0-198.51.100.15,\\
+			     $CLIENT1"
+run_firewall
+check "succeeds" succeeded
+check "loads nothing" test "$(loads)" -eq 1
+check "says it changed nothing" printed "unchanged"
+run_firewall status
+check "status succeeds" succeeded
+check "status names what the loaded set holds" \
+  printed "admitted to the import service's port: $CLIENT3 198.51.100.0-198.51.100.15 $CLIENT1"
+
 new_case "the port matches the service's published container port"
 compose="$NODES/prod/us-east-2/apps/compose.yml"
 check "prod/us-east-2 publishes the service on container port 8443" \
@@ -411,6 +458,32 @@ flush_table
 run_firewall status
 check "fails" failed
 check "says the drop rule is gone" printed "has lost its drop rule"
+check "loads nothing" test "$(loads)" -eq 1
+
+new_case "status with the loaded set changed by hand"
+clients "$CLIENT1"
+run_firewall
+set_elements "$CLIENT1, $CLIENT3"
+run_firewall status
+check "fails" failed
+check "names what the loaded set admits" printed "admitted to the import service's port: $CLIENT1 $CLIENT3"
+check "says the set was changed outside the script" printed "changed outside this script"
+check "loads nothing" test "$(loads)" -eq 1
+
+new_case "loaded"
+clients "$CLIENT1"
+run_firewall
+run_firewall loaded
+check "succeeds with the table loaded" succeeded
+set_elements
+run_firewall loaded
+check "succeeds whatever the set holds" succeeded
+flush_table
+run_firewall loaded
+check "fails with the table flushed" failed
+rm -f "$STATE/nft-loaded"
+run_firewall loaded
+check "fails with the table gone" failed
 check "loads nothing" test "$(loads)" -eq 1
 
 echo
