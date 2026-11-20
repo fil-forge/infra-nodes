@@ -693,6 +693,14 @@ new_case "rule for another port"
 write_ufw_status "2222/tcp                   ALLOW       $JUMP"
 expect_check_failure "ssh rule"
 
+new_case "SSH rule admitting the jump host on one interface only"
+write_ufw_status "OpenSSH on eth0            ALLOW       $JUMP/32"
+expect_check_failure "ssh rule"
+
+new_case "SSH rule admitting the jump host to one address only"
+write_ufw_status "203.0.113.5 22/tcp         ALLOW       $JUMP"
+expect_check_failure "ssh rule"
+
 new_case "UFW inactive"
 printf 'Status: inactive\n' >"$STATE/ufw-status"
 expect_check_failure "ufw active"
@@ -745,8 +753,8 @@ new_case "SSH rule for a network holding the jump host"
 write_ufw_status "22                         ALLOW IN    192.0.2.0/24"
 expect_success
 
-new_case "SSH rule by profile on one interface"
-write_ufw_status "OpenSSH on eth0            ALLOW       $JUMP/32"
+new_case "SSH rule by profile"
+write_ufw_status "OpenSSH                    ALLOW       $JUMP/32"
 expect_success
 
 new_case "SSH rule with a comment"

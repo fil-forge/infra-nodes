@@ -325,10 +325,11 @@ grep -qF -- "argv[]=/bin/sh -c $guard ; ignore_errors=no" <<<"$(systemctl show -
 command -v ufw >/dev/null || fail "ufw active" "ufw is not installed"
 ufw_status="$(ufw status)" || fail "ufw active" "could not read ufw status"
 grep -qx 'Status: active' <<<"$ufw_status" || fail "ufw active" "ufw is not active"
-# Port 22 from the jump host: `22`, `22/tcp` or the OpenSSH profile, optionally
-# on one interface or to one destination address, allowed or rate-limited,
-# from the address itself or a network that holds it.
-ssh_rule='^([0-9./]+ )?(22(/tcp)?|OpenSSH)( on [^ ]+)? +(ALLOW|LIMIT)( IN)? +([0-9.]+(/[0-9]+)?)( |$)'
+# Port 22 from the jump host: `22`, `22/tcp` or the OpenSSH profile, allowed
+# or rate-limited, from the address itself or a network that holds it. A rule
+# scoped to one interface or one destination address may not admit the
+# address SSH arrives on, so it does not count.
+ssh_rule='^(22(/tcp)?|OpenSSH) +(ALLOW|LIMIT)( IN)? +([0-9.]+(/[0-9]+)?)( |$)'
 # Any rule: To, action, direction and the first word of From.
 ufw_rule='^(.*[^ ]) +(ALLOW|DENY|REJECT|LIMIT)( (IN|OUT|FWD))? +([^ ]+)'
 
@@ -361,7 +362,7 @@ while IFS= read -r line; do
   # A rule's comment can hold any word, an action among them.
   line="${line%% # *}"
   if [[ "$line" =~ $ssh_rule ]]; then
-    if in_network "$JUMP_HOST_ADDRESS" "${BASH_REMATCH[7]}"; then
+    if in_network "$JUMP_HOST_ADDRESS" "${BASH_REMATCH[5]}"; then
       ssh_admitted=1
       break
     fi
@@ -380,7 +381,7 @@ done <<<"$ufw_status"
 [ -z "$ssh_denied" ] ||
   fail "ssh rule" "the UFW rule '$ssh_denied' comes before any rule admitting port 22 from $JUMP_HOST_ADDRESS, and UFW applies the first that matches. This script changes no firewall rule; fix it by hand, keeping your current session open"
 [ "$ssh_admitted" -eq 1 ] ||
-  fail "ssh rule" "no UFW rule admits port 22 from $JUMP_HOST_ADDRESS. This script changes no firewall rule; fix it by hand, keeping your current session open"
+  fail "ssh rule" "no UFW rule admits port 22 from $JUMP_HOST_ADDRESS on every interface and local address. This script changes no firewall rule; fix it by hand, keeping your current session open"
 
 # An existing filone network must be the one staging uses.
 if docker network inspect filone >/dev/null 2>&1; then
