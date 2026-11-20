@@ -837,6 +837,13 @@ for network in ${VPN_DOCKER_NETWORKS:-filone}; do
     if in_network "${subnet%/*}" "$VPN_VPC_CIDR" || in_network "${VPN_VPC_CIDR%/*}" "$subnet"; then
       fail "docker networks" "network '$network' uses $subnet, which overlaps $VPN_VPC_CIDR"
     fi
+    # The same for each tunnel's inside /30, whose connected route would take
+    # the containers' addresses it covers.
+    for inside in "$VPN_TUNNEL1_INSIDE_LOCAL" "$VPN_TUNNEL2_INSIDE_LOCAL"; do
+      if in_network "${subnet%/*}" "$inside" || in_network "${inside%/*}" "$subnet"; then
+        fail "docker networks" "network '$network' uses $subnet, which overlaps the tunnel inside network $inside"
+      fi
+    done
     VPN_CLIENT_SOURCES="${VPN_CLIENT_SOURCES:+$VPN_CLIENT_SOURCES }$subnet"
   done
 done
