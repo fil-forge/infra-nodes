@@ -202,28 +202,35 @@ table_loaded() {
 }
 
 # The loaded client set's elements as nft lists them, space-separated, or fails
-# when the table is not there. nft may wrap them over several lines; an empty
-# set has no elements line.
+# when the table or its client set is not there. Read from the clients set's own
+# block, so another set in the table is never read in its place. nft may wrap
+# the elements over several lines; an empty set has no elements line.
 loaded_elements() {
-  local listing elements=()
+  local listing block elements=()
   listing="$(nft list table ip "$NFT_TABLE" 2>/dev/null)" || return 1
-  listing="$(tr '\n' ' ' <<<"$listing" |
-    sed -n 's/.*elements[[:space:]]*=[[:space:]]*{\([^}]*\)}.*/\1/p')"
+  # Up to the set's first closing brace: the end of its elements, or of the set
+  # itself when it has none.
+  block="$(tr '\n' ' ' <<<"$listing" |
+    sed -n 's/.*[{[:space:]]set[[:space:]][[:space:]]*clients[[:space:]]*{\([^}]*\)}.*/\1/p')"
+  [ -n "$block" ] || return 1
+  listing="$(sed -n 's/.*elements[[:space:]]*=[[:space:]]*{\(.*\)$/\1/p' <<<"$block")"
   read -ra elements <<<"${listing//,/ }"
   echo "${elements[*]:-}"
 }
 
-# The first and last address of each element, one "first last" line per
-# element, sorted; fails on an element it cannot read. An element is an
-# address, an address/prefix, or a first-last range.
+# The addresses the elements cover, as "first last" lines of numbers, sorted,
+# with adjacent and overlapping ranges merged, so the same addresses give the
+# same lines however nft groups them; fails on an element it cannot read. An
+# element is an address, an address/prefix, or a first-last range.
 element_ranges() { # element_ranges <space-separated elements>
-  local elements=() element first last
+  local elements=() element first last low="" high=""
   read -ra elements <<<"$1"
   for element in ${elements[@]+"${elements[@]}"}; do
     case "$element" in
       *-*)
         first="$(ipv4_to_int "${element%-*}")" || return 1
         last="$(ipv4_to_int "${element#*-}")" || return 1
+        [ "$first" -le "$last" ] || return 1
         echo "$first $last"
         ;;
       *)
@@ -233,7 +240,18 @@ element_ranges() { # element_ranges <space-separated elements>
         esac
         ;;
     esac
-  done | sort -n
+  done | sort -n -k1,1 -k2,2 | {
+    while read -r first last; do
+      if [ -n "$low" ] && [ "$first" -le $((high + 1)) ]; then
+        [ "$last" -le "$high" ] || high="$last"
+      else
+        [ -z "$low" ] || echo "$low $high"
+        low="$first"
+        high="$last"
+      fi
+    done
+    [ -z "$low" ] || echo "$low $high"
+  }
 }
 
 # The loaded client set covers exactly the addresses on the list.

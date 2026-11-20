@@ -275,8 +275,8 @@ check "and the same client" loaded_has "    elements = { $CLIENT1 }"
 set_elements() { # set_elements [<elements line>]
   grep -v '^    elements = ' "$STATE/nft-loaded" >"$STATE/nft-loaded.new"
   if [ "$#" -gt 0 ]; then
-    sed "s/^    flags interval$/&\\
-    elements = { $1 }/" "$STATE/nft-loaded.new" >"$STATE/nft-loaded"
+    sed "s|^    flags interval$|&\\
+    elements = { $1 }|" "$STATE/nft-loaded.new" >"$STATE/nft-loaded"
   else
     mv "$STATE/nft-loaded.new" "$STATE/nft-loaded"
   fi
@@ -316,6 +316,64 @@ run_firewall status
 check "status succeeds" succeeded
 check "status names what the loaded set holds" \
   printed "admitted to the import service's port: $CLIENT3 198.51.100.0-198.51.100.15 $CLIENT1"
+
+# A set added to the table by hand after the clients set, holding these
+# elements.
+add_other_set() { # add_other_set <elements>
+  sed "s/^  chain forward {$/  set others {\\
+    type ipv4_addr\\
+    elements = { $1 }\\
+  }\\
+&/" "$STATE/nft-loaded" >"$STATE/nft-loaded.new"
+  mv "$STATE/nft-loaded.new" "$STATE/nft-loaded"
+}
+
+new_case "the loaded set changed by hand, another set holding the list"
+clients "$CLIENT1"
+run_firewall
+set_elements "$CLIENT3"
+add_other_set "$CLIENT1"
+run_firewall
+check "succeeds" succeeded
+check "reads the clients set, not the other one, and loads the table again" test "$(loads)" -eq 2
+check "the listed client is admitted again" loaded_has "    elements = { $CLIENT1 }"
+check "the other set is gone" loaded_lacks "set others"
+
+new_case "the table holding no clients set"
+clients "$CLIENT1"
+run_firewall
+sed 's/^  set clients {$/  set renamed {/' "$STATE/nft-loaded" >"$STATE/nft-loaded.new"
+mv "$STATE/nft-loaded.new" "$STATE/nft-loaded"
+run_firewall
+check "succeeds" succeeded
+check "loads the table again" test "$(loads)" -eq 2
+check "with the clients set" loaded_has "  set clients {"
+
+# Adjacent entries are allowed on the list, and nft may print them merged, or
+# split the same addresses differently.
+new_case "the loaded set covering the list's adjacent networks as one"
+clients "198.51.100.0/28" "198.51.100.16/28" "$CLIENT1"
+run_firewall
+set_elements "$CLIENT1, 198.51.100.0/27"
+run_firewall
+check "succeeds" succeeded
+check "loads nothing" test "$(loads)" -eq 1
+check "says it changed nothing" printed "unchanged"
+run_firewall status
+check "status succeeds" succeeded
+set_elements "198.51.100.0-198.51.100.20, 198.51.100.16/28, $CLIENT1"
+run_firewall
+check "overlapping elements covering the same addresses load nothing" test "$(loads)" -eq 1
+set_elements "198.51.100.0/28, 198.51.100.17-198.51.100.31, $CLIENT1"
+run_firewall
+check "a gap between elements loads the table again" test "$(loads)" -eq 2
+
+new_case "the loaded set holding a reversed range"
+clients "198.51.100.0/28"
+run_firewall
+set_elements "198.51.100.0-198.51.100.15, 198.51.100.9-198.51.100.3"
+run_firewall
+check "loads the table again" test "$(loads)" -eq 2
 
 new_case "the port matches the service's published container port"
 compose="$NODES/prod/us-east-2/apps/compose.yml"
