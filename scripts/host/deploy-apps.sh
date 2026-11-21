@@ -50,6 +50,8 @@ require_configured OPERATOR_EMAIL PLACEHOLDER
 
 require_apps_secrets
 
+require_postgres_settled
+
 piri_services="$(piri_services)"
 # A Piri whose volume is not mounted is left out of this deploy, and the rest go
 # ahead. Docker would refuse to start it anyway; the run fails at the end, so
