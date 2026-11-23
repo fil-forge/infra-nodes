@@ -208,10 +208,10 @@ mark ingot_changed config_changed apps-ingot "$ingot_config_hash"
 # --- 3. Piri ----------------------------------------------------------------
 
 echo "[3/5] Piri"
-# Every Piri's database, before any Piri starts. A new Piri gets its own here.
+# Every app's database, before any app starts. A new Piri gets its own here.
 POSTGRES_ADMIN_PASSWORD="$(bao_get postgres admin_password)"
-for service in "${piris[@]}"; do
-  ensure_piri_database "$service"
+for service in "${piris[@]}" ingot; do
+  ensure_app_database "$service"
 done
 unset POSTGRES_ADMIN_PASSWORD
 

@@ -105,9 +105,9 @@ services:
     restart: unless-stopped
     networks: [filone]
 
-  # Create the per-service roles and databases once Postgres is up. Idempotent:
-  # guarded CREATEs via \gexec, because CREATE DATABASE cannot run inside a DO
-  # block, plus an unconditional ALTER ROLE so a re-rendered password applies.
+  # Create the per-service roles once Postgres is up. Idempotent: a guarded
+  # CREATE via \gexec, plus an unconditional ALTER ROLE so a re-rendered
+  # password applies. deploy-apps.sh creates each app's database.
   # Passwords land inside SQL string literals, which is safe only because every
   # password this node generates is hex.
   postgres-init:
@@ -128,18 +128,10 @@ services:
             "ALTER ROLE \"$$1\" WITH LOGIN PASSWORD '$$2';" \
           | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet
         }
-        ensure_database() {
-          printf '%s\n' \
-            "SELECT 'CREATE DATABASE \"$$1\" OWNER \"$$2\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$$1')" \
-            '\gexec' \
-          | psql -h postgres -U admin -d admin -v ON_ERROR_STOP=1 --quiet
-        }
-        # One role for every Piri. Each Piri's database is created by
-        # deploy-apps.sh, so adding a Piri changes nothing here.
+        # One role for every Piri, so adding a Piri changes nothing here.
         ensure_role piri "$$PIRI_POSTGRES_PASSWORD" &&
         ensure_role ingot "$$INGOT_POSTGRES_PASSWORD" &&
-        ensure_database ingot ingot &&
-        echo "postgres roles + databases ready"
+        echo "postgres roles ready"
     environment:
       POSTGRES_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
       PIRI_POSTGRES_PASSWORD: ${PIRI_POSTGRES_PASSWORD}

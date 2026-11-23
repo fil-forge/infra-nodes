@@ -12,8 +12,9 @@
 # can answer and everything in this file is read out of OpenBao.
 
 # Postgres. The admin role initialises the cluster; postgres-init creates one
-# role and database per service. INGOT_POSTGRES_PASSWORD also has to match the
-# DSN rendered into Ingot's YAML in the apps project.
+# role per service, and deploy-apps.sh each app's database.
+# INGOT_POSTGRES_PASSWORD also has to match the DSN rendered into Ingot's YAML
+# in the apps project.
 POSTGRES_ADMIN_PASSWORD=${POSTGRES_ADMIN_PASSWORD}
 PIRI_POSTGRES_PASSWORD=${PIRI_POSTGRES_PASSWORD}
 INGOT_POSTGRES_PASSWORD=${INGOT_POSTGRES_PASSWORD}

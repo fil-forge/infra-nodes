@@ -2,7 +2,7 @@
 # Tests for the lib.sh helpers that let a Piri join a running node without a
 # platform restart, run from any machine:
 #
-#   scripts/host/tests/lib.test.sh
+#   scripts/host/tests/add-piri.test.sh
 #
 # Each case sources lib.sh in a subshell with a stub docker first on PATH and
 # compose_platform replaced by a function that answers from files. The docker
@@ -75,12 +75,12 @@ STUB
   printf 'any-container\n' >"$STUB_STATE/container"
 }
 
-# --- ensure_piri_database ----------------------------------------------------
+# --- ensure_app_database ------------------------------------------------------
 
 (
   new_case "creates a missing Piri database named after its service"
   POSTGRES_ADMIN_PASSWORD=any-password
-  ensure_piri_database piri-3
+  ensure_app_database piri-3
   check "sends a guarded CREATE for piri_3 owned by piri" \
     grep -qF "SELECT 'CREATE DATABASE \"piri_3\" OWNER \"piri\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'piri_3')" \
     "$STUB_STATE/exec-stdin"
@@ -95,11 +95,24 @@ STUB
 }
 
 (
+  new_case "creates Ingot's database owned by the ingot role"
+  POSTGRES_ADMIN_PASSWORD=any-password
+  ensure_app_database ingot
+  check "sends a guarded CREATE for ingot owned by ingot" \
+    grep -qF "SELECT 'CREATE DATABASE \"ingot\" OWNER \"ingot\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'ingot')" \
+    "$STUB_STATE/exec-stdin"
+  [ "$failures" -eq 0 ]
+) || {
+  failures=$((failures + 1))
+  echo "  FAIL the case above stopped early; the ERROR line before it says why"
+}
+
+(
   # No platform.env or openbao.env exist here, as on a node after a reboot,
   # where reconcile runs the apps deploy without a platform deploy first.
   new_case "creates the database when the platform's env files are gone"
   POSTGRES_ADMIN_PASSWORD=any-password
-  ensure_piri_database piri-0
+  ensure_app_database piri-0
   check "finds Postgres by its compose labels" \
     grep -qF "docker ps -q --filter label=com.docker.compose.project=filone-platform --filter label=com.docker.compose.service=postgres" \
     "$STUB_STATE/calls"
@@ -112,10 +125,10 @@ STUB
 }
 
 (
-  new_case "refuses a service name that is not a Piri"
+  new_case "refuses a service name that is not an app"
   POSTGRES_ADMIN_PASSWORD=any-password
   # A quote and a semicolon would reach the SQL unescaped.
-  if (ensure_piri_database "piri-3'; DROP DATABASE ingot; --") 2>/dev/null; then
+  if (ensure_app_database "piri-3'; DROP DATABASE ingot; --") 2>/dev/null; then
     flunk "returned success"
   else
     pass "fails"
