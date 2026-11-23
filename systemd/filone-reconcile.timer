@@ -8,6 +8,11 @@ Description=Reconcile the FilOne node every five minutes
 # wall-clock times: nothing here needs to happen at a particular minute, and a
 # fixed schedule would make every node in a fleet pull at the same instant.
 OnBootSec=1min
+# Also one minute after the timer is enabled. OnUnitActiveSec counts from the
+# service's last run, which systemd does not know once the timer has been
+# disabled, so a timer enabled on a running box (after an app reset, a restore
+# or a drill's rollback) would otherwise wait for the next boot.
+OnActiveSec=1min
 OnUnitActiveSec=5min
 
 # Spread the load when there is more than one node, and stop the pass from
