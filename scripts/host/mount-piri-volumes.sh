@@ -20,8 +20,10 @@ set -euo pipefail
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 
 IMDS=http://169.254.169.254/latest
+# The longest lifetime IMDS grants: each volume may wait 300s to attach, so a
+# shorter token could expire before the next volume's tag is read.
 token="$(curl -sf --max-time 5 -X PUT "$IMDS/api/token" \
-  -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')" ||
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')" ||
   die "the instance metadata service did not answer; this script is for EC2 nodes"
 imds() { curl -sf --max-time 5 -H "X-aws-ec2-metadata-token: $token" "$IMDS/meta-data/$1"; }
 
