@@ -12,10 +12,33 @@ check every 20 seconds moves the route to the other tunnel when the one carrying
 This follows the host's bootstrap in
 [the prod/us-east-2 appliance's setup](../RUNBOOK.md#the-produs-east-2-appliance-on-ist-1).
 
+## Order of the steps
+
+The tunnels exist only once central knows the site, so the work alternates between the two
+repositories:
+
+1. In infra-central, the node's entry under `prod` in `pandora_sites`
+   (`terraform/modules/shared/constants/outputs.tf`), keyed `us-east-2`, holds the host's public
+   egress address and its private /32. CI applies the platform root when that change merges, which
+   creates the customer gateway and the VPN connection, with their tunnel addresses and keys, and
+   admits the /32 to the database cluster. Each later change to the entry gives the site new tunnel
+   addresses and keys.
+2. On a laptop with prod AWS credentials, central's fetch script writes this node's inputs, as
+   [Inputs](#inputs) describes.
+3. Optionally, central's container-based host check confirms that both tunnels come up from the
+   host, through any NAT in front of it, without changing the host's network. Central's VPN document
+   describes it under "Checking a site before its appliance is configured", with `--site us-east-2`.
+   Run it only while this node's own strongSwan is down: two IKE initiators from one address compete
+   for the same tunnels.
+4. On the node, `scripts/host/setup-vpn.sh` sets up its half, as [Provision](#provision) describes.
+5. Once `setup-vpn.sh status` shows both tunnels established, unpause central's two tunnel alerts in
+   infra-central's `terraform/envs/grafana/alerts.tf`, as central's VPN document describes. Until
+   then they stay paused, so a tunnel that never comes up does not page anyone.
+
 ## Inputs
 
 Every site-specific value is an input at provisioning time, because this repository is public.
-Central's `scripts/fetch-pandora-vpn-secrets.sh --stage prod --site <site> --out <dir>`, run on a
+Central's `scripts/fetch-pandora-vpn-secrets.sh --stage prod --site us-east-2 --out <dir>`, run on a
 laptop with the stage's AWS credentials, writes most of them to `<dir>/tunnels.env` and the two
 keys to `<dir>/psk1` and `<dir>/psk2`. Copy `psk1` and `psk2` to the host's `/run` tmpfs, through
 the jump host, readable by root only.
@@ -126,9 +149,9 @@ one state that reads `established` only when the IKE SA is established and the c
 whether AWS's inside address answers through it and whether it carries the route. It then says
 whether the nftables table is loaded. It exits non-zero when no
 working tunnel carries the route. Then check the path to the database as central's VPN document
-describes under "Checking the path". Central's two tunnel alerts stay paused until this site runs
-strongSwan; the same document says how to unpause them. Do not run central's host check while this
-strongSwan runs: two IKE initiators from one address compete for the same tunnels.
+describes under "Checking the path". With both tunnels established, unpause central's tunnel alerts
+as step 5 of [Order of the steps](#order-of-the-steps) says. Do not run central's host check while
+this strongSwan runs: two IKE initiators from one address compete for the same tunnels.
 
 ## How container traffic reaches the database
 
