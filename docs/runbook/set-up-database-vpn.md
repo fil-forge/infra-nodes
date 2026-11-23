@@ -27,7 +27,7 @@ repositories:
    [Inputs](#inputs) describes.
 3. Optionally, central's container-based host check confirms that both tunnels come up from the
    host, through any NAT in front of it, without changing the host's network. Central's VPN document
-   describes it under "Checking a site before its appliance is configured", with `--site us-east-2`.
+   describes it under "Checking a site before its appliance is configured".
    Run it only while this node's own strongSwan is down: two IKE initiators from one address compete
    for the same tunnels.
 4. On the node, `scripts/host/setup-vpn.sh` sets up its half, as [Provision](#provision) describes.
@@ -38,7 +38,7 @@ repositories:
 ## Inputs
 
 Every site-specific value is an input at provisioning time, because this repository is public.
-Central's `scripts/fetch-pandora-vpn-secrets.sh --stage prod --site us-east-2 --out <dir>`, run on a
+Central's `scripts/fetch-pandora-vpn-secrets.sh --stage prod --site <site> --out <dir>`, run on a
 laptop with the stage's AWS credentials, writes most of them to `<dir>/tunnels.env` and the two
 keys to `<dir>/psk1` and `<dir>/psk2`. Copy `psk1` and `psk2` to the host's `/run` tmpfs, through
 the jump host, readable by root only.
