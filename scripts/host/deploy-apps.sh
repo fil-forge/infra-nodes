@@ -10,6 +10,10 @@
 # has something to apply waits on the same gate and stops Ingot and every Piri
 # while it works.
 #
+# A Piri that does not come up healthy keeps only itself down: the other Piris
+# and Ingot are still started, and the deploy fails at the end without recording
+# that Piri, so the next pass tries it again.
+#
 # Idempotent. A run that changes nothing renders identical files, finds the
 # running images already correct, restarts nothing and never touches the gate.
 set -euo pipefail
@@ -220,10 +224,32 @@ for container in $piri_containers; do
   docker stop "$container" >/dev/null || die "could not stop $container"
 done
 
+# A Piri that does not come up keeps only itself down. One can be broken until
+# someone steps in, by a bad config or a wallet out of funds, and the other
+# Piris and Ingot are still started. It is reported at the end, where the deploy
+# fails without recording it, so the next pass tries it again.
+failed_piris=()
+# The first Piri recreated for a change that then failed its health check, or
+# whose proving gate never opened. The rest of the rollout leaves every running
+# Piri as it is, so a bad image takes out one Piri instead of all of them, and a
+# second gate that never opens cannot add its 45 minutes to the first and push
+# the reconcile pass past its systemd timeout. A Piri that is not running is
+# still started: there is nothing serving there to lose, and no gate to wait on.
+halted_by=""
 for service in "${piris[@]}"; do
   if [ "${piri_changed[$service]}" -eq 1 ]; then
+    if [ -n "$halted_by" ] && container_running "filone-$service"; then
+      echo "WARNING: $service: something changed; left running as it is because the rollout halted at $halted_by" >&2
+      failed_piris+=("$service")
+      continue
+    fi
     echo "  $service: something changed; waiting for a safe restart window"
-    "$SCRIPT_DIR/pdp-gate.sh" "$service"
+    if ! "$SCRIPT_DIR/pdp-gate.sh" "$service"; then
+      echo "WARNING: $service: no safe restart window; left running as it is" >&2
+      failed_piris+=("$service")
+      halted_by="$service"
+      continue
+    fi
     # --force-recreate because most of what changes here is the *content* of a
     # bind-mounted file — a re-rendered config, a rotated password, a new proof.
     # Compose decides recreation from the service definition, which those leave
@@ -237,19 +263,33 @@ for service in "${piris[@]}"; do
     # healthy, so the loop keeps the order instead. A Piri with no container yet
     # counts as changed and starts here, after every Piri before it has been
     # started and every recreated one has passed its health check.
-    compose_apps up -d --force-recreate --no-deps "$service"
+    #
     # Healthy before the next one goes down, so a bad image stops the rollout at
-    # the first Piri instead of taking all of them out.
-    wait_healthy compose_apps 420 "$service"
+    # the first Piri instead of taking all of them out. wait_healthy dies on a
+    # failure, hence the subshell.
+    if ! compose_apps up -d --force-recreate --no-deps "$service" ||
+      ! (wait_healthy compose_apps 420 "$service"); then
+      echo "WARNING: $service did not come up healthy; recreating no other running Piri" >&2
+      failed_piris+=("$service")
+      halted_by="$service"
+    fi
   else
     echo "  $service: nothing changed"
     # An existing Piri with nothing to apply. --no-recreate leaves it running,
     # or starts it again if it was stopped. --no-deps so a Piri before it whose
-    # volume is missing is not started as its dependency, and the health wait
-    # keeps the one-at-a-time order compose.yml's depends_on would have.
-    compose_apps up -d --no-recreate --no-deps "$service"
-    wait_healthy compose_apps 420 "$service"
+    # volume is missing, or that is broken, is not started as its dependency,
+    # and the health wait keeps the one-at-a-time order compose.yml's depends_on
+    # would have.
+    if ! compose_apps up -d --no-recreate --no-deps "$service" ||
+      ! (wait_healthy compose_apps 420 "$service"); then
+      echo "WARNING: $service did not come up healthy" >&2
+      failed_piris+=("$service")
+    fi
   fi
+done
+# Out of the steps below, which would otherwise try them again or fail on them.
+for service in "${failed_piris[@]}"; do
+  core_services="$(grep -vxF "$service" <<<"$core_services" || true)"
 done
 
 # --- 4. Ingot ---------------------------------------------------------------
@@ -279,15 +319,18 @@ echo "[5/5] Health"
 wait_healthy compose_apps 420 $core_services
 
 # Only now, after the deploy is known good. Recording the hashes earlier would
-# make a failed deploy look like an up-to-date one on the next pass.
+# make a failed deploy look like an up-to-date one on the next pass. Not for a
+# Piri that failed: the next pass has to see its change as still to apply.
 for service in "${piris[@]}"; do
+  [[ " ${failed_piris[*]} " != *" $service "* ]] || continue
   config_hash_record "apps-$service" "${piri_config_hash[$service]}"
 done
 config_hash_record apps-ingot "$ingot_config_hash"
 
-# Neither the stamp nor the marker while a Piri is left out, so the next
-# reconcile pass deploys again and the reconcile deadman fires until it is back.
-if [ "${#unmounted_piris[@]}" -eq 0 ]; then
+# Neither the stamp nor the marker while a Piri is left out or failed, so the
+# next reconcile pass deploys again and the reconcile deadman fires until it is
+# back.
+if [ "${#unmounted_piris[@]}" -eq 0 ] && [ "${#failed_piris[@]}" -eq 0 ]; then
   stamp_deploy_success apps
   touch "$FILONE_APPS_DEPLOYED_MARKER"
 fi
@@ -301,4 +344,8 @@ request_openbao_snapshot
 [ "${#unmounted_piris[@]}" -eq 0 ] ||
   die "deployed every app but ${unmounted_piris[*]}, whose volume is not mounted.
        Mount it and the next reconcile pass starts it."
+[ "${#failed_piris[@]}" -eq 0 ] ||
+  die "deployed every app but ${failed_piris[*]}, which did not come up healthy.
+       Its logs say why ('docker logs filone-<service>'); the next reconcile pass
+       tries it again."
 echo "=== apps deploy complete ==="

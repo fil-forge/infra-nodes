@@ -107,10 +107,18 @@ cat >"$BIN/docker" <<'STUB'
 #!/usr/bin/env bash
 # docker inspect -f '{{.State.Running}}' <container>: true while
 # $STUB_STATE/bao-running exists, else no such container.
+# docker compose ... config: $STUB_STATE/compose.json.
+# docker ps -a ...: $STUB_STATE/ps, one `<service> <state>` per line.
 echo "docker $*" >>"$STUB_STATE/calls"
-[ "$1" = inspect ] || exit 2
-[ -e "$STUB_STATE/bao-running" ] || { echo "Error: No such object: ${*: -1}" >&2; exit 1; }
-echo true
+case "$1" in
+  inspect)
+    [ -e "$STUB_STATE/bao-running" ] || { echo "Error: No such object: ${*: -1}" >&2; exit 1; }
+    echo true
+    ;;
+  compose) cat "$STUB_STATE/compose.json" ;;
+  ps) cat "$STUB_STATE/ps" 2>/dev/null || true ;;
+  *) exit 2 ;;
+esac
 STUB
 
 "$REAL_CHMOD" +x "$BIN"/*
@@ -235,6 +243,76 @@ current="simulate-openbao-loss.sh"
 check "its rollback script puts the store back with move_dir_back" \
   grep -qF 'move_dir_back $raft_dir $drill_dir/openbao $drill_dir/openbao.restored' \
   "$SCRIPTS/simulate-openbao-loss.sh"
+
+echo "==> containers that should be running"
+
+# A project with two long-running services and a one-shot, as the platform
+# project's postgres and postgres-init are.
+compose_json='{"services": {
+  "caddy": {"restart": "unless-stopped"},
+  "postgres": {"restart": "unless-stopped"},
+  "postgres-init": {"restart": "no"},
+  "unset-restart": {}
+}}'
+
+# description | the containers Docker lists, `service state` separated by
+# commas, or - for none | the services passed to check, or - for every one |
+# what stopped_services prints, `service state` separated by commas, or - for
+# nothing
+while IFS='|' read -r description containers services expected; do
+  new_case "stopped_services, $description"
+  printf '%s\n' "$compose_json" >"$STUB_STATE/compose.json"
+  [ "$containers" = - ] || tr ',' '\n' <<<"$containers" >"$STUB_STATE/ps"
+  [ "$services" != - ] || services=""
+  [ "$expected" != - ] || expected=""
+  # shellcheck disable=SC2086 # one service name per word
+  output="$(FILONE_NODE_DIR=nodes/test stopped_services platform $services 2>"$CASE/stderr")" ||
+    output="failed: $(cat "$CASE/stderr")"
+  check "prints '${expected}'" test "$(tr '\n' ',' <<<"$output" | sed 's/,$//')" = "$expected"
+done <<'CASES'
+all running|caddy running,postgres running,postgres-init exited|-|-
+one stopped by hand|caddy exited,postgres running,postgres-init exited|-|caddy exited
+one removed|postgres running|-|caddy missing
+no container at all|-|-|caddy missing,postgres missing
+one restarting|caddy restarting,postgres running|-|-
+one created and never started|caddy created,postgres running|-|caddy created
+a stopped copy next to a running one|caddy exited,caddy running,postgres running|-|-
+only the services asked about|caddy exited,postgres exited|postgres|postgres exited
+CASES
+
+new_case "stopped_services, a service the project does not define"
+printf '%s\n' "$compose_json" >"$STUB_STATE/compose.json"
+run stopped_services platform ingot
+check "fails" test "$status" -ne 0
+
+new_case "stopped_services, the containers it lists"
+printf '%s\n' "$compose_json" >"$STUB_STATE/compose.json"
+FILONE_NODE_DIR=nodes/test stopped_services apps >/dev/null
+check "are the project's, by its compose label" \
+  called "^docker ps -a --filter label=com.docker.compose.project=filone-apps "
+check "leave out one-off containers" called " --filter label=com.docker.compose.oneoff=False "
+
+current="reconcile.sh"
+# shellcheck disable=SC2016 # the literal line grep looks for
+check "checks the platform's containers" \
+  grep -qx '  stopped="$(stopped_services platform)"' "$SCRIPTS/reconcile.sh"
+# shellcheck disable=SC2016 # the literal line grep looks for
+check "checks the Piris' and Ingot's containers" \
+  grep -qx '  stopped="$(stopped_services apps $core_services)"' "$SCRIPTS/reconcile.sh"
+# shellcheck disable=SC2016 # the literal line grep looks for
+check "leaves token renewal to the platform deploy while OpenBao is down" \
+  grep -qx 'if container_running "$FILONE_BAO_CONTAINER"; then' "$SCRIPTS/reconcile.sh"
+# shellcheck disable=SC2016 # the literal line grep looks for
+check "deploys the apps after a failed platform deploy" \
+  grep -qx '  if ! "$FILONE_CHECKOUT/scripts/host/deploy-platform.sh"; then' "$SCRIPTS/reconcile.sh"
+current="reset-apps.sh"
+# Before the apps are stopped, so no pass can start them again.
+check "disables the reconcile timer before it stops the apps" \
+  test "$(grep -n 'systemctl disable --now filone-reconcile.timer' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)" \
+  -lt "$(grep -n '^if ! stop_apps' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)"
+check "stops a reconcile timer that is active but not enabled, before it stops the apps" \
+  test "$(grep -n 'systemctl stop filone-reconcile.timer' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)" \
+  -lt "$(grep -n '^if ! stop_apps' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)"
 
 echo "==> node.env values the apps need"
 

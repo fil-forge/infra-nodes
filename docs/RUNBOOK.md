@@ -1333,6 +1333,61 @@ out of shell history and logs.
 sudo scripts/host/reconcile.sh
 ```
 
+**Reconcile restarts a container that is not running.** Every pass checks that each long-running
+service of both compose projects has a running container: OpenBao, Postgres, Caddy and Alloy, then
+the Piris and Ingot. Bucket Intelligence is left to its own retry, and a one-shot such as
+`postgres-init` is expected to exit. A container that is stopped, created and never started, or
+removed, makes the pass deploy its project even when no commit changed. The journal names it:
+
+```text
+  apps: piri-0 is not running (exited); deploying apps to start it
+  platform: alloy has no container; deploying platform to start it
+```
+
+The deploy starts it the way it starts one on any pass. A Piri or Ingot gets its keys and config
+rendered first, and a container that is merely stopped starts without the proving gate, since
+nothing is serving there. One that was removed counts as changed, so a missing platform container
+takes the gate and stops the apps while it is recreated. A container Docker is restarting counts as
+running: starting it again would change nothing, and its own alerts cover a crash loop.
+
+One broken service does not keep the others down. A Piri that never comes up healthy, from a bad
+config or a wallet out of funds, is reported and skipped: the other Piris and Ingot still start, and
+the apps deploy fails at the end without recording that Piri. A Piri recreated for a change that then
+fails, or whose proving gate never opens, halts the rollout for the Piris still running, which stay
+as they are, while any Piri that is down is still started. A failed platform deploy no longer skips
+the apps deploy in the same pass, which then also applies any apps change the commit carries; if
+what failed is OpenBao or Postgres, the apps deploy fails too. A pass with any of these failures
+exits non-zero and stamps no success, and systemd retries it.
+
+What happens to the broken Piri after that depends on why the deploy ran. While its change is
+unrecorded, every pass deploys the apps again and retries it, so the `reconcile` deploy stamp goes
+stale and its alert fires. A Piri that was only started, and that Docker keeps restarting or that
+runs unhealthy, counts as running: the next pass logs `nothing to deploy` and succeeds, and Docker's
+restart policy goes on trying. Piri's own alerts cover that case, the [proving
+alerts](#piris-proving-alerts) and infra-central's alert on the site failing most requests.
+
+**Keep a container down.** Stop reconcile first, or the next pass starts the container again within
+five minutes. Stopping the timer leaves a pass already running, and a retry systemd queued after a
+failed one, so wait for the running pass on the deploy lock and then cancel the retry:
+
+```sh
+sudo systemctl stop filone-reconcile.timer
+sudo flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
+sudo docker stop filone-piri-0
+```
+
+Start the timer again when you are done. Its next pass starts whatever is still stopped, and logs
+which:
+
+```sh
+sudo systemctl start filone-reconcile.timer
+```
+
+A stopped timer starts again on boot. To keep the container down across a reboot, use
+`systemctl disable --now filone-reconcile.timer` instead, and `enable --now` afterwards. A deploy
+script run by hand, `deploy-apps.sh` or `deploy-platform.sh`, also starts every container of its
+project, as it always has.
+
 **Test a branch before it merges.** Point the node at it and let the next pass pick it up:
 
 ```sh
@@ -1526,10 +1581,10 @@ scripts/host/reset-apps.sh
 ```
 
 It shows what it will stop, drop and empty, and asks you to type `reset-<stage>`; `--yes` skips the
-question. It refuses any other stage. Hold merges to `main` until central is reset, and watch for
-dev's image bumps, which merge on their own: a reconcile pass that deploys the apps or the platform
-starts them again. After that, the next `deploy-apps.sh` starts them, and each Piri creates a new
-proof set and needs onboarding again. infra-central's
+question. It refuses any other stage. It disables `filone-reconcile.timer` before it stops the apps,
+because a reconcile pass starts any app container that is not running. Once central is reset, the
+next `deploy-apps.sh` starts them, each Piri creates a new proof set and needs onboarding again, and
+`systemctl enable --now filone-reconcile.timer` turns reconcile back on. infra-central's
 [app reset guide](https://github.com/fil-forge/infra-central/blob/main/docs/reset-apps.md) has the
 full order, and the on-chain cost of leaving the old proof sets behind.
 
@@ -2106,9 +2161,10 @@ unmounted. Without a Piri's volume, the apps deploy leaves that Piri stopped, de
 fails, so reconcile retries every pass. Mount the volume; for the control volume or the state
 dataset, then run `scripts/host/deploy-platform.sh`.
 
-Reconcile starts the apps on every boot, including in the middle of a manual recovery where you
-stopped them on purpose. Before rebooting during one, disable the timer, so it stays off across the
-reboot, and enable it again when you are done:
+Reconcile starts the apps on every boot, and on every pass starts any container that is not
+running, including in the middle of a manual recovery where you stopped them on purpose. Before
+rebooting during one, disable the timer, so it stays off across the reboot, and enable it again when
+you are done:
 
 ```sh
 systemctl disable --now filone-reconcile.timer
@@ -2134,8 +2190,9 @@ systemctl start filone-reconcile.timer
 ```
 
 **The proving gate never lets a deploy through.** `pdp-gate.sh` waits 45 minutes by default. If a
-Piri reports "not safe" for that whole time, the deploy aborts rather than risk a proof; re-run it
-after the challenge window. A Piri that owes proofs and will not report its state at all is treated
+Piri reports "not safe" for that whole time, the apps deploy leaves it running as it is rather than
+risk a proof, recreates no other running Piri, still starts any that are down, and fails at the end;
+the next pass tries again. A platform deploy aborts instead; re-run it after the challenge window. A Piri that owes proofs and will not report its state at all is treated
 the same way, most often because the chain RPC is unreachable. A platform deploy waits until every
 Piri reports safe in the same poll, because restarting Postgres stops all of them at once; three
 Piris whose challenge windows rarely line up can take longer than one.
