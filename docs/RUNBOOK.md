@@ -1521,15 +1521,21 @@ Piris already there, and customer reads and writes carry on. The new Piri is `pi
 index after the last one in the node's `apps/compose.yml`.
 
 1. Give it a volume and a hostname.
-   - Dev: raise `piri_count` in `terraform/envs/dev/terraform.tfvars` and run `tofu plan`. It
-     should add a volume, its attachment and a DNS record, and change the instance's tags in
-     place; stop if it replaces anything. Apply, then mount the volume on the node:
+   - Dev: raise `piri_count` in `terraform/envs/dev/terraform.tfvars` and run
+     `tofu -chdir=terraform/envs/dev plan`. It should add a volume, its attachment and a DNS
+     record, and change the instance's tags in place; stop if it replaces anything. Apply with
+     `tofu -chdir=terraform/envs/dev apply`, then mount the volume on the node:
      `scripts/host/mount-piri-volumes.sh`.
    - Staging: raise `piri_count` in `terraform/envs/staging/eu-central-3/main.tf` and apply, then
      create the data directory on the host: `install -d -m 0755 /mnt/data/fil-one/data/piri-<n>`.
-2. Pause deploys on the node, so the next step does not start a Piri that has no identity yet:
-   `systemctl stop filone-reconcile.timer`, then wait until `systemctl is-active
-   filone-reconcile.service` says `inactive`.
+2. Pause deploys on the node, so the next step does not start a Piri that has no identity yet.
+   Stop the timer, then wait on the deploy lock for any running pass to finish and cancel a
+   retry systemd has queued after a failed one:
+
+   ```sh
+   systemctl stop filone-reconcile.timer
+   flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
+   ```
 3. Merge a pull request that adds `piri-<n>` to `nodes/<node>/apps/compose.yml`, copied from the
    last Piri's service with every `piri-<n-1>` renamed, `depends_on` pointing at `piri-<n-1>`, and
    on staging the next loopback port (`15100 + n`). Add its site block next to the others: the
