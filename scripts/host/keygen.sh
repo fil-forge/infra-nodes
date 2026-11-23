@@ -33,9 +33,10 @@ command -v cast >/dev/null || die "cast is not on PATH; run scripts/host/install
 
 # --- Identities -------------------------------------------------------------
 
-# Both DIDs printed here are did:keys, and Piri's is the one it uses. Ingot
-# signs as the did:web in node.env instead, and this key is what its DID
-# document publishes; the other host scripts print the pair.
+# Both DIDs printed here are did:keys: the DIDs of the keys. Neither service is
+# known by one. Piri is the did:web of its public URL (piri_did in lib.sh) and
+# Ingot the did:web in node.env; each key is what that DID's document
+# publishes, and the other host scripts print the pair.
 #
 # ucantool prints the PEM on stdout and the DID on stderr. The DID goes into
 # OpenBao in the same write as the key, and every later run reads it rather than
@@ -112,6 +113,10 @@ generate_identity ingot
 #
 # The commands travel with it for the same reason: sprue invokes each of them
 # on Piri, and one added here does not reach a proof issued before it.
+#
+# So does the issuer. The delegation is issued as the Piri's did:web, the DID
+# sprue knows the provider by, and one issued under another DID authorises
+# nothing for it.
 echo "[2/4] Piri delegations to sprue"
 sprue_proof_commands=(
   /blob/allocate
@@ -123,20 +128,22 @@ sprue_proof_commands=(
 )
 
 issue_sprue_proof() {
-  local service="$1" commands pem proof cmd
+  local service="$1" commands issuer pem proof cmd
   local -a command_flags=()
   commands="${sprue_proof_commands[*]}"
+  issuer="$(piri_did "$service")" || exit 1
 
   if bao_has "$service" sprue_proof && bao_has "$service" sprue_proof_audience &&
-    bao_has "$service" sprue_proof_commands &&
+    bao_has "$service" sprue_proof_commands && bao_has "$service" sprue_proof_issuer &&
     [ "$(bao_get "$service" sprue_proof_audience)" = "$SPRUE_DID" ] &&
-    [ "$(bao_get "$service" sprue_proof_commands)" = "$commands" ]; then
+    [ "$(bao_get "$service" sprue_proof_commands)" = "$commands" ] &&
+    [ "$(bao_get "$service" sprue_proof_issuer)" = "$issuer" ]; then
     echo "  $service: already issued"
     return 0
   fi
 
   if bao_has "$service" sprue_proof; then
-    echo "  $service: stored delegation predates SPRUE_DID=$SPRUE_DID or commands \"$commands\"; reissuing"
+    echo "  $service: stored delegation predates SPRUE_DID=$SPRUE_DID, commands \"$commands\" or issuer $issuer; reissuing"
   fi
 
   pem="$WORK_DIR/$service-signing.pem"
@@ -153,13 +160,14 @@ issue_sprue_proof() {
   done
   proof="$(ucantool delegate \
     --issuer-private-key-file="$pem" \
+    --issuer-did-web="$issuer" \
     --audience="$SPRUE_DID" \
     "${command_flags[@]}" \
     --container=base64+gzip)"
 
   rm -f "$pem"
   bao_replace_fields "$service" sprue_proof "$proof" sprue_proof_audience "$SPRUE_DID" \
-    sprue_proof_commands "$commands"
+    sprue_proof_commands "$commands" sprue_proof_issuer "$issuer"
   echo "  $service: issued"
 }
 

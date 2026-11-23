@@ -47,7 +47,7 @@ bao_has ingot hilt_proof ||
        installs the delegation they send back."
 
 for service in "${piris[@]}"; do
-  echo "  $service: $(bao_get "$service" did)"
+  echo "  $service: $(piri_did "$service") (key: $(bao_get "$service" did))"
 done
 # Ingot has two identities: the did:web it signs as, and the key that document
 # publishes. The delegation's audience is the did:web, so that one leads.

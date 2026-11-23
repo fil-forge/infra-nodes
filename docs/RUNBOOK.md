@@ -1048,8 +1048,8 @@ On the node:
 scripts/host/onboarding-request.sh
 ```
 
-It prints, for each Piri, its DID, its public URL and the delegation it signed with its own key, as
-one `make onboard-appliance` command per Piri. Send that to whoever runs infra-central: central
+It prints, for each Piri, its DID (the did:web of its public URL), that URL and the delegation it
+signed with its own key, as one `make onboard-appliance` command per Piri. Send that to whoever runs infra-central: central
 runs the command once per Piri, and records each Piri DID under the region, so hilt offers all of
 them to sprue. The
 Ingot identity is not in it: central derives the same did:web from the stage's domain, so there is
@@ -1530,10 +1530,11 @@ cannot take.
 replacement for a leaked token, revokes it and covers the snapshots that still hold it, or
 regenerates a lost one from the recovery key. Both update central's copy too.
 
-**Reissue the Piris' delegations to sprue after SPRUE_DID or their commands change.** Run
-`keygen.sh` again; provisioning runs it too. It compares each delegation's stored audience and
-commands against the current `SPRUE_DID` and the script's command list, and reissues when either
-differs, so this is the same command as the first run. The proofs are read only by
+**Reissue the Piris' delegations to sprue after SPRUE_DID, their commands or a Piri's hostname
+change.** Run `keygen.sh` again; provisioning runs it too. It compares each delegation's stored
+audience, commands and issuer against the current `SPRUE_DID`, the script's command list and the
+Piri's DID, and reissues when any differs, so this is the same command as the first run. A Piri's
+DID is the did:web of its public URL, so it changes only when the hostname does. The proofs are read only by
 `onboarding-request.sh`: sprue keeps the copy it was given at registration, so a provider already
 registered there needs registering again before it holds the new delegation.
 

@@ -92,20 +92,22 @@ mkdir -p "$DATA_DIR" "$TEMP_DIR"
 
 echo "[1/3] Reading the node identity"
 # The parse runs on its own line rather than inside the assignment below. Under
-# `set -e`, `PIRI_DID=$(... | grep)` aborts on a grep no-match before the checks
+# `set -e`, `PIRI_KEY_DID=$(... | grep)` aborts on a grep no-match before the checks
 # run, which turns an unreadable key file into a silent crash loop.
 if ! PARSE_OUTPUT=$(/usr/bin/piri identity parse "$KEY_FILE" 2>&1); then
     echo "ERROR: 'piri identity parse $KEY_FILE' failed:" >&2
     echo "$PARSE_OUTPUT" >&2
     exit 1
 fi
-PIRI_DID=$(printf '%s\n' "$PARSE_OUTPUT" | grep -oE 'did:key:z[a-zA-Z0-9]+' || true)
-if [ -z "$PIRI_DID" ]; then
+PIRI_KEY_DID=$(printf '%s\n' "$PARSE_OUTPUT" | grep -oE 'did:key:z[a-zA-Z0-9]+' || true)
+if [ -z "$PIRI_KEY_DID" ]; then
     echo "ERROR: no did:key in 'piri identity parse $KEY_FILE' output:" >&2
     echo "$PARSE_OUTPUT" >&2
     exit 1
 fi
-echo "  DID: $PIRI_DID"
+# The node is known by the did:web of its public URL, which Piri derives
+# itself. The key is what that DID's document publishes.
+echo "  DID: did:web:${PUBLIC_URL#https://} (key: $PIRI_KEY_DID)"
 
 echo "[2/3] Initialising"
 # init merges the base config with what it discovers on chain and from the

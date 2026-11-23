@@ -39,7 +39,7 @@ for service in "${piris[@]}"; do
   bao_has "$service" sprue_proof || die "no $service delegation in OpenBao; run keygen.sh"
   bao_has "$service" owner_wallet_address ||
     die "no $service owner wallet address in OpenBao; run keygen.sh"
-  piri_public_url "$service" >/dev/null
+  piri_did "$service" >/dev/null
 done
 
 cat <<INFO
@@ -53,7 +53,7 @@ INFO
 for service in "${piris[@]}"; do
   cat <<INFO
   make onboard-appliance STAGE=$STAGE REGION=$REGION_LABEL \\
-    PIRI_DID=$(bao_get "$service" did) \\
+    PIRI_DID=$(piri_did "$service") \\
     PIRI_URL=$(piri_public_url "$service") \\
     PIRI_PROOF=$service-proof.txt \\
     ONBOARD_ARGS="--proof-out ingot-proof.txt"
