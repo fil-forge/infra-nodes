@@ -148,14 +148,19 @@ fi
 
 echo "[1/4] Stopping the apps"
 # Reconcile starts any app container that is not running, so it is kept off
-# until central is reset too. Disabled rather than stopped, so a reboot in
-# between does not start it again. With the deploy lock held no pass is past
-# the point where it takes the lock, so stopping the service cuts none off
-# mid-deploy and cancels a retry systemd queued after a failed one.
+# until central is reset too. Disabled, so a reboot in between does not start
+# it again, and stopped whether or not it was enabled: a timer started by hand
+# without being enabled is active all the same. With the deploy lock held no
+# pass is past the point where it takes the lock, so stopping the service cuts
+# none off mid-deploy and cancels a retry systemd queued after a failed one.
 if systemctl is-enabled --quiet filone-reconcile.timer 2>/dev/null; then
   systemctl disable --now filone-reconcile.timer >/dev/null 2>&1 ||
     die "could not disable filone-reconcile.timer"
   echo "  disabled filone-reconcile.timer"
+fi
+if systemctl is-active --quiet filone-reconcile.timer 2>/dev/null; then
+  systemctl stop filone-reconcile.timer || die "could not stop filone-reconcile.timer"
+  echo "  stopped filone-reconcile.timer"
 fi
 systemctl stop filone-reconcile.service 2>/dev/null || true
 if ! stop_apps; then

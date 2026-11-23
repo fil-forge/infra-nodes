@@ -310,6 +310,9 @@ current="reset-apps.sh"
 check "disables the reconcile timer before it stops the apps" \
   test "$(grep -n 'systemctl disable --now filone-reconcile.timer' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)" \
   -lt "$(grep -n '^if ! stop_apps' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)"
+check "stops a reconcile timer that is active but not enabled, before it stops the apps" \
+  test "$(grep -n 'systemctl stop filone-reconcile.timer' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)" \
+  -lt "$(grep -n '^if ! stop_apps' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)"
 
 echo "==> node.env values the apps need"
 
