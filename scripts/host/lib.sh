@@ -478,6 +478,50 @@ compose_apps() {
     "$@"
 }
 
+# The services of a compose project that should be running and are not, one
+# per line as `<service> <state>`. The state is Docker's (exited, created,
+# paused, dead), or `missing` for a service with no container at all. A
+# container Docker is restarting counts as running: starting it again would
+# change nothing. A one-shot service, one whose restart policy is "no" or
+# unset, such as postgres-init, is left out, since exiting is its job.
+#
+# The definition is read without interpolation and the containers by their
+# compose labels, so it answers before the project's env files exist and for
+# services that set no container_name.
+#
+# Usage: stopped_services <platform|apps> [service...]
+# With service names, only those are checked.
+stopped_services() {
+  local project="$1" definition states
+  shift
+  definition="$(docker compose --project-directory "$FILONE_NODE_DIR/$project" \
+    -p "filone-$project" config --no-interpolate --format json)" ||
+    die "could not read nodes/$FILONE_NODE/$project/compose.yml"
+  states="$(docker ps -a \
+    --filter "label=com.docker.compose.project=filone-$project" \
+    --filter label=com.docker.compose.oneoff=False \
+    --format '{{.Label "com.docker.compose.service"}} {{.State}}')" ||
+    die "could not list the filone-$project containers"
+  python3 -c '
+import json, sys
+
+services = json.load(sys.stdin)["services"]
+up = ("running", "restarting")
+states = {}
+for line in sys.argv[1].splitlines():
+    name, _, state = line.partition(" ")
+    if states.get(name) not in up:
+        states[name] = state
+wanted = sys.argv[2:] or sorted(services)
+for name in wanted:
+    if services[name].get("restart", "no") == "no":
+        continue
+    state = states.get(name, "missing")
+    if state not in up:
+        print(name, state)
+' "$states" "$@" <<<"$definition"
+}
+
 # --- Change detection --------------------------------------------------------
 
 # Set a flag variable when a check reports "changed" by exit status, which

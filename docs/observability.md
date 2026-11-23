@@ -101,6 +101,18 @@ The reconcile timer's own output, which is where a failed deploy is legible:
 {node="dev", unit="filone-reconcile.service"}
 ```
 
+The containers a reconcile pass found not running and started, and the Piris an apps deploy left
+down because they did not come up healthy:
+
+```logql
+{unit="filone-reconcile.service"} |~ "deploying (apps|platform) to start it|did not come up healthy"
+```
+
+A pass that leaves a Piri down fails. While that Piri's change is unrecorded every pass retries it
+and fails again, so the `reconcile` deploy stamp below goes stale and its alert fires. A Piri that
+was only started and then crash-loops or runs unhealthy counts as running, and the next pass
+succeeds; Piri's proving alerts and the site's request alerts cover it.
+
 The whole dev journal, every unit, for a boot or a Docker problem:
 
 ```logql

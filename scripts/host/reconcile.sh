@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Make the node match the ref it tracks, and deploy only what changed.
+# Make the node match the ref it tracks. Deploy only what changed, and a
+# project with a container that should be running and is not.
 #
 # Runs every five minutes from filone-reconcile.timer. This is how a change
 # reaches a node: merge it, and within five minutes the node is running it.
@@ -12,6 +13,11 @@
 # It also deploys the apps when none has succeeded since boot. A reboot empties
 # the tmpfs that holds their keys and rendered configs, and no Piri or Ingot can
 # start without them.
+#
+# And it deploys a project with a container that should be running and is not,
+# so a container stopped by hand, or removed, comes back within five minutes
+# whether or not anything was merged. Stopping filone-reconcile.timer is how an
+# operator keeps one down; docs/RUNBOOK.md says how.
 #
 # The ref it tracks is FILONE_GIT_REF in /etc/fil-one/node.conf, which is the
 # only statement of it. Point a node at a feature branch by editing that file.
@@ -132,6 +138,37 @@ if [ "$deploy_apps" -eq 0 ] && [ ! -e "$FILONE_APPS_DEPLOYED_MARKER" ]; then
   echo "  no apps deploy has succeeded since boot"
   deploy_apps=1
 fi
+# A container that should be running and is not: stopped by hand, killed, or
+# removed. No commit changed, so nothing above notices, and Docker's restart
+# policy never starts a container someone stopped. The deploy scripts start it
+# the way they start one on any pass; for a Piri or Ingot that means rendering
+# their keys and config first. Bucket Intelligence's two are deploy-rag.sh's.
+log_stopped() {
+  local project="$1" stopped="$2" service state
+  while read -r service state; do
+    if [ "$state" = missing ]; then
+      echo "  $project: $service has no container; deploying $project to start it"
+    else
+      echo "  $project: $service is not running ($state); deploying $project to start it"
+    fi
+  done <<<"$stopped"
+}
+if [ "$deploy_platform" -eq 0 ]; then
+  stopped="$(stopped_services platform)"
+  if [ -n "$stopped" ]; then
+    log_stopped platform "$stopped"
+    deploy_platform=1
+  fi
+fi
+if [ "$deploy_apps" -eq 0 ]; then
+  core_services="$(apps_core_services)"
+  # shellcheck disable=SC2086 # one service name per word
+  stopped="$(stopped_services apps $core_services)"
+  if [ -n "$stopped" ]; then
+    log_stopped apps "$stopped"
+    deploy_apps=1
+  fi
+fi
 # Left by a Bucket Intelligence deploy that did not finish healthy, so the
 # engine is retried without waiting for a commit. With no apps commit to deploy,
 # the retry is deploy-rag.sh alone, which never starts, stops or recreates a
@@ -144,25 +181,39 @@ fi
 
 # --- 4. Renew the local OpenBao token ---------------------------------------
 
-# Every pass, including a pass that deploys nothing. deploy-platform.sh renews
-# it too, but a node can go days without a platform commit, and the token's
-# period is shorter than that.
-renew_bao_token
+# Every pass, including a pass that deploys nothing, because a node can go days
+# without a platform commit and the token's period is shorter than that. While
+# OpenBao's container is not running, both renewals are left to the platform
+# deploy this pass makes to start it, which renews once OpenBao is up. A renewal
+# here would fail the pass before that deploy could run.
+if container_running "$FILONE_BAO_CONTAINER"; then
+  renew_bao_token
 
-# After the host token, so a node that has no region token yet still keeps its
-# host token alive. Every five minutes against a 72h period, which leaves
-# plenty of room: a reconcile stalled for three days is already alarmed through
-# deploy_last_success_timestamp.
-renew_ingot_regionkey_token
+  # After the host token, so a node that has no region token yet still keeps
+  # its host token alive. Every five minutes against a 72h period, which leaves
+  # plenty of room: a reconcile stalled for three days is already alarmed
+  # through deploy_last_success_timestamp.
+  renew_ingot_regionkey_token
+fi
 
 # --- 5. Deploy --------------------------------------------------------------
 
 # From the checkout, not from the copy this script re-exec'd out of. A commit
 # that fixes a deploy script has to take effect on the pass that pulls it: the
 # checkout HEAD has already moved, so a later pass sees nothing to do.
+#
+# A failed platform deploy does not skip the apps. A platform service that is
+# broken until someone steps in, an Alloy with a bad config say, must not keep
+# every Piri and Ingot down with it. Where what failed is something the apps
+# need, OpenBao or Postgres, the apps deploy fails on its own. The pass still
+# fails at the end, so it is retried and stamps no success.
+platform_failed=0
 if [ "$deploy_platform" -eq 1 ]; then
   echo "==> deploying platform"
-  "$FILONE_CHECKOUT/scripts/host/deploy-platform.sh"
+  if ! "$FILONE_CHECKOUT/scripts/host/deploy-platform.sh"; then
+    echo "WARNING: the platform deploy failed; deploying the apps anyway" >&2
+    platform_failed=1
+  fi
 fi
 
 if [ "$deploy_apps" -eq 1 ]; then
@@ -178,6 +229,8 @@ fi
 if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ] && [ "$retry_rag" -eq 0 ]; then
   echo "  nothing to deploy"
 fi
+
+[ "$platform_failed" -eq 0 ] || die "the platform deploy failed; its output above says why"
 
 # Stamped on every pass that gets this far, including a pass that deployed
 # nothing. That is what makes it a deadman: the metric goes stale when the node

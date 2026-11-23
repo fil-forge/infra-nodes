@@ -14,8 +14,9 @@
 # same roles and passwords, so nothing has to be rendered again.
 #
 # This is the node half of an app reset. Central is reset after it, and the apps
-# stay stopped here until then: the next deploy-apps.sh brings them back, and
-# each Piri then has to be onboarded again. infra-central's docs/reset-apps.md
+# stay stopped here until then, with filone-reconcile.timer disabled so no pass
+# starts them: the next deploy-apps.sh brings them back, each Piri then has to
+# be onboarded again, and the operator enables the timer. infra-central's docs/reset-apps.md
 # has the whole order.
 #
 # Usage:
@@ -146,6 +147,17 @@ if [ "$assume_yes" -eq 0 ]; then
 fi
 
 echo "[1/4] Stopping the apps"
+# Reconcile starts any app container that is not running, so it is kept off
+# until central is reset too. Disabled rather than stopped, so a reboot in
+# between does not start it again. With the deploy lock held no pass is past
+# the point where it takes the lock, so stopping the service cuts none off
+# mid-deploy and cancels a retry systemd queued after a failed one.
+if systemctl is-enabled --quiet filone-reconcile.timer 2>/dev/null; then
+  systemctl disable --now filone-reconcile.timer >/dev/null 2>&1 ||
+    die "could not disable filone-reconcile.timer"
+  echo "  disabled filone-reconcile.timer"
+fi
+systemctl stop filone-reconcile.service 2>/dev/null || true
 if ! stop_apps; then
   echo "  the apps were already stopped"
 fi
@@ -201,6 +213,7 @@ done <<<"$app_containers"
 
 echo
 echo "=== apps reset; they stay stopped ==="
+echo "filone-reconcile.timer is disabled, so nothing starts them early."
 echo "Next: reset central (make reset-apps in infra-central), then run"
-echo "deploy-apps.sh, which starts them again, and onboard each Piri. Until"
-echo "then, hold merges to main: a reconcile pass that deploys starts them early."
+echo "deploy-apps.sh, which starts them again, and onboard each Piri."
+echo "Then: systemctl enable --now filone-reconcile.timer"
