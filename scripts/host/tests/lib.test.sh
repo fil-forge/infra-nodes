@@ -507,6 +507,34 @@ while read -r _ name placeholder; do
   check "$name $placeholder: refuse" test "$result" = refuse
 done <<<"$refusals"
 
+current="piri_did"
+# piri_did <suffix> <url> <service>: the DID of a service, in a subshell since
+# die exits.
+piri_did_of() {
+  (
+    FILONE_NODE="test-node"
+    PIRI_HOSTNAME_SUFFIX="$1" PIRI_PUBLIC_URL="$2"
+    piri_did "$3"
+  ) 2>/dev/null
+}
+check "a Piri named by the hostname suffix" \
+  test "$(piri_did_of eu-central-3.staging.example.com '' piri-1)" = did:web:piri-1.eu-central-3.staging.example.com
+check "a single Piri with its own public URL" \
+  test "$(piri_did_of '' https://piri.example.com piri)" = did:web:piri.example.com
+check "a trailing slash is not part of the DID" \
+  test "$(piri_did_of '' https://piri.example.com/ piri)" = did:web:piri.example.com
+check "the host is lower case" \
+  test "$(piri_did_of '' https://Piri.Example.com piri)" = did:web:piri.example.com
+check "a port is percent-encoded" \
+  test "$(piri_did_of '' https://piri.example.com:8443 piri)" = did:web:piri.example.com%3A8443
+check "the default port is left out" \
+  test "$(piri_did_of '' https://piri.example.com:443 piri)" = did:web:piri.example.com
+for url in http://piri.example.com https://piri.example.com/piri 'https://piri.example.com?x=1' https://user@piri.example.com https://; do
+  result=pass
+  piri_did_of '' "$url" piri >/dev/null || result=refuse
+  check "$url: refuse" test "$result" = refuse
+done
+
 echo
 if [ "$failures" -ne 0 ]; then
   echo "$failures check(s) failed"

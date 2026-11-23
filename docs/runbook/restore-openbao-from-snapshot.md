@@ -224,10 +224,12 @@ scripts/host/deploy-apps.sh
 
 ## Check the node
 
-Compare each Piri's DID with the one central recorded when it onboarded:
+Compare each Piri's DID with the one central recorded when it onboarded. The DID is the did:web of
+the Piri's public URL, so it matches as long as the node kept its hostnames. The key beside it is
+the one the restore brought back, and is what the Piri publishes in its DID document:
 
 ```sh
-bash -c '. scripts/host/lib.sh; filone_init; for s in $(piri_services); do echo "$s $(bao_get "$s" did)"; done'
+bash -c '. scripts/host/lib.sh; filone_init; for s in $(piri_services); do echo "$s $(piri_did "$s") (key: $(bao_get "$s" did))"; done'
 ```
 
 ```sh

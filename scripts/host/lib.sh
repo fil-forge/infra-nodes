@@ -677,6 +677,35 @@ piri_public_url() {
   fi
 }
 
+# The DID a Piri service is known by: the did:web of its public URL. Piri
+# derives the same one from the URL it is started with, so this is what the
+# registrar and sprue have to hold for it. The key in OpenBao is only what the
+# DID's document publishes, and can be replaced without the DID changing.
+#
+# A did:web names a host, with the colon before a port percent-encoded, so the
+# URL has to be an https URL with no path.
+piri_did() {
+  local service="$1" url host
+  url="$(piri_public_url "$service")" || exit 1
+  case "$url" in
+  https://*) ;;
+  *) die "$service has the public URL $url, which is not an https URL, so it names no did:web" ;;
+  esac
+  host="${url#https://}"
+  host="${host%/}"
+  case "$host" in
+  '' | */* | *\?* | *#* | *@*)
+    die "$service has the public URL $url, which is more than a host and a port, so it names no did:web"
+    ;;
+  esac
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in
+  *:443) host="${host%:443}" ;;
+  *:*) host="${host%%:*}%3A${host#*:}" ;;
+  esac
+  printf 'did:web:%s' "$host"
+}
+
 # The host directory a Piri service mounts at /data/piri, read from compose.yml
 # because it differs per node: an EBS volume per Piri on dev, a directory on the
 # shared data disk on staging.
