@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the FilOne node's database VPN tunnels every 20 seconds
+
+[Timer]
+# Often, because traffic to the VPC goes into a dead tunnel until this runs.
+OnBootSec=1min
+OnUnitActiveSec=20s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
