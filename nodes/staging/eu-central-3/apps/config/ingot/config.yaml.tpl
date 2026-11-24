@@ -18,7 +18,7 @@ identity:
 postgres_dsn: "postgres://ingot:${INGOT_POSTGRES_PASSWORD}@postgres:5432/ingot?sslmode=disable&pool_max_conns=40"
 # Two workers shipped 1.5 catalog segments/s while 150 buckets sealed ~16/s (sc-104).
 task_workers:
-  bucket: 16
+  bucket: 32
 upload_service_url: "${SPRUE_URL}"
 upload_service_did: "${SPRUE_DID}"
 upload_receipts_url: "${SPRUE_URL}/receipt"
