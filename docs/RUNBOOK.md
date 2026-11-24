@@ -1618,15 +1618,12 @@ before the copy, Ingot fails to start on the missing directory rather than start
 `/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, remove the old
 copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
 
-**Move Postgres's data directory on staging.** A one-off for the change that moved it from the ZFS
-pool (`/mnt/data/fil-one/control/postgres`) to `/var/lib/fil-one/postgres` on the root SSD, because
-every commit waits on a WAL flush and the pool's disks spin. The root filesystem is a RAID0 of two
-SSDs behind the PERC controller, so a failed drive loses Postgres; the pool it leaves is raidz2.
+**Move Postgres's data directory on staging.** A one-off for the change that moved it from
+`/mnt/data/fil-one/control/postgres` on the ZFS pool to `/var/lib/fil-one/postgres` on the root SSD.
+The root filesystem is a RAID0 of two SSDs, so one failed drive loses Postgres.
 
 The Piris and Ingot keep their state in Postgres, so the whole node stops for the copy. Before
-merging, stop reconcile and wait for a running pass, as for the Ingot move above. Stop each Piri in
-its own safe proving window, holding the deploy lock, then Ingot, then Postgres, so that Postgres
-writes a clean checkpoint before the copy:
+merging, stop reconcile, each Piri in its proving window, Ingot and Postgres, then copy:
 
 ```sh
 cd /root/fil-one/infra-nodes
@@ -1638,17 +1635,10 @@ done
 sudo docker stop filone-ingot filone-platform-postgres-1
 sudo install -d -m 0700 /var/lib/fil-one/postgres
 sudo rsync -aHAX --numeric-ids /mnt/data/fil-one/control/postgres/ /var/lib/fil-one/postgres/
-```
-
-Check the copy before going on. The second rsync compares contents and must list nothing:
-
-```sh
-sudo du -s --apparent-size /mnt/data/fil-one/control/postgres /var/lib/fil-one/postgres
 sudo rsync -aHAXn --checksum --delete --itemize-changes /mnt/data/fil-one/control/postgres/ /var/lib/fil-one/postgres/
 ```
 
-Merge, then deploy and restart the timer. The deploy starts Postgres from the new directory and the
-apps after it, each Piri behind its gate:
+The last command must list nothing. Merge, then deploy and restart the timer:
 
 ```sh
 sudo scripts/host/reconcile.sh
@@ -1656,13 +1646,10 @@ sudo systemctl start filone-reconcile.timer
 ```
 
 Once `docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' filone-platform-postgres-1` lists
-`/var/lib/fil-one/postgres` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, the move is
-done. Keep the old directory for a week, then remove it:
-`sudo rm -rf /mnt/data/fil-one/control/postgres`.
-
-To roll back before the smoke test passes, revert the change and deploy again: the old directory is
-as Postgres left it at the stop. Once the node has taken writes on the new directory, rolling back
-loses them, so copy back the other way instead, with the same stops.
+`/var/lib/fil-one/postgres` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, keep the old
+directory for a week, then `sudo rm -rf /mnt/data/fil-one/control/postgres`. To roll back before the
+node takes writes, revert the change and deploy; after that, copy back the other way with the same
+stops.
 
 ## Re-onboarding after identity loss
 

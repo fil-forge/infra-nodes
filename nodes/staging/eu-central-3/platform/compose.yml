@@ -37,10 +37,6 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
     volumes:
-      # On the host's root filesystem, which is SSD, rather than the ZFS pool:
-      # every commit waits on a WAL flush, and the pool's disks spin (sc-293).
-      # A missing directory fails the start rather than initialising an empty
-      # cluster in place of the node's databases.
       - type: bind
         source: /var/lib/fil-one/postgres
         target: /var/lib/postgresql/data

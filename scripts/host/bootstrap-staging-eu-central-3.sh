@@ -44,8 +44,6 @@ install -d -m 0755 \
   /mnt/data/fil-one/data/piri-1 \
   /mnt/data/fil-one/data/piri-2 \
   /var/lib/fil-one/ingot
-# Postgres's entrypoint takes ownership of an empty data directory as it
-# initialises one, so only the mode is set here.
 install -d -m 0700 /var/lib/fil-one/postgres
 install -d -m 0700 /run/fil-one /run/fil-one/secrets /run/fil-one/bao
 install -d -m 0755 /etc/fil-one
