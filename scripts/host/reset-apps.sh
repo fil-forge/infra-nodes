@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Wipe Piri's and Ingot's state on a dev or staging node, and keep everything
-# that identifies the node.
+# Wipe Piri's and Ingot's state on a node, and keep everything that identifies
+# the node. For dev and staging. Production is refused unless --production is
+# given, for a production stage that holds nothing worth keeping.
 #
 # Wiped: the ingot database, every Piri database (piri on a one-Piri node,
 # piri_0, piri_1 and so on after the move to one Piri per volume), and the
@@ -19,8 +20,19 @@
 # be onboarded again, and the operator enables the timer. infra-central's docs/reset-apps.md
 # has the whole order.
 #
+# On a node whose Ingot keeps its catalog log on a filesystem of its own, bound
+# over the data directory's segments folder, that filesystem is not emptied. The
+# reset stops before it changes anything when it holds data.
+#
+# Not touched either: blobs a Piri keeps in object storage instead of its data
+# directory.
+#
 # Usage:
 #   scripts/host/reset-apps.sh [--yes]
+#   scripts/host/reset-apps.sh --production
+#
+# --production allows the reset on the prod stage. The confirmation is always
+# asked for there: --yes is refused with it.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -44,8 +56,9 @@ app_databases() {
 # The host directory a container mounts its data from, resolved and checked
 # before anything is deleted in it. Only the data roots of the two layouts pass:
 # /mnt/fil-one on the cloud nodes, and /mnt/data/fil-one and /var/lib/fil-one
-# (Ingot) on staging, with an app's own name as the last component. The control volume is under the first root and
-# holds Postgres and OpenBao, so it is refused by name.
+# (Ingot) on the bare-metal nodes, at a path is_app_data_dir accepts. The
+# control volume is under the first root and holds Postgres and OpenBao, so it
+# is refused by name.
 checked_data_dir() {
   local container="$1" source_dir="$2" resolved
   resolved="$(readlink -f -- "$source_dir")" ||
@@ -61,18 +74,20 @@ checked_data_dir() {
     /mnt/fil-one/* | /mnt/data/fil-one/* | /var/lib/fil-one/*) ;;
     *) die "$container mounts $resolved, outside /mnt/fil-one, /mnt/data/fil-one and /var/lib/fil-one; refusing to empty it" ;;
   esac
-  [[ "$(basename "$resolved")" =~ ^(piri(-[0-9]+)?|ingot)$ ]] ||
+  is_app_data_dir "$resolved" ||
     die "$container mounts $resolved, which is not named for an app; refusing to empty it"
 
   printf '%s' "$resolved"
 }
 
 assume_yes=0
+production=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) assume_yes=1 ;;
+    --production) production=1 ;;
     -h | --help) usage; exit 0 ;;
-    *) die "unknown argument: $1 (usage: reset-apps.sh [--yes])" ;;
+    *) die "unknown argument: $1 (usage: reset-apps.sh [--yes] | --production)" ;;
   esac
   shift
 done
@@ -80,8 +95,16 @@ done
 filone_init
 
 case "$STAGE" in
-  dev | staging) ;;
-  *) die "refusing to reset the apps on stage '$STAGE'; only dev and staging can be reset" ;;
+  dev | staging)
+    [ "$production" -eq 0 ] || die "--production is for the prod stage; this node's stage is '$STAGE'"
+    ;;
+  prod)
+    [ "$production" -eq 1 ] ||
+      die "refusing to reset the apps on stage 'prod' without --production"
+    [ "$assume_yes" -eq 0 ] ||
+      die "--yes is refused with --production; the confirmation is always asked for on prod"
+    ;;
+  *) die "refusing to reset the apps on stage '$STAGE'; only dev, staging and prod can be reset" ;;
 esac
 
 # Before anything is stopped: postgres-init interpolates its passwords from
@@ -123,6 +146,22 @@ while read -r container; do
   [ -n "$source_dir" ] || die "$container has nothing mounted at $destination"
   data_dirs[$container]="$(checked_data_dir "$container" "$source_dir")"
 done <<<"$app_containers"
+
+# Ingot's catalog log, where it has a filesystem of its own. The emptying below
+# stays on the data directory's filesystem and would leave the log behind, so a
+# log with anything in it stops the reset here, before anything is changed.
+if grep -qx filone-ingot <<<"$app_containers"; then
+  segments_dir="$(docker inspect \
+    -f '{{range .Mounts}}{{if eq .Destination "/data/segments"}}{{.Source}}{{end}}{{end}}' \
+    filone-ingot)" || die "could not inspect filone-ingot"
+  if [ -n "$segments_dir" ]; then
+    leftover="$(find "$segments_dir" -mindepth 1 ! -name lost+found -print -quit)" ||
+      die "could not look in $segments_dir"
+    [ -z "$leftover" ] ||
+      die "filone-ingot keeps its catalog log in $segments_dir, a mount of its own that this
+       reset does not empty, and it holds data ($leftover). Nothing was changed."
+  fi
+fi
 
 databases="$(app_databases)" || die "could not list the databases in $POSTGRES_CONTAINER"
 

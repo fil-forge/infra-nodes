@@ -313,6 +313,26 @@ check "disables the reconcile timer before it stops the apps" \
 check "stops a reconcile timer that is active but not enabled, before it stops the apps" \
   test "$(grep -n 'systemctl stop filone-reconcile.timer' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)" \
   -lt "$(grep -n '^if ! stop_apps' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)"
+check "refuses the prod stage without --production" \
+  grep -q "refusing to reset the apps on stage 'prod' without --production" "$SCRIPTS/reset-apps.sh"
+check "always asks for the confirmation on prod" \
+  grep -q -- '--yes is refused with --production' "$SCRIPTS/reset-apps.sh"
+# Before the apps are stopped, so a catalog log the reset cannot empty stops it
+# with nothing changed.
+check "looks at Ingot's own catalog log filesystem before it stops the apps" \
+  test "$(grep -n 'Destination "/data/segments"' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)" \
+  -lt "$(grep -n '^if ! stop_apps' "$SCRIPTS/reset-apps.sh" | cut -d: -f1)"
+
+current="is_app_data_dir"
+refuses() { ! "$@"; }
+for dir in /mnt/fil-one/piri /mnt/fil-one/piri-0 /mnt/data/fil-one/piri/piri-12 \
+  /var/lib/fil-one/ingot /mnt/data/fil-one/ingot/blobs; do
+  check "accepts $dir" is_app_data_dir "$dir"
+done
+for dir in /mnt/data/fil-one/control /mnt/data/fil-one/ingot/segments /mnt/data/fil-one/blobs \
+  /mnt/data/fil-one/piri/blobs /mnt/fil-one/piri-x /mnt/fil-one; do
+  check "refuses $dir" refuses is_app_data_dir "$dir"
+done
 
 echo "==> node.env values the apps need"
 
