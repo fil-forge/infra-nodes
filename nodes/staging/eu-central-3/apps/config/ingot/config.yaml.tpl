@@ -13,7 +13,9 @@ cors_allowed_origins:
 identity:
   key_file: /keys/ingot.pem
   service_id: ${INGOT_DID}
-postgres_dsn: "postgres://ingot:${INGOT_POSTGRES_PASSWORD}@postgres:5432/ingot?sslmode=disable"
+# Postgres allows 100 connections and the three Piris take up to 48 (16 each,
+# compose.yml). Unset, pgx sizes the pool from the host's 128 CPUs.
+postgres_dsn: "postgres://ingot:${INGOT_POSTGRES_PASSWORD}@postgres:5432/ingot?sslmode=disable&pool_max_conns=40"
 upload_service_url: "${SPRUE_URL}"
 upload_service_did: "${SPRUE_DID}"
 upload_receipts_url: "${SPRUE_URL}/receipt"
