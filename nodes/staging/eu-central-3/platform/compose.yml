@@ -38,7 +38,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
     volumes:
       - type: bind
-        source: /mnt/data/fil-one/control/postgres
+        source: /var/lib/fil-one/postgres
         target: /var/lib/postgresql/data
         bind:
           create_host_path: false

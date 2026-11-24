@@ -123,8 +123,8 @@ everything else on the filesystem and its root reserve, it should leave the file
 used, so the 40% free-space alert stays quiet.
 
 Staging: Ingot's data directory is `/var/lib/fil-one/ingot`, on the host's root filesystem: 15.2 TB
-(13.8 TiB) of ext4 on SSD, shared with the OS and Docker, about 1 TB of it in use on 2026-11-04. The
-Piris, Postgres and OpenBao stay on the ZFS pool at `/mnt/data`. forge-perf's highest median from
+(13.8 TiB) of ext4 on SSD, shared with the OS and Docker, about 1 TB of it in use on 2026-11-04. Postgres is there too, at
+`/var/lib/fil-one/postgres`. The Piris and OpenBao stay on the ZFS pool at `/mnt/data`. forge-perf's highest median from
 its valid runs of 19 and 20 October 2026 is 3.96 GB/s, on one m9gd.16xlarge running every service;
 ten minutes of that is 2.38 TB, or 2.16 TiB. Twice that is 4.33 TiB, rounded up to 5 TiB, or
 5497558138880 bytes. That is over 18 times the 298 GB (278 GiB) spool-plus-cache peak of the 30 days
@@ -1633,6 +1633,39 @@ before the copy, Ingot fails to start on the missing directory rather than start
 `docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' filone-ingot` lists
 `/var/lib/fil-one/ingot` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, remove the old
 copy: `sudo rm -rf /mnt/data/fil-one/data/ingot`.
+
+**Move Postgres's data directory on staging.** A one-off for the change that moved it from
+`/mnt/data/fil-one/control/postgres` on the ZFS pool to `/var/lib/fil-one/postgres` on the root SSD.
+The root filesystem is a RAID0 of two SSDs, so one failed drive loses Postgres.
+
+The Piris and Ingot keep their state in Postgres, so the whole node stops for the copy. Before
+merging, stop reconcile, each Piri in its proving window, Ingot and Postgres, then copy:
+
+```sh
+cd /root/fil-one/infra-nodes
+sudo systemctl stop filone-reconcile.timer
+sudo flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
+for n in 0 1 2; do
+  sudo flock /run/fil-one/deploy.lock sh -c "scripts/host/pdp-gate.sh piri-$n </dev/null && docker stop filone-piri-$n"
+done
+sudo docker stop filone-ingot filone-platform-postgres-1
+sudo install -d -m 0700 /var/lib/fil-one/postgres
+sudo rsync -aHAX --numeric-ids /mnt/data/fil-one/control/postgres/ /var/lib/fil-one/postgres/
+sudo rsync -aHAXn --checksum --delete --itemize-changes /mnt/data/fil-one/control/postgres/ /var/lib/fil-one/postgres/
+```
+
+The last command must list nothing. Merge, then deploy and restart the timer:
+
+```sh
+sudo scripts/host/reconcile.sh
+sudo systemctl start filone-reconcile.timer
+```
+
+Once `docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' filone-platform-postgres-1` lists
+`/var/lib/fil-one/postgres` and `scripts/ci/smoke-test.sh staging/eu-central-3` passes, keep the old
+directory for a week, then `sudo rm -rf /mnt/data/fil-one/control/postgres`. To roll back before the
+node takes writes, revert the change and deploy; after that, copy back the other way with the same
+stops.
 
 ## Re-onboarding after identity loss
 
