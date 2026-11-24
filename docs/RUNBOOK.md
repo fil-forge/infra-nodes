@@ -1582,12 +1582,28 @@ scripts/host/reset-apps.sh
 ```
 
 It shows what it will stop, drop and empty, and asks you to type `reset-<stage>`; `--yes` skips the
-question. It refuses any other stage. It disables `filone-reconcile.timer` before it stops the apps,
+question. It refuses any other stage, production included; the paragraph below covers
+production. It disables `filone-reconcile.timer` before it stops the apps,
 because a reconcile pass starts any app container that is not running. Once central is reset, the
 next `deploy-apps.sh` starts them, each Piri creates a new proof set and needs onboarding again, and
 `systemctl enable --now filone-reconcile.timer` turns reconcile back on. infra-central's
 [app reset guide](https://github.com/fil-forge/infra-central/blob/main/docs/reset-apps.md) has the
 full order, and the on-chain cost of leaving the old proof sets behind.
+
+**Reset the apps on production.** Only for a production stage that holds nothing worth keeping,
+and only alongside the same reset of central's production stage, which infra-central's app reset
+guide covers. The node's half is the same script with `--production`:
+
+```sh
+scripts/host/reset-apps.sh --production
+```
+
+It always asks you to type `reset-prod`; `--yes` is refused. Two things on this node are outside
+what it wipes. Ingot's catalog log has a dataset of its own, `ingot/segments`, which the reset does
+not empty: it stops before changing anything when that dataset holds data. Piri's blobs and IPNI
+adverts are in the site's object storage, under the path `PIRI_S3_PATH` names, and stay there.
+Check that folder is empty first, and clear it by hand if it is not, taking care to stay inside it:
+the bucket is shared with other data.
 
 **Move Ingot's data directory on staging.** A one-off for the change that moved it from the ZFS pool
 to `/var/lib/fil-one/ingot` on the root SSD. The spool holds bodies not yet uploaded to Piri and the

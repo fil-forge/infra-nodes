@@ -273,6 +273,13 @@ current_service_unit() {
   printf '%s' "${BASH_REMATCH[1]}"
 }
 
+# Whether a path is one an app keeps its data in, by its name alone: a
+# directory named for a Piri or for Ingot, or the blobs directory of an Ingot
+# whose data is split across filesystems. reset-apps.sh empties nothing else.
+is_app_data_dir() {
+  [[ "$(basename "$1")" =~ ^(piri(-[0-9]+)?|ingot)$ ]] || [[ "$1" == */ingot/blobs ]]
+}
+
 # Install the checkout's units into /etc/systemd/system and remove the ones the
 # checkout no longer has. Called by every reconcile pass and by provisioning,
 # which needs the units on the box before the operator can enable the timers.
