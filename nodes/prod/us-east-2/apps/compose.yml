@@ -123,11 +123,11 @@ services:
         bind:
           create_host_path: false
       - /run/fil-one/bao:/run/openbao
-      # Ingot keeps its spool and cache in data_dir/spool and data_dir/cache,
-      # and its catalog log in data_dir/segments. The ingot/blobs dataset is
-      # data_dir, so the spool and cache are what INGOT_LOCAL_BLOB_MAX_BYTES
-      # budgets it for, and the ingot/segments dataset is bound over
-      # data_dir/segments, so the catalog log has a quota of its own.
+      # Ingot keeps its cache in data_dir/cache and its catalog log in
+      # data_dir/segments. The ingot/blobs dataset is data_dir, so the cache
+      # is what INGOT_LOCAL_BLOB_MAX_BYTES budgets it for, and the
+      # ingot/segments dataset is bound over data_dir/segments, so the
+      # catalog log has a quota of its own.
       - type: bind
         source: /mnt/data/fil-one/ingot/blobs
         target: /data

@@ -166,9 +166,10 @@ resource "aws_ebs_volume" "control" {
   tags = { Name = "filone-node-${var.node_name}-control" }
 }
 
-# Ingot's spool and LSM segments. Losing this loses stored data, which is a
-# customer-visible failure rather than an identity one. It held Piri's blobs too
-# until each Piri got a volume of its own.
+# Ingot's cache and catalog log. The cache holds copies of blobs Piri already
+# holds, and Postgres journals the catalog not yet shipped, so Ingot rebuilds a
+# lost segment file from it. It held Piri's blobs too until each Piri got a
+# volume of its own.
 resource "aws_ebs_volume" "data" {
   availability_zone = var.availability_zone
   size              = var.data_volume_size

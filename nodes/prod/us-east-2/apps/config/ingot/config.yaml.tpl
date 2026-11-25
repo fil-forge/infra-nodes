@@ -6,7 +6,7 @@
 addr: "0.0.0.0:9000"
 region: ${REGION_LABEL}
 data_dir: /data
-# Byte budget for the spool and the cache under data_dir, which is the
+# Byte budget for the cache under data_dir, which is the
 # ingot/blobs dataset; node.env says how it is sized.
 local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
 log_level: info
