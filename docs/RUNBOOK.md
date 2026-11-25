@@ -1572,6 +1572,78 @@ and cAdvisor, so container metrics such as `container_memory_working_set_bytes` 
 only. Caddy's request metrics ship from both nodes under `service_name="appliance-<stage>-<region>-caddy"`
 and `job="caddy"`; [observability.md](observability.md#caddy-requests) has the 5xx queries.
 
+**Add a Piri to a running node.** The node and central keep running: no reset, no restart of the
+Piris already there, and customer reads and writes carry on. The new Piri is `piri-<n>`, the next
+index after the last one in the node's `apps/compose.yml`. The procedure is the same on staging
+and prod, with these values:
+
+| | staging/eu-central-3 | prod/us-east-2 |
+|---|---|---|
+| Piris today | `piri-0` to `piri-2` | `piri-0` |
+| Data directory | `/mnt/data/fil-one/data/piri-<n>` | `/mnt/data/fil-one/piri/piri-<n>`, on the `piri` dataset |
+| Hostname | `piri-<n>.eu-central-3.staging.fil-forge.com` | `piri-<n>.us-east-2.fil-forge.com` |
+| DNS record | add `piri-<n>` to the list in `terraform/envs/staging/eu-central-3/main.tf` and apply | not in Terraform: add an A record to `162.43.174.98` beside `piri-0`'s |
+| Site block | `nodes/staging/eu-central-3/platform/config/caddy/host-caddy.caddy` | `nodes/prod/us-east-2/platform/config/caddy/Caddyfile`, plus an alias on Caddy |
+| Port | `127.0.0.1:<15100 + n>:3000` | none; Caddy reaches it on the `filone` network |
+| Caddy picks it up with | `scripts/host/reload-staging-host-caddy.sh` | `scripts/host/deploy-platform.sh` |
+
+Two steps differ on prod:
+
+- **Its Piris share one object storage path.** `[repo.s3]` in
+  `nodes/prod/us-east-2/apps/config/piri/piri-base-config.toml.tpl` is one section for every Piri,
+  with `PIRI_S3_PATH` (`fil-one/piri-0/`) from `node.env`. A second Piri there needs a path of its
+  own first, which takes a code change this procedure does not cover.
+- **Its platform deploy stops the apps once.** The host cannot reach its own public address, so
+  Caddy carries each public hostname as an alias on the `filone` network. A new alias changes
+  Caddy's service definition, so `deploy-platform.sh` recreates Caddy rather than reloading it,
+  and like any platform change it waits for every Piri's safe window and stops the apps until
+  Caddy is back. On staging the host's Caddy reloads and nothing stops.
+
+1. Give it a hostname and a data directory: add the DNS record, then on the host create the data
+   directory with `install -d -m 0755 <data directory>`. A Piri without its directory is left out
+   of the deploy.
+2. Pause deploys on the node, so the next step does not start a Piri that has no identity yet.
+   Stop the timer, then wait on the deploy lock for any running pass to finish and cancel a
+   retry systemd has queued after a failed one:
+
+   ```sh
+   systemctl stop filone-reconcile.timer
+   flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
+   ```
+3. Merge a pull request that adds `piri-<n>` to `nodes/<node>/apps/compose.yml`, copied from the
+   last Piri's service with every `piri-<n-1>` and `piri_<n-1>` renamed, `depends_on` pointing at
+   `piri-<n-1>`, and on staging the next loopback port. Add its site block next to the others in
+   the site block file. On prod, also add `piri-<n>.${PIRI_HOSTNAME_SUFFIX}` to Caddy's aliases in
+   `nodes/prod/us-east-2/platform/compose.yml`.
+4. On the node, bring the checkout to that commit and create the new Piri's identity, delegation
+   and owner wallet. Everything that already exists is left alone.
+
+   ```sh
+   . /etc/fil-one/node.conf
+   git -C "$FILONE_CHECKOUT" fetch origin && git -C "$FILONE_CHECKOUT" reset --hard origin/main
+   scripts/host/keygen.sh
+   scripts/host/onboarding-request.sh
+   ```
+
+5. Send central the one `make onboard-appliance` command for `piri-<n>`, and fund its owner wallet
+   as in [step 6](#6-onboarding-then-the-apps). Central adds it to the region's storage nodes and
+   returns the same Ingot delegation as before, so there is nothing to store.
+6. Deploy. Load the new site block with the node's Caddy command from the table, then run
+   `deploy-apps.sh`. It creates `piri_<n>`'s database, leaves the other Piris running and starts
+   the new one after them. Its first start registers it on chain and creates its proof set, which
+   takes minutes.
+
+   ```sh
+   scripts/host/reload-staging-host-caddy.sh   # on prod: scripts/host/deploy-platform.sh
+   scripts/host/deploy-apps.sh
+   systemctl start filone-reconcile.timer
+   ```
+
+7. Check it. `https://piri-<n>.<suffix>/readyz` answers, the status document lists it, and its
+   logs in Grafana (`instance="<node>/piri-<n>"`) show `/blob/accept` as uploads reach it. Within
+   one proving period its Prove task runs and its proving alerts stay quiet; [Piri's proving
+   alerts](#piris-proving-alerts) say where to look when they do not.
+
 **Reset the apps on dev or staging.** This drops the `ingot` and Piri databases and empties the apps'
 data directories; the next `deploy-apps.sh` recreates the databases empty. It keeps the node's identity: OpenBao and its
 unseal token, every key and wallet, and the hilt proof. The node is reset first, and the apps stay
