@@ -50,10 +50,10 @@ services:
       retries: 10
       start_period: 10s
     # Parallel queries allocate in /dev/shm; Docker's 64 MB default failed the Piris' proving query (sc-104).
-    shm_size: 1gb
-    # Same reason as openbao's limits above.
-    mem_limit: 8g
-    cpus: 4
+    shm_size: 2gb
+    # Same reason as openbao's limits above. The page cache filled 4 GiB in the sc-104 load test.
+    mem_limit: 32g
+    cpus: 8
     restart: unless-stopped
     networks: [filone]
 
