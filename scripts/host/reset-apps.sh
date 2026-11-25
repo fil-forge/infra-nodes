@@ -12,7 +12,8 @@
 # Kept: the control volume's OpenBao and its unseal token at
 # /etc/fil-one/seal-token, every key, wallet and DID in the node's OpenBao, and
 # the stored hilt-to-ingot delegation. The databases come back empty with the
-# same roles and passwords, so nothing has to be rendered again.
+# same roles and passwords, so nothing has to be rendered again: the next
+# deploy-apps.sh recreates them.
 #
 # This is the node half of an app reset. Central is reset after it, and the apps
 # stay stopped here until then, with filone-reconcile.timer disabled so no pass
@@ -107,11 +108,6 @@ case "$STAGE" in
   *) die "refusing to reset the apps on stage '$STAGE'; only dev, staging and prod can be reset" ;;
 esac
 
-# Before anything is stopped: postgres-init interpolates its passwords from
-# platform.env, which only a platform deploy writes into the tmpfs. A node that
-# rebooted since has none, and the reset would stop with the databases dropped.
-[ -s "$FILONE_SECRETS_DIR/platform.env" ] ||
-  die "$FILONE_SECRETS_DIR/platform.env is missing; run deploy-platform.sh first"
 container_running "$POSTGRES_CONTAINER" ||
   die "$POSTGRES_CONTAINER is not running; run deploy-platform.sh first"
 
@@ -169,12 +165,12 @@ echo "  containers to stop, and the data directories to empty:"
 while read -r container; do
   echo "    $container  ${data_dirs[$container]}"
 done <<<"$app_containers"
-echo "  databases to drop and recreate empty:"
+echo "  databases to drop; deploy-apps.sh recreates them empty:"
 if [ -n "$databases" ]; then
   # shellcheck disable=SC2086 # one database name per word
   printf '    %s\n' $databases
 else
-  echo "    none left; postgres-init creates them"
+  echo "    none left"
 fi
 echo "  kept: OpenBao, the seal token, every key and wallet, the hilt proof"
 
@@ -185,7 +181,7 @@ if [ "$assume_yes" -eq 0 ]; then
   [ "$answer" = "reset-$STAGE" ] || die "not confirmed; nothing was changed"
 fi
 
-echo "[1/4] Stopping the apps"
+echo "[1/3] Stopping the apps"
 # Reconcile starts any app container that is not running, so it is kept off
 # until central is reset too. Disabled, so a reboot in between does not start
 # it again, and stopped whether or not it was enabled: a timer started by hand
@@ -214,7 +210,7 @@ while read -r container; do
   fi
 done <<<"$app_containers"
 
-echo "[2/4] Dropping the databases"
+echo "[2/3] Dropping the databases"
 # WITH (FORCE) terminates the remaining connections first. The apps are stopped,
 # so any left are a psql session someone forgot about.
 while read -r database; do
@@ -225,25 +221,7 @@ while read -r database; do
   echo "  dropped $database"
 done <<<"$databases"
 
-echo "[3/4] Recreating them with postgres-init"
-# --no-deps so a platform change the checkout has not deployed yet cannot
-# recreate Postgres underneath the reset. --force-recreate so the one-shot runs
-# again even when its definition has not changed.
-compose_platform up -d --no-deps --force-recreate postgres-init ||
-  die "could not start postgres-init"
-init_container="$(compose_platform ps -aq postgres-init)"
-[ -n "$init_container" ] || die "postgres-init has no container"
-init_status="$(docker wait "$init_container")" || die "could not wait for postgres-init"
-if [ "$init_status" != 0 ]; then
-  docker logs --tail 50 "$init_container" >&2 || true
-  die "postgres-init exited $init_status"
-fi
-databases="$(app_databases)" || die "could not list the databases in $POSTGRES_CONTAINER"
-[ -n "$databases" ] || die "postgres-init succeeded and created no app database"
-# shellcheck disable=SC2086 # one database name per word
-printf '  %s\n' $databases
-
-echo "[4/4] Emptying the data directories"
+echo "[3/3] Emptying the data directories"
 # The directory itself stays: Docker refuses to start a Piri whose directory is
 # missing. lost+found belongs to a filesystem whose root is emptied. -xdev keeps
 # the find from following a mount someone put further down.

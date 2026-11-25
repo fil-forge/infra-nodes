@@ -17,13 +17,6 @@ NODE_NAME="${node_name}"
 CONTROL_VOLUME_ID="${control_volume_id}"
 DATA_VOLUME_ID="${data_volume_id}"
 REPOSITORY_URL="${repository_url}"
-# One entry per Piri, <service name>:<volume id>. Each is mounted at
-# /mnt/fil-one/<service name>.
-PIRI_VOLUMES=(
-%{ for name, id in piri_volume_ids ~}
-  "${name}:${id}"
-%{ endfor ~}
-)
 
 CHECKOUT_DIR=/opt/fil-one/infra-nodes
 CONTROL_MOUNT=/mnt/fil-one/control
@@ -52,14 +45,9 @@ echo "[2/7] Waiting for the EBS volumes to attach"
 # carries the volume id as the device serial, which is unambiguous.
 control_dev="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${CONTROL_VOLUME_ID//-/}"
 data_dev="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${DATA_VOLUME_ID//-/}"
-volume_dev() { echo "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${1//-/}"; }
 
 all_attached() {
-  local entry
-  [ -e "$control_dev" ] && [ -e "$data_dev" ] || return 1
-  for entry in "$${PIRI_VOLUMES[@]}"; do
-    [ -e "$(volume_dev "$${entry#*:}")" ] || return 1
-  done
+  [ -e "$control_dev" ] && [ -e "$data_dev" ]
 }
 
 # The attachment is a separate API call that OpenTofu makes after the instance
@@ -102,9 +90,6 @@ prepare_volume() {
 
 prepare_volume "$control_dev" filone-control "$CONTROL_MOUNT"
 prepare_volume "$data_dev" filone-data "$DATA_MOUNT"
-for entry in "$${PIRI_VOLUMES[@]}"; do
-  prepare_volume "$(volume_dev "$${entry#*:}")" "filone-$${entry%%:*}" "/mnt/fil-one/$${entry%%:*}"
-done
 
 mkdir -p \
   "$CONTROL_MOUNT/openbao" \
@@ -140,6 +125,12 @@ mkdir -p "$(dirname "$CHECKOUT_DIR")"
 if [ ! -d "$CHECKOUT_DIR/.git" ]; then
   git clone --branch main "$REPOSITORY_URL" "$CHECKOUT_DIR"
 fi
+
+# The Piri volumes are named in the instance's tags rather than in this file,
+# so adding a Piri does not replace the instance. The same script mounts a Piri
+# volume added later.
+echo "  mounting the Piri volumes"
+"$CHECKOUT_DIR/scripts/host/mount-piri-volumes.sh"
 
 # The pieces of node identity that cannot come from the checkout: which
 # directory under nodes/ this box is, where the checkout lives, and which ref it

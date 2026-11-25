@@ -85,6 +85,17 @@ Alloy maps it to `instance` and no longer overwrites `instance` with the node na
 container carry the same `instance`. Until a Piri image with that change reaches a node, `instance`
 is the Piri's DID.
 
+## Adding a Piri
+
+A Piri added later joins a running node without a reset, because nothing about the Piris already
+there changes: no rename, no new URL, no new proof set. Each Piri's database is created by the apps
+deploy, the dev volumes are named in instance tags rather than in `user_data`, and a Caddyfile-only
+change is reloaded into the running Caddy. On staging none of these steps restarts the platform. On
+prod/us-east-2 the new hostname is also an alias on Caddy's service, so its platform deploy stops the
+apps once, and its Piris share one object storage path that a second Piri needs split first. Central
+adds the Piri to the region's storage nodes and resends the whole set to hilt. The RUNBOOK's "Add a
+Piri to a running node" has the procedure (sc-762).
+
 ## Moving from one Piri
 
 Both nodes reset their apps when they move to three Piris, and Forge central resets its apps for
