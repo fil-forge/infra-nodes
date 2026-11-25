@@ -19,6 +19,8 @@ postgres_dsn: "postgres://ingot:${INGOT_POSTGRES_PASSWORD}@postgres:5432/ingot?s
 # Two workers shipped 1.5 catalog segments/s while 150 buckets sealed ~16/s (sc-104).
 task_workers:
   bucket: 32
+# At the 5 s default 150 buckets sealed ~23 segments/s and Ingot shipped ~12, so the backlog only grew (sc-104).
+seal_age: 60s
 upload_service_url: "${SPRUE_URL}"
 upload_service_did: "${SPRUE_DID}"
 upload_receipts_url: "${SPRUE_URL}/receipt"

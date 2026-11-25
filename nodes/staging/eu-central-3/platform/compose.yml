@@ -33,6 +33,8 @@ services:
 
   postgres:
     image: ${POSTGRES_IMAGE}
+    # A quarter of mem_limit; the 128 MB default is far below the catalogue's working set (sc-104).
+    command: ["postgres", "-c", "shared_buffers=8GB"]
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
