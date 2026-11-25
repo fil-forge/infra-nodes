@@ -669,6 +669,31 @@ apps_core_services() {
   grep -vxE 'rag-embed|rag-engine' <<<"$services" || true
 }
 
+# Create an app's Postgres database unless it exists: `ingot` for Ingot, and
+# `piri_<n>` for `piri-<n>`, owned by the role postgres-init creates for that
+# app. Done by the apps deploy rather than by postgres-init, so adding a Piri to
+# compose.yml needs no platform change: a platform deploy stops every app.
+#
+# Needs POSTGRES_ADMIN_PASSWORD. It reaches psql through the environment, never
+# as an argument.
+ensure_app_database() {
+  local database="${1//-/_}" owner=piri container
+  # The name goes into SQL unquoted by psql, so only names of the apps.
+  [[ "$database" =~ ^(ingot|piri(_[0-9]+)?)$ ]] || die "'$1' is not an app service name"
+  [ "$database" != ingot ] || owner=ingot
+  # By label rather than through compose_platform: after a reboot reconcile runs
+  # the apps deploy alone, and the platform's env files on the tmpfs are gone.
+  container="$(docker ps -q --filter label=com.docker.compose.project=filone-platform \
+    --filter label=com.docker.compose.service=postgres)"
+  [ -n "$container" ] || die "Postgres is not running; deploy the platform first"
+  printf '%s\n' \
+    "SELECT 'CREATE DATABASE \"$database\" OWNER \"$owner\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$database')" \
+    '\gexec' |
+    PGPASSWORD="$POSTGRES_ADMIN_PASSWORD" docker exec -i -e PGPASSWORD "$container" \
+      psql -h 127.0.0.1 -U admin -d admin -v ON_ERROR_STOP=1 --quiet ||
+    die "could not create the $database database"
+}
+
 # The URL a Piri service answers at and registers with sprue. A node that runs
 # one Piri per storage volume names them piri-<n>.$PIRI_HOSTNAME_SUFFIX; a node
 # with a single `piri` still has one PIRI_PUBLIC_URL.

@@ -70,6 +70,7 @@ piri_data_dir() { echo /data; }
 create_volume_dirs() { :; }
 bao_get() { echo value; }
 bao_has() { :; }
+ensure_app_database() { :; }
 piri_wallet_hex() { echo hex; }
 piri_uses_s3() { return 1; }
 mark() {

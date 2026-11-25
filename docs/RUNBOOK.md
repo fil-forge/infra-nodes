@@ -1572,8 +1572,8 @@ and cAdvisor, so container metrics such as `container_memory_working_set_bytes` 
 only. Caddy's request metrics ship from both nodes under `service_name="appliance-<stage>-<region>-caddy"`
 and `job="caddy"`; [observability.md](observability.md#caddy-requests) has the 5xx queries.
 
-**Reset the apps on dev or staging.** This drops the `ingot` and Piri databases, empties the apps'
-data directories and recreates the databases empty. It keeps the node's identity: OpenBao and its
+**Reset the apps on dev or staging.** This drops the `ingot` and Piri databases and empties the apps'
+data directories; the next `deploy-apps.sh` recreates the databases empty. It keeps the node's identity: OpenBao and its
 unseal token, every key and wallet, and the hilt proof. The node is reset first, and the apps stay
 stopped until central has been reset too:
 
