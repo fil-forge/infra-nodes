@@ -7,8 +7,8 @@
 # instance and a tag edit does not: adding a Piri adds a volume, its
 # attachment and a tag, then this script mounts it on the running node.
 #
-# Bootstrap runs it on first boot, and an operator runs it after adding a Piri
-# (docs/RUNBOOK.md, "Add a Piri to a running node"). Safe to run again: a
+# Bootstrap runs it on first boot, and an operator runs it after an apply adds
+# a Piri volume. Safe to run again: a
 # mounted volume is left alone, and a volume that already holds a filesystem is
 # never formatted. Only for EC2 nodes; a bare-metal node mounts its disks
 # itself.
