@@ -1574,16 +1574,34 @@ and `job="caddy"`; [observability.md](observability.md#caddy-requests) has the 5
 
 **Add a Piri to a running node.** The node and central keep running: no reset, no restart of the
 Piris already there, and customer reads and writes carry on. The new Piri is `piri-<n>`, the next
-index after the last one in the node's `apps/compose.yml`.
+index after the last one in the node's `apps/compose.yml`. The procedure is the same on staging
+and prod, with these values:
 
-1. Give it a volume and a hostname.
-   - Dev: raise `piri_count` in `terraform/envs/dev/terraform.tfvars` and run
-     `tofu -chdir=terraform/envs/dev plan`. It should add a volume, its attachment and a DNS
-     record, and change the instance's tags in place; stop if it replaces anything. Apply with
-     `tofu -chdir=terraform/envs/dev apply`, then mount the volume on the node:
-     `scripts/host/mount-piri-volumes.sh`.
-   - Staging: raise `piri_count` in `terraform/envs/staging/eu-central-3/main.tf` and apply, then
-     create the data directory on the host: `install -d -m 0755 /mnt/data/fil-one/data/piri-<n>`.
+| | staging/eu-central-3 | prod/us-east-2 |
+|---|---|---|
+| Piris today | `piri-0` to `piri-2` | `piri-0` |
+| Data directory | `/mnt/data/fil-one/data/piri-<n>` | `/mnt/data/fil-one/piri/piri-<n>`, on the `piri` dataset |
+| Hostname | `piri-<n>.eu-central-3.staging.fil-forge.com` | `piri-<n>.us-east-2.fil-forge.com` |
+| DNS record | add `piri-<n>` to the list in `terraform/envs/staging/eu-central-3/main.tf` and apply | not in Terraform: add an A record to `162.43.174.98` beside `piri-0`'s |
+| Site block | `nodes/staging/eu-central-3/platform/config/caddy/host-caddy.caddy` | `nodes/prod/us-east-2/platform/config/caddy/Caddyfile`, plus an alias on Caddy |
+| Port | `127.0.0.1:<15100 + n>:3000` | none; Caddy reaches it on the `filone` network |
+| Caddy picks it up with | `scripts/host/reload-staging-host-caddy.sh` | `scripts/host/deploy-platform.sh` |
+
+Two steps differ on prod:
+
+- **Its Piris share one object storage path.** `[repo.s3]` in
+  `nodes/prod/us-east-2/apps/config/piri/piri-base-config.toml.tpl` is one section for every Piri,
+  with `PIRI_S3_PATH` (`fil-one/piri-0/`) from `node.env`. A second Piri there needs a path of its
+  own first, which takes a code change this procedure does not cover.
+- **Its platform deploy stops the apps once.** The host cannot reach its own public address, so
+  Caddy carries each public hostname as an alias on the `filone` network. A new alias changes
+  Caddy's service definition, so `deploy-platform.sh` recreates Caddy rather than reloading it,
+  and like any platform change it waits for every Piri's safe window and stops the apps until
+  Caddy is back. On staging the host's Caddy reloads and nothing stops.
+
+1. Give it a hostname and a data directory: add the DNS record, then on the host create the data
+   directory with `install -d -m 0755 <data directory>`. A Piri without its directory is left out
+   of the deploy.
 2. Pause deploys on the node, so the next step does not start a Piri that has no identity yet.
    Stop the timer, then wait on the deploy lock for any running pass to finish and cancel a
    retry systemd has queued after a failed one:
@@ -1593,9 +1611,10 @@ index after the last one in the node's `apps/compose.yml`.
    flock /run/fil-one/deploy.lock systemctl stop filone-reconcile.service
    ```
 3. Merge a pull request that adds `piri-<n>` to `nodes/<node>/apps/compose.yml`, copied from the
-   last Piri's service with every `piri-<n-1>` renamed, `depends_on` pointing at `piri-<n-1>`, and
-   on staging the next loopback port (`15100 + n`). Add its site block next to the others: the
-   Caddyfile in `nodes/dev/platform/config/caddy/` on dev, `host-caddy.caddy` on staging.
+   last Piri's service with every `piri-<n-1>` and `piri_<n-1>` renamed, `depends_on` pointing at
+   `piri-<n-1>`, and on staging the next loopback port. Add its site block next to the others in
+   the site block file. On prod, also add `piri-<n>.${PIRI_HOSTNAME_SUFFIX}` to Caddy's aliases in
+   `nodes/prod/us-east-2/platform/compose.yml`.
 4. On the node, bring the checkout to that commit and create the new Piri's identity, delegation
    and owner wallet. Everything that already exists is left alone.
 
@@ -1609,14 +1628,13 @@ index after the last one in the node's `apps/compose.yml`.
 5. Send central the one `make onboard-appliance` command for `piri-<n>`, and fund its owner wallet
    as in [step 6](#6-onboarding-then-the-apps). Central adds it to the region's storage nodes and
    returns the same Ingot delegation as before, so there is nothing to store.
-6. Deploy. On dev, `deploy-platform.sh` loads the new Caddyfile into the running Caddy; on
-   staging, `scripts/host/reload-staging-host-caddy.sh` does the same for the host's Caddy. Then
-   `deploy-apps.sh` creates `piri_<n>`'s database, leaves the other Piris running and starts the
-   new one after them. Its first start registers it on chain and creates its proof set, which
+6. Deploy. Load the new site block with the node's Caddy command from the table, then run
+   `deploy-apps.sh`. It creates `piri_<n>`'s database, leaves the other Piris running and starts
+   the new one after them. Its first start registers it on chain and creates its proof set, which
    takes minutes.
 
    ```sh
-   scripts/host/deploy-platform.sh   # dev; on staging, scripts/host/reload-staging-host-caddy.sh
+   scripts/host/reload-staging-host-caddy.sh   # on prod: scripts/host/deploy-platform.sh
    scripts/host/deploy-apps.sh
    systemctl start filone-reconcile.timer
    ```
