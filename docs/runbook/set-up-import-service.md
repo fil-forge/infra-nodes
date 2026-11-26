@@ -18,7 +18,8 @@ How it is wired:
 
 - **Its own mutual TLS.** The client certificate's common name is the key of its allow-list and of
   every record it writes, so it terminates TLS itself and Caddy stays out of its path. Its port is
-  published on IPv4 alone, on `IMPORT_SERVICE_PORT` (8443).
+  published on IPv4 alone, on `IMPORT_SERVICE_PORT` (8080, the port the provider's firewall passes
+  from the clients), which Docker translates to 8443, the port it listens on in its container.
 - **No second port for Ingot.** Caddy already publishes Ingot on 443 at every host address, under
   `INGOT_HOSTNAME` with a certificate it obtains itself, and nothing on the host filters that
   port. Clients upload their packs there like any S3 client, path-style.
@@ -29,13 +30,14 @@ How it is wired:
   if another container holds that address.
 - **The firewall.** UFW does not filter a port Docker publishes. `scripts/host/import-firewall.sh`
   loads the nftables table `filone_import`, which drops every connection Docker translated to the
-  service's port unless it comes from an address in `/etc/fil-one/import-clients`. An empty or
-  missing list closes the port to everyone. `deploy-import.sh` applies the list on every run, before
-  it starts the service. After a reboot the service cannot start until that deploy renders its
-  certificates. Once the service has come up, every reconcile pass applies the list as well, so a
-  table flushed or deleted by hand, or a client set changed by hand, is back within five minutes.
-  When a pass finds the table gone and cannot load it, it stops the service, which fires the
-  container alert, and the next pass's deploy loads the table before it starts the service again.
+  service's container port, 8443, unless it comes from an address in `/etc/fil-one/import-clients`.
+  An empty or missing list closes the port to everyone. `deploy-import.sh` applies the list on
+  every run, before it starts the service. After a reboot the service cannot start until that
+  deploy renders its certificates. Once the service has come up, every reconcile pass applies the
+  list as well, so a table flushed or deleted by hand, or a client set changed by hand, is back
+  within five minutes. When a pass finds the table gone and cannot load it, it stops the service,
+  which fires the container alert, and the next pass's deploy loads the table before it starts the
+  service again.
 
 ## Settings and secrets
 
