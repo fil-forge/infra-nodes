@@ -33,6 +33,8 @@ services:
 
   postgres:
     image: ${POSTGRES_IMAGE}
+    # A quarter of mem_limit; the 128 MB default is far below the catalogue's working set (sc-104).
+    command: ["postgres", "-c", "shared_buffers=8GB"]
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
@@ -49,9 +51,13 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
-    # Same reason as openbao's limits above.
-    mem_limit: 4g
-    cpus: 4
+    # Parallel queries allocate in /dev/shm; Docker's 64 MB default failed the Piris' proving query (sc-104).
+    shm_size: 2gb
+    # Limits give the capacity alerts a denominator and keep one service from
+    # starving the shared host.
+    # The size is based on the catalogue pre-load test performed in Nov'26.
+    mem_limit: 32g
+    cpus: 8
     restart: unless-stopped
     networks: [filone]
 

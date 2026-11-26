@@ -223,10 +223,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
-    # Same reason as the Piris' limits above. Twice their CPU: Ingot reached
-    # 1.3 cores in the 2026-09-24 load test.
-    mem_limit: 2g
-    cpus: 4
+    # Same reason as the Piris' limits above. Ingot sat at 4 cores and 2 GiB
+    # in the sc-104 load test.
+    mem_limit: 8g
+    cpus: 16
     restart: unless-stopped
     networks: [filone]
 
