@@ -966,6 +966,12 @@ The node reaches its database in central's VPC over a site-to-site VPN, which
 `scripts/host/setup-vpn.sh` sets up. [Set up the database VPN](runbook/set-up-database-vpn.md)
 gives its inputs, how to run it, check it and take it off the node.
 
+##### The import service
+
+The node runs the import service, which `scripts/host/deploy-import.sh` deploys.
+[Set up the import service](runbook/set-up-import-service.md) gives its settings and secrets, how
+to deploy and check it and how to take it off the node.
+
 ### 4. The unseal token
 
 Central mints it, and only now: the token is bound to the node's address. For the appliance that is

@@ -239,14 +239,9 @@ The import service runs as a Compose service of its own in the node's apps proje
 ledger database through the VPN. It publishes one port, which an nftables table of the node's own
 admits only from a list of client addresses kept on the host. With an empty list the port is closed
 to everyone. `scripts/host/deploy-import.sh` deploys it apart from Piri and Ingot and leaves it
-stopped while any of its settings is still a placeholder.
-
-## Not decided yet
-
-- **The import service's key store.** The service takes an HTTP(S) URL for the key store its pack
-  keys derive from. The node's OpenBao listens only on loopback inside its container and on a unix
-  socket. Either OpenBao gains a listener the Docker network can reach, or the service learns to
-  use a socket.
+stopped while any of its settings is still a placeholder. The service reads the site secret its
+pack keys derive from as a file, which the deploy renders from the node's OpenBao onto a
+memory-backed directory.
 
 ## Setting up the pool
 
