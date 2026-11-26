@@ -33,11 +33,11 @@ How it is wired:
   service's container port, 8443, unless it comes from an address in `/etc/fil-one/import-clients`.
   An empty or missing list closes the port to everyone. `deploy-import.sh` applies the list on
   every run, before it starts the service. After a reboot the service cannot start until that
-  deploy renders its certificates. Once the service has come up, every reconcile pass applies the
-  list as well, so a table flushed or deleted by hand, or a client set changed by hand, is back
-  within five minutes. When a pass finds the table gone and cannot load it, it stops the service,
-  which fires the container alert, and the next pass's deploy loads the table before it starts the
-  service again.
+  deploy renders its certificates. Once the service has a container, or has once come up healthy,
+  every reconcile pass applies the list as well, so a table flushed or deleted by hand, or a client
+  set changed by hand, is back within five minutes. When a pass finds the table gone and cannot
+  load it, it stops the service, which fires the container alert, and the next pass's deploy loads
+  the table before it starts the service again.
 
 ## Settings and secrets
 

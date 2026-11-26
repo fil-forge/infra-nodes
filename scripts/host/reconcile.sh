@@ -244,23 +244,32 @@ if [ "$deploy_platform" -eq 0 ] && [ "$deploy_apps" -eq 0 ] && [ "$retry_rag" -e
   echo "  nothing to deploy"
 fi
 
-# Every pass on a node where the import service has come up healthy, whose
-# deploy records its configuration hash. Its port is open to every address
-# whenever its firewall table is gone, and deploy-import.sh loads the table only
-# when it runs. The script loads nothing when the table matches the list. A
-# failure that leaves the table loaded, such as a refused edit to the list, is a
-# warning, as for the service's own deploy: the loaded table stays in force as
-# it is, which is the last list applied unless its client set was changed by
-# hand, and Piri and Ingot are not involved. A failure that leaves no table
-# stops the service, so its port is never open to every address. That fires the
-# container alert, and the retry marker has the next pass run deploy-import.sh,
-# which loads the table before it starts the service again. The service is
-# stopped before the marker is written, so a marker that cannot be written still
-# leaves the port closed. A node set back to placeholders has no container,
-# since deploy-import.sh removes it, and there is nothing to stop. The container
-# is named in nodes/<node>/apps/compose.yml.
-if [ -e "$FILONE_STATE_DIR/apps-import-service.sha256" ] &&
-  ! "$FILONE_CHECKOUT/scripts/host/import-firewall.sh"; then
+# Every pass on a node where the import service has a container, or has come up
+# healthy, whose deploy records its configuration hash. Its port is open to
+# every address whenever its firewall table is gone, and deploy-import.sh loads
+# the table only when it runs. The container counts as well as the hash because
+# a deploy forgets the hash as soon as it renders a changed file, so a render
+# or pull that fails after that leaves the old container running without one.
+# When Docker cannot say whether the container exists, the hash alone decides.
+#
+# The script loads nothing when the table matches the list. A failure that
+# leaves the table loaded, such as a refused edit to the list, is a warning, as
+# for the service's own deploy: the loaded table stays in force as it is, which
+# is the last list applied unless its client set was changed by hand, and Piri
+# and Ingot are not involved. A failure that leaves no table stops the service,
+# so its port is never open to every address. That fires the container alert,
+# and the retry marker has the next pass run deploy-import.sh, which loads the
+# table before it starts the service again. The service is stopped before the
+# marker is written, so a marker that cannot be written still leaves the port
+# closed. A node set back to placeholders has no container, since
+# deploy-import.sh removes it, and there is nothing to stop. The container is
+# named in nodes/<node>/apps/compose.yml.
+import_deployed=0
+if [ -e "$FILONE_STATE_DIR/apps-import-service.sha256" ] ||
+  container_exists filone-import-service; then
+  import_deployed=1
+fi
+if [ "$import_deployed" -eq 1 ] && ! "$FILONE_CHECKOUT/scripts/host/import-firewall.sh"; then
   if "$FILONE_CHECKOUT/scripts/host/import-firewall.sh" loaded; then
     echo "WARNING: the import service's firewall table could not be applied; the loaded table stays in force as it is. import-firewall.sh status says what it admits. See above." >&2
   else

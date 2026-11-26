@@ -55,10 +55,15 @@ write_stubs() {
 echo "docker $*" >>"$STUB_STATE/calls"
 [ "$1" != stop ] || [ ! -e "$STUB_STATE/docker-stop-fails" ] || exit 1
 # A file docker-no-container makes Docker say no container exists, and
-# docker-not-answering makes it fail as a daemon it cannot reach does.
+# docker-not-answering makes it fail as a daemon it cannot reach does. The
+# import service's container exists only with a file import-container.
 if [ "$1" = inspect ]; then
   [ ! -e "$STUB_STATE/docker-no-container" ] || { echo "Error: No such container: ${*: -1}" >&2; exit 1; }
   [ ! -e "$STUB_STATE/docker-not-answering" ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+  if [ "${*: -1}" = filone-import-service ] && [ ! -e "$STUB_STATE/import-container" ]; then
+    echo "Error: No such container: filone-import-service" >&2
+    exit 1
+  fi
 fi
 # Every container that exists is running, OpenBao's included, so a pass renews
 # its tokens. The projects define no service and `docker ps` lists nothing, so
@@ -322,6 +327,7 @@ show_output_on_failure "$before"
 new_case "deployed, the import service deployed before"
 deployed_at_head
 touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256"
+touch "$STUB_STATE/import-container"
 before=$failures
 run_reconcile
 check "exits zero" succeeded
@@ -345,6 +351,7 @@ show_output_on_failure "$before"
 new_case "deployed, the import service deployed before, its firewall fails with no table"
 deployed_at_head
 touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" "$STUB_STATE/fail-import-firewall.sh"
+touch "$STUB_STATE/import-container"
 before=$failures
 run_reconcile
 check "exits zero" succeeded
@@ -365,8 +372,41 @@ check "runs the service's deploy, which loads the table and starts it" deployed 
 check "stops nothing" not_stopped
 show_output_on_failure "$before"
 
+# A deploy that rendered a changed file forgot the hash, then failed before it
+# recreated the service, so the old container still runs with no hash.
+new_case "deployed, an old import service container left without the recorded hash"
+deployed_at_head
+touch "$STUB_STATE/import-container"
+before=$failures
+run_reconcile
+check "exits zero" succeeded
+check "applies the import service's firewall" deployed import-firewall.sh
+check "and deploys nothing" only_deployed import-firewall.sh
+show_output_on_failure "$before"
+
+current="deployed, an old import service container left without the recorded hash, its firewall fails with no table"
+touch "$STUB_STATE/fail-import-firewall.sh"
+: >"$STUB_STATE/calls"
+before=$failures
+run_reconcile
+check "exits zero" succeeded
+check "warns" said "stopping the import service so its port is not open to every address"
+check "stops the service" stopped filone-import-service
+check "leaves a retry for the next pass" test -e "$ROOT/mnt/fil-one/control/state/import-retry"
+show_output_on_failure "$before"
+
+new_case "deployed, no import service container, no recorded hash and Docker does not answer"
+deployed_at_head
+touch "$STUB_STATE/docker-not-answering"
+before=$failures
+run_reconcile
+check "exits zero" succeeded
+check "leaves the import service's firewall alone" not_deployed import-firewall.sh
+show_output_on_failure "$before"
+
 new_case "deployed, the import service's firewall fails with no table and it cannot be stopped"
 deployed_at_head
+touch "$STUB_STATE/import-container"
 touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" \
   "$STUB_STATE/fail-import-firewall.sh" "$STUB_STATE/docker-stop-fails"
 before=$failures
@@ -406,6 +446,7 @@ show_output_on_failure "$before"
 # written.
 new_case "deployed, the import service's firewall fails with no table and the retry cannot be written"
 deployed_at_head
+touch "$STUB_STATE/import-container"
 touch "$ROOT/mnt/fil-one/control/state/apps-import-service.sha256" "$STUB_STATE/fail-import-firewall.sh"
 ln -s "$CASE/nowhere/import-retry" "$ROOT/mnt/fil-one/control/state/import-retry"
 before=$failures
