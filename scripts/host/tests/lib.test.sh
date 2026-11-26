@@ -645,10 +645,10 @@ for dsn in 'host=db.example dbname=ledger user=import' 'postgresql://import@db.e
   check "is accepted without one: $dsn" eval "! ledger_dsn_has_password '$dsn'"
 done
 
-# The site secret file: OpenBao's base64 decoded to the bytes the service
-# reads, with the service's own refusal of a secret shorter than 32 bytes once
-# surrounding whitespace is stripped. Made-up secrets only. Each case runs in a
-# subshell, as die exits.
+# The site secret file: the base64 OpenBao holds, which the service decodes
+# itself, with the service's own refusals of anything that is not strict base64
+# of exactly 32 bytes once surrounding whitespace is stripped. Made-up secrets
+# only. Each case runs in a subshell, as die exits.
 site_secret_case() { # site_secret_case <name>
   new_case "$1"
   SECRETS="$CASE/secrets"
@@ -662,13 +662,32 @@ write_site_secret() { # write_site_secret <base64>: import_site_secret_file's st
 }
 no_temp_left() { test -z "$(find "$SECRETS" -name '.write.*')"; }
 says_nothing_of() { ! grep -qF -- "$1" "$CASE/stdout" "$CASE/stderr"; }
+# The service's own check of a site secret file, as its image reads one: the
+# 32 bytes, or a failure.
+service_reads() { # service_reads <file>
+  python3 -c '
+import base64, sys
+with open(sys.argv[1], "rb") as fobj:
+    secret = base64.b64decode(fobj.read().strip(), validate=True)
+sys.exit(len(secret) != 32)
+' "$1"
+}
+refused_unwritten() { # refused_unwritten <value>: the checks every refusal passes
+  check "is refused" test "$site_status" -ne 0
+  check "names the field" grep -q 'filone/import-service#site_secret' "$CASE/stderr"
+  check "does not print the value" says_nothing_of "$1"
+  check "writes no file" test ! -e "$SECRETS/site-secret"
+  check "leaves no temp file" no_temp_left
+}
 secret_a="$(printf 'a%.0s' $(seq 32) | base64)"
-secret_b="$(printf 'b%.0s' $(seq 40) | base64)"
+secret_b="$(printf 'b%.0s' $(seq 32) | base64)"
 
 site_secret_case "a site secret, first written"
 write_site_secret "$secret_a"
 check "reports the change" test "$site_status" -eq 0
-check "holds the decoded bytes" test "$(cat "$SECRETS/site-secret")" = "$(printf 'a%.0s' $(seq 32))"
+check "holds the base64 OpenBao holds, with a newline" \
+  test "$(cat "$SECRETS/site-secret")" = "$secret_a" -a "$(tail -c 1 "$SECRETS/site-secret" | od -An -c | tr -d ' ')" = '\n'
+check "is a file the service reads" service_reads "$SECRETS/site-secret"
 check "is read-only to its owner alone" test -n "$(find "$SECRETS/site-secret" -perm 400)"
 check "leaves no temp file" no_temp_left
 write_site_secret "$secret_a"
@@ -676,37 +695,53 @@ check "reports no change when written again" test "$site_status" -eq 1
 check "leaves no temp file then either" no_temp_left
 write_site_secret "$secret_b"
 check "reports a changed secret as a change" test "$site_status" -eq 0
-check "holds the changed secret" test "$(cat "$SECRETS/site-secret")" = "$(printf 'b%.0s' $(seq 40))"
+check "holds the changed secret" test "$(cat "$SECRETS/site-secret")" = "$secret_b"
 
-site_secret_case "a site secret with a trailing newline on the base64"
-write_site_secret "$secret_a
+site_secret_case "a site secret with whitespace around the base64"
+write_site_secret " $secret_a
 "
 check "is accepted" test "$site_status" -eq 0
+check "is written without it" test "$(cat "$SECRETS/site-secret")" = "$secret_a"
+write_site_secret "$secret_a"
+check "is the same file as the value without it" test "$site_status" -eq 1
 
-site_secret_case "a site secret of 31 bytes"
-short="$(printf 'c%.0s' $(seq 31) | base64)"
-write_site_secret "$short"
-check "is refused" test "$site_status" -ne 0
-check "names the field" grep -q 'filone/import-service#site_secret' "$CASE/stderr"
-check "says why" grep -q 'fewer than 32 bytes' "$CASE/stderr"
-check "does not print the value" says_nothing_of "$short"
-check "writes no file" test ! -e "$SECRETS/site-secret"
-check "leaves no temp file" no_temp_left
+# A secret written as hex is valid base64 too, of 48 bytes, so it is refused
+# rather than read as some other secret.
+for length in 31 33 48; do
+  site_secret_case "a site secret of $length bytes"
+  value="$(printf 'c%.0s' $(seq "$length") | base64)"
+  write_site_secret "$value"
+  refused_unwritten "$value"
+  check "says why" grep -q 'exactly 32 bytes' "$CASE/stderr"
+done
 
-site_secret_case "a site secret of 32 bytes, two of them surrounding spaces"
-padded="$(printf ' %s ' "$(printf 'd%.0s' $(seq 30))" | base64)"
-write_site_secret "$padded"
-check "is refused, as the service strips them" test "$site_status" -ne 0
-check "writes no file" test ! -e "$SECRETS/site-secret"
+site_secret_case "a site secret written as hex"
+hex="$(printf 'e%.0s' $(seq 64))"
+write_site_secret "$hex"
+refused_unwritten "$hex"
+check "says a hex secret decodes to 48 bytes" grep -q 'hex secret decodes' "$CASE/stderr"
 
 site_secret_case "a site secret that is not base64"
 write_site_secret 'not base64 at all!'
-check "is refused" test "$site_status" -ne 0
-check "names the field" grep -q 'filone/import-service#site_secret' "$CASE/stderr"
+refused_unwritten 'not base64 at all!'
 check "says why" grep -q 'not base64' "$CASE/stderr"
-check "does not print the value" says_nothing_of 'not base64 at all!'
-check "writes no file" test ! -e "$SECRETS/site-secret"
-check "leaves no temp file" no_temp_left
+
+# Each of these decodes to 32 bytes with a lenient decoder, and the service's
+# strict one refuses it.
+site_secret_case "a site secret in URL-safe base64"
+urlsafe="$(printf '\373%.0s' $(seq 32) | base64 | tr '+/' '-_')"
+write_site_secret "$urlsafe"
+refused_unwritten "$urlsafe"
+
+site_secret_case "a site secret without its padding"
+write_site_secret "${secret_a%=}"
+refused_unwritten "${secret_a%=}"
+
+site_secret_case "a site secret wrapped over two lines"
+wrapped="${secret_a:0:20}
+${secret_a:20}"
+write_site_secret "$wrapped"
+refused_unwritten "${secret_a:0:20}"
 
 site_secret_case "a changed site secret, replacing the file the last deploy wrote"
 write_site_secret "$secret_a"

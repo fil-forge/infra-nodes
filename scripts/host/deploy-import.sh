@@ -169,9 +169,9 @@ s3_secret_key="$(bao_get "$BAO_PATH" s3_secret_key)"
 render write_secret_file "$SERVICE_SECRETS/s3-secret-key" "$s3_secret_key"
 unset s3_secret_key
 
-# The site secret every pack's keys derive from. OpenBao holds it base64; the
-# file holds the bytes, which import_site_secret_file checks as the service
-# would before writing them.
+# The site secret every pack's keys derive from. OpenBao holds it as base64 of
+# exactly 32 bytes and the file holds the same text, which the service decodes
+# itself. import_site_secret_file refuses a value the service would refuse.
 site_secret="$(bao_get "$BAO_PATH" site_secret)"
 render import_site_secret_file "$FILONE_BAO_MOUNT/$BAO_PATH#site_secret" \
   "$SERVICE_SECRETS/site-secret" "$site_secret"

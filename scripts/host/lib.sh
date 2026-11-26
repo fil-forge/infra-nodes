@@ -787,38 +787,41 @@ import_pgpass_line() { # import_pgpass_line <password>
 
 # Write the import service's site secret file into the tmpfs, with the same
 # 0400 and the same changed/unchanged answer as write_secret_file: 0 when the
-# file changed, 1 when it already held the same bytes. OpenBao holds the secret
-# base64-encoded; the file holds the decoded bytes, which the service reads
-# once at start, strips of surrounding ASCII whitespace and refuses when fewer
-# than 32 bytes remain. A value that is not base64, or that the service would
-# refuse, stops the run with a message naming <label> and never the value.
+# file changed, 1 when it already held the same text. The file holds what
+# OpenBao holds, the secret as base64 of exactly 32 bytes, followed by a
+# newline. The service strips the surrounding whitespace, decodes the rest as
+# strict base64 and refuses any other length, so a value it would refuse stops
+# the run here, with a message naming <label> and never the value, and the
+# check is the service's own: Python's strict decoder on the stripped bytes. A
+# hex secret is refused too, since its 64 characters are base64 of 48 bytes.
 #
-# The value goes to the decoder on stdin, as piri_wallet_hex's key does, so it
-# is never on a command line, and the decoded bytes, which may hold any byte,
-# go straight to a file on the tmpfs without passing through a variable.
+# The value goes to the checker on stdin, as piri_wallet_hex's key does, so it
+# is never on a command line.
 import_site_secret_file() { # import_site_secret_file <label> <destination> <base64>
   local label="$1" destination="$2" status=0 tmp
   tmp="$(mktemp "$FILONE_SECRETS_DIR/.write.XXXXXX")" || die "mktemp failed in $FILONE_SECRETS_DIR"
   printf '%s' "$3" | python3 -c '
 import base64, binascii, sys
 
+text = sys.stdin.buffer.read().strip()
 try:
-    secret = base64.b64decode(sys.stdin.buffer.read().strip(), validate=True)
+    secret = base64.b64decode(text, validate=True)
 except (binascii.Error, ValueError):
     sys.exit(3)
-if len(secret.strip()) < 32:
+if len(secret) != 32:
     sys.exit(4)
-sys.stdout.buffer.write(secret)
+sys.stdout.buffer.write(text + b"\n")
 ' >"$tmp" 2>/dev/null || status=$?
   case "$status" in
     0) ;;
     3)
       rm -f "$tmp"
-      die "OpenBao's $label is not base64. Store the site secret base64-encoded." ;;
+      die "OpenBao's $label is not base64. Store the site secret as base64 of exactly 32 bytes." ;;
     4)
       rm -f "$tmp"
-      die "OpenBao's $label decodes to fewer than 32 bytes once surrounding whitespace is
-       stripped, which the import service refuses." ;;
+      die "OpenBao's $label does not decode to exactly 32 bytes, which the import service
+       refuses. Store the site secret as base64 of exactly 32 bytes; a hex secret decodes
+       to 48." ;;
     *)
       rm -f "$tmp"
       die "could not decode OpenBao's $label" ;;

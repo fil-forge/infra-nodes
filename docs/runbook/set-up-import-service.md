@@ -59,11 +59,12 @@ Its secrets, in the node's OpenBao at `filone/import-service`:
 | `ledger_dsn` | the ledger's libpq DSN, without a password. `deploy-import.sh` refuses one that carries a password |
 | `ledger_password` | the ledger role's password, which goes into a libpq password file |
 | `s3_access_key_id`, `s3_secret_key` | the Ingot access key the service reads packs with |
-| `site_secret` | the site secret every pack's keys derive from, base64. `deploy-import.sh` refuses a value that is not base64 or that decodes to fewer than 32 bytes once surrounding whitespace is stripped |
+| `site_secret` | the site secret every pack's keys derive from, as base64 of exactly 32 bytes. `deploy-import.sh` refuses any other value, as the service does: one that is not standard padded base64 on one line, or that decodes to another length, such as a secret written as hex, whose 64 characters decode to 48 bytes |
 | `registry_username`, `registry_token` | a read-only pull credential for the image's private registry |
 
 The site secret lives in the node's OpenBao and on no persistent disk. Every deploy renders it, as
-the bytes the base64 decodes to, into a memory-backed file the service reads once at start.
+the base64 OpenBao holds followed by a newline, into a memory-backed file the service reads once at
+start.
 Every pack the service accepts is sealed under keys derived from it, so replacing it once packs
 exist makes them unreadable. Write it once, before the first import, and never again.
 
@@ -83,18 +84,23 @@ bao_exec kv patch -mount=filone import-service ledger_password=- <<<"$value"
 unset value
 ```
 
-Store the site secret the clients seal their packs under. Copy its file to the host's `/run`
-tmpfs through the jump host, readable by root only, then write it only if the field is still
-empty, and remove the copy:
+Store the site secret the clients seal their packs under. Its file, the one the capture tools
+read with `--site-secret-file`, already holds it as base64 of exactly 32 bytes, so it is stored as
+it is, without its surrounding whitespace. Copy the file to the host's `/run` tmpfs through the
+jump host, readable by root only, then write it only if the field is still empty, and remove the
+copy:
 
 ```sh
 if bao_exec kv get -mount=filone -field=site_secret import-service >/dev/null 2>&1; then
   echo 'site_secret is already stored; leave it'
 else
-  base64 -w 0 </run/site-secret | bao_exec kv patch -mount=filone import-service site_secret=-
+  tr -d '[:space:]' </run/site-secret | bao_exec kv patch -mount=filone import-service site_secret=-
 fi
 rm /run/site-secret
 ```
+
+A stored value the service would refuse stops `deploy-import.sh` while it renders the files, before
+it starts the service, with a message naming the field.
 
 `deploy-import.sh` renders the files, the site secret's included, into
 `/run/fil-one/secrets/import-service/`, owned by the service's user (uid 10001) and read-only,
