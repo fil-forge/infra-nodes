@@ -32,7 +32,7 @@ instance_type = "t4g.large"
 # and slow-growing; this is the volume that carries the node's identity.
 control_volume_size = 50
 
-# Ingot's spool. Piri's blobs lived here too before each Piri got a volume of
+# Ingot's cache and catalog log. Piri's blobs lived here too before each Piri got a volume of
 # its own, and an EBS volume cannot shrink, so it keeps its size.
 data_volume_size = 500
 

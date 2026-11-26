@@ -175,7 +175,7 @@ all of which are rebuilt from this repository.
 `prevent_destroy` is on the EBS volumes and the Elastic IP:
 
 - the **control volume** holds the node's identity, its Postgres data and its certificates
-- the **data volume** holds Ingot's spool
+- the **data volume** holds Ingot's cache and catalog log
 - each **Piri volume** holds that Piri's blobs
 - the **Elastic IP** is what the unseal token is bound to and what every hostname resolves to
 

@@ -20,7 +20,7 @@ region: ${REGION_LABEL}
 
 data_dir: /data
 
-# Byte budget for the spool and the cache under data_dir, from node.env. The
+# Byte budget for the cache under data_dir, from node.env. The
 # sweeper evicts cached bodies down to 90% of it every 30 seconds.
 local_blob_max_bytes: ${INGOT_LOCAL_BLOB_MAX_BYTES}
 

@@ -51,7 +51,7 @@ variable "control_volume_size" {
 }
 
 variable "data_volume_size" {
-  description = "GB for the data-plane volume: Ingot's spool and LSM segments."
+  description = "GB for the data-plane volume: Ingot's cache and catalog log."
   type        = number
   default     = 500
 }

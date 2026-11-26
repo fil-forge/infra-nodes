@@ -86,10 +86,10 @@ otherwise deploy green and ship nothing.
 Only the central account can read it, so ask whoever runs infra-central; their runbook says where
 they get it. It is a public address, so any channel will do.
 
-`INGOT_LOCAL_BLOB_MAX_BYTES` becomes Ingot's `local_blob_max_bytes`: one byte budget for its spool
-(bodies being written or waiting for upload to Piri) and its cache (copies of bodies Piri already
-holds). Every 30 seconds a sweeper evicts cached bodies, oldest first, down to 90% of it. Ingot reads
-0 as no budget, and its cache then keeps every body until the disk fills, so `provision-apps.sh`
+`INGOT_LOCAL_BLOB_MAX_BYTES` becomes Ingot's `local_blob_max_bytes`: the byte budget for its cache,
+which holds copies of bodies Piri already holds. Bodies still being written count towards it as
+their bytes land. Every 30 seconds a sweeper evicts cached bodies, oldest first, down to 90% of it.
+Ingot reads 0 as no budget, and its cache then keeps every body until the disk fills, so `provision-apps.sh`
 and `deploy-apps.sh` refuse anything but a positive byte count. On the EC2 nodes Ingot has the data volume to itself,
 so size the budget from that volume's filesystem:
 
@@ -99,14 +99,14 @@ so size the budget from that volume's filesystem:
 2. Subtract the filesystem's root reserve (5% on the ext4 volumes bootstrap creates), which the
    alert counts as used.
 3. Subtract the ingest rate × 30 seconds, by which usage can exceed the budget between sweeps. With
-   no measured rate, use the volume's write throughput: every body lands there first.
+   no measured rate, use the volume's write throughput: every body is teed there as it streams.
 4. Subtract room for the catalog log, `/data/segments`, which the budget does not cover. With
    Ingot's defaults it holds up to 6 shipped segments of 64 MiB per bucket, plus the open and
    unshipped ones.
 
-What is left is the budget. It should also exceed the ingest rate × 10 minutes
-(`cache_min_residency`); below that, the sweeper evicts bodies written within that window. Ingot's
-README, "Local disk", has the full sizing list.
+What is left is the budget. It should also exceed the ingest rate × 10 minutes; below that, the
+sweeper evicts bodies written within that window. Ingot's README, "Local disk", has the full sizing
+list.
 
 Dev: the 500 GiB data volume (`data_volume_size` in `terraform/envs/dev/terraform.tfvars`) formats
 to a 491 GiB filesystem. 90% of it is 442 GiB; less the 25 GiB root reserve, 417 GiB; less gp3's
@@ -117,7 +117,7 @@ minutes.
 A node where Ingot shares its filesystem is sized from ingest instead, so the budget does not crowd
 out what else lives there. Take at least twice the peak ingest rate × 10 minutes, using the highest
 median of recent valid runs on [forge-perf](https://fil-forge.github.io/forge-perf/) where the node
-has not measured its own, and check it against the largest spool-plus-cache usage the node has
+has not measured its own, and check it against the largest local blob usage the node has
 shown (`max_over_time(sum(ingot_local_blobs_usage_bytes{appliance="<appliance>"})[30d:5m])`). With
 everything else on the filesystem and its root reserve, it should leave the filesystem below 60%
 used, so the 40% free-space alert stays quiet.
@@ -127,12 +127,12 @@ Staging: Ingot's data directory is `/var/lib/fil-one/ingot`, on the host's root 
 `/var/lib/fil-one/postgres`. The Piris and OpenBao stay on the ZFS pool at `/mnt/data`. forge-perf's highest median from
 its valid runs of 19 and 20 October 2026 is 3.96 GB/s, on one m9gd.16xlarge running every service;
 ten minutes of that is 2.38 TB, or 2.16 TiB. Twice that is 4.33 TiB, rounded up to 5 TiB, or
-5497558138880 bytes. That is over 18 times the 298 GB (278 GiB) spool-plus-cache peak of the 30 days
+5497558138880 bytes. That is over 18 times the 298 GB (278 GiB) local blob usage peak of the 30 days
 to 2026-10-26. With the 5% root reserve
 and what was already there, it leaves the root filesystem about half used. The staging host is not
 the forge-perf box, so its own rate may be lower; the budget errs on the large side.
 
-Prod/us-east-2: Ingot's spool and cache have the `ingot/blobs` dataset to themselves, and its
+Prod/us-east-2: Ingot's cache has the `ingot/blobs` dataset to itself, and its
 catalog log has `ingot/segments`. Bootstrap sets the blobs quota to 50% of the pool and prints the
 budget, 80% of that quota, which leaves room for bodies in flight and stays under the 10%-free
 alert. On the record's 6.9 TiB pool that is about 2.76 TiB, above the 2.16 TiB ten-minute peak.
@@ -1678,8 +1678,8 @@ Check that folder is empty first, and clear it by hand if it is not, taking care
 the bucket is shared with other data.
 
 **Move Ingot's data directory on staging.** A one-off for the change that moved it from the ZFS pool
-to `/var/lib/fil-one/ingot` on the root SSD. The spool holds bodies not yet uploaded to Piri and the
-catalog log under `segments`, so copy them across before the new mount goes live. Before merging
+to `/var/lib/fil-one/ingot` on the root SSD. The directory holds the catalog log under `segments`
+and the cache, so copy them across before the new mount goes live. Before merging
 that change, stop reconcile and Ingot, and copy. Stopping the timer leaves a pass already running,
 and a retry systemd queued after a failed one, either of which could start Ingot again mid-copy.
 Wait for the running pass on the deploy lock rather than kill a deploy halfway, then cancel the
@@ -1771,7 +1771,7 @@ is.
 it in SSM, so ask for the same `ingot-proof.txt` back rather than a reissue, and store it with
 `store-hilt-proof.sh`: the rebuilt OpenBao has no copy of it.
 
-The Piri volumes and the data volume still hold the old identities' blobs and spool. Dev data is
+The Piri volumes and the data volume still hold the old identities' blobs and cache. Dev data is
 disposable; wipe it and start clean rather than carry data the new identity cannot serve.
 
 **When the Ingot DID changes too**, because the region label or the content domain moved, central
