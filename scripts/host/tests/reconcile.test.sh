@@ -60,6 +60,17 @@ if [ "$1" = inspect ]; then
   [ ! -e "$STUB_STATE/docker-no-container" ] || { echo "Error: No such container: ${*: -1}" >&2; exit 1; }
   [ ! -e "$STUB_STATE/docker-not-answering" ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
 fi
+# Every container that exists is running, OpenBao's included, so a pass renews
+# its tokens. The projects define no service and `docker ps` lists nothing, so
+# no service counts as stopped.
+if [ "$1" = inspect ] && [[ " $* " == *" -f {{.State.Running}} "* ]]; then
+  echo true
+  exit 0
+fi
+if [ "$1" = compose ] && [[ " $* " == *" config "*"--format json"* ]]; then
+  echo '{"services": {}}'
+  exit 0
+fi
 [ "$1" = exec ] || exit 0
 while [ "$#" -gt 0 ] && [ "$1" != bao ]; do shift; done
 shift
