@@ -618,7 +618,7 @@ else
   echo "  skip the apps deploy's services: no docker compose here"
 fi
 
-# deploy-import.sh's address, password file and DSN check. Documentation
+# deploy-import.sh's address, password file, DSN and recovery key checks. Documentation
 # networks and made-up values only.
 new_case "the import service's address on the filone network"
 check "is the last usable address of a /16" \
@@ -643,6 +643,14 @@ done
 for dsn in 'host=db.example dbname=ledger user=import' 'postgresql://import@db.example/ledger' \
   'postgresql://import@db.example:5432/ledger' 'postgresql://db.example:5432/ledger'; do
   check "is accepted without one: $dsn" eval "! ledger_dsn_has_password '$dsn'"
+done
+
+new_case "the import service's recovery public key"
+for key in 00ff 00FFab; do
+  check "is accepted: $key" import_recovery_key_is_hex "$key"
+done
+for key in '' 0ff 00f 00fg '00 ff' 0x00ff; do
+  check "is refused: '$key'" eval "! import_recovery_key_is_hex '$key'"
 done
 
 # The site secret file: the base64 OpenBao holds, which the service decodes

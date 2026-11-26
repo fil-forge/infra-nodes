@@ -91,8 +91,9 @@ IMPORT_SERVICE_IMAGE="$(import_service_image)"
        <image>:<tag>@sha256:<digest>."
 [[ "$IMPORT_SERVICE_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$IMPORT_SERVICE_PORT" -le 65535 ] ||
   die "IMPORT_SERVICE_PORT in nodes/$FILONE_NODE/node.env is '$IMPORT_SERVICE_PORT', not a port."
-[[ "$IMPORT_SERVICE_RECOVERY_PUBLIC_KEY" =~ ^[0-9a-fA-F]+$ ]] ||
-  die "IMPORT_SERVICE_RECOVERY_PUBLIC_KEY in nodes/$FILONE_NODE/node.env is not hex."
+import_recovery_key_is_hex "$IMPORT_SERVICE_RECOVERY_PUBLIC_KEY" ||
+  die "IMPORT_SERVICE_RECOVERY_PUBLIC_KEY in nodes/$FILONE_NODE/node.env is not hex, two
+       digits a byte."
 
 # --- 1. Firewall ------------------------------------------------------------
 

@@ -837,6 +837,13 @@ sys.stdout.buffer.write(text + b"\n")
   return 0
 }
 
+# Whether a recovery public key is one the import service can decode: hex, two
+# digits a byte, as Python's bytes.fromhex reads it. An odd number of digits
+# stops the service at start. The key's length is the service's to check.
+import_recovery_key_is_hex() { # import_recovery_key_is_hex <key>
+  [[ "$1" =~ ^([0-9a-fA-F]{2})+$ ]]
+}
+
 # Whether a ledger DSN carries a password, as a password keyword or parameter
 # or as user:password@ in a URI. libpq would use it ahead of the password file.
 ledger_dsn_has_password() { # ledger_dsn_has_password <dsn>
