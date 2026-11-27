@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Name the service commit behind an image bump, as one line of a Slack alert.
 #
-# A bump commit says which service image changed and nothing about what changed
-# inside it, so an alert would name a digest nobody recognises. Bump deployed
-# image writes the source commit into the body as a link, and that line is what
-# this reads: matching it is the actual precondition for the lookup, stricter
-# than checking the actor and the subject prefix.
+# A bump commit's subject quotes the service commit, or names only a digest when
+# Bump deployed image could not read it, and never says who wrote it or where it
+# lives. Bump deployed image writes the source commit into the body as a link,
+# and that line is what this reads: matching it is the actual precondition for
+# the lookup, stricter than checking the actor and the subject prefix.
 #
 # Usage:
 #   git log -1 --format=%B | scripts/ci/test-nodes/service-commit-line.sh

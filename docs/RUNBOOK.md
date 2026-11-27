@@ -1202,11 +1202,14 @@ cd /root/fil-one/infra-nodes
 The host owns the Lotus, Caddy and Alloy running there. FilOne leaves them alone.
 
 **Deploy a new image.** Nothing to do on staging. Piri and Ingot dispatch their new digest here when
-they publish a `:main` image, `bump-deployed-image.yml` opens the pull request "Bump piri on staging
-to sha256:…" on `bot/bump-piri-image-staging` that rewrites
+they publish a `:main` image, `bump-deployed-image.yml` opens the pull request "Bump piri on staging:
+<subject of the Piri commit>" on `bot/bump-piri-image-staging` that rewrites
 `nodes/staging/eu-central-3/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and
-`compose` pass. `refresh-bump-prs.yml` rebuilds any other open bump on the new `main`, so two
-services publishing at once both land. Within five minutes of the merge the node pulls, then
+`compose` pass. Every `#N` in that subject is written as `fil-forge/piri#N`, so it cannot link to
+or close an issue here. A manual run, or a commit the workflow cannot read, gives the title "Bump
+piri on staging to sha256:…" instead; `scripts/ci/bump-title.sh` builds the title.
+`refresh-bump-prs.yml` rebuilds any other open bump on the new `main`, so two services publishing
+at once both land. Within five minutes of the merge the node pulls, then
 restarts the Piris one at a time, each after waiting for its own safe proving window and
 health-gated before the next goes down, and then Ingot. A Piri taken out of `compose.yml` is
 stopped before any of that, also behind its own gate, and then removed.
