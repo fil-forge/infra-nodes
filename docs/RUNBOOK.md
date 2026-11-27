@@ -2432,7 +2432,15 @@ the commit pins, so suspect the image. After any other trigger, the node stopped
 already ran, so check its services. The run's log names the failing check. A check that says the
 deployed revision is not in this checkout usually means the clone is behind, so `git fetch` and run
 it again; if the revision is still nowhere on origin, the node is following another ref and
-`FILONE_GIT_REF` in `/etc/fil-one/node.conf` says which. Rolling back is a pin bump like any other:
+`FILONE_GIT_REF` in `/etc/fil-one/node.conf` says which. Rolling back is a pin change like any
+other. The bump workflow pins staging only, so on dev, which takes no bumps, write the pin in a
+branch of your own and open the pull request yourself:
+
+```sh
+scripts/ci/set-node-pin.sh --node dev piri <the digest that worked>
+```
+
+On staging, dispatch the digest that worked:
 
 ```sh
 gh workflow run bump-deployed-image.yml -f service=piri -f digest=<the digest that worked>
