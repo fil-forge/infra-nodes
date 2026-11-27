@@ -75,6 +75,14 @@ expect "a reference to another repository is left alone" \
   "Bump piri on staging: Revert fil-forge/sprue#40" \
   "Revert fil-forge/sprue#40"
 
+expect "a repository name ending in - or . keeps its reference" \
+  "Bump piri on staging: Revert octocat/legacy-#40 and octocat/old.#41" \
+  "Revert octocat/legacy-#40 and octocat/old.#41"
+
+expect "a bare reference after a hyphen is qualified" \
+  "Bump piri on staging: Follow up fix-fil-forge/piri#12" \
+  "Follow up fix-#12"
+
 expect "a hash that is no reference is left alone" \
   "Bump piri on staging: Use url#fragment and #main" \
   "Use url#fragment and #main"

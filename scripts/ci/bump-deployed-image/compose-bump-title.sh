@@ -83,8 +83,11 @@ printf '%s' "$message" | jq --raw-input --raw-output --slurp \
     | gsub("`"; $quote)
     | gsub("(?<![\\w.@])@(?=[A-Za-z0-9])"; "");
 
+  # A reference already in OWNER/REPO#N form matches whole and is written
+  # back unchanged, so a repository name ending in - or . keeps its link.
   def qualify:
-    gsub("(?<![\\w/])(?:#|GH-)(?<n>[0-9]+)\\b"; "\($repo)#\(.n)");
+    gsub("(?:(?<![\\w/.-])(?<q>[A-Za-z0-9-]+/[A-Za-z0-9._-]+)#|(?<![\\w/])(?:#|GH-))(?<n>[0-9]+)\\b";
+      "\(.q // $repo)#\(.n)");
 
   # Cut at the last space that fits, leaving room for the ellipsis. A subject
   # with no space in reach loses its trailing reference fragment instead.
