@@ -585,11 +585,12 @@ pin_image() { # pin_image <reference>
 
 import_case "prod/us-east-2 as committed"
 got="$(placeholders)"
-for name in IMPORT_SERVICE_IMAGE IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
+for name in IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
   IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
   check "names $name" has_line "$name" "$got"
 done
-check "names nothing else" test "$(grep -c . <<<"$got")" -eq 5
+check "names nothing else" test "$(grep -c . <<<"$got")" -eq 4
+check "accepts the committed image pin" lacks_line IMPORT_SERVICE_IMAGE "$got"
 check "accepts the committed port" lacks_line IMPORT_SERVICE_PORT "$got"
 check "accepts the empty prefix" lacks_line IMPORT_SERVICE_S3_PREFIX "$got"
 
@@ -605,6 +606,7 @@ check "names an empty one too" test "$(placeholders "${configured[@]}" IMPORT_SE
   IMPORT_SERVICE_S3_BUCKET
 
 import_case "pin left"
+pin_image PLACEHOLDER
 check "names the image" test "$(placeholders "${configured[@]}")" = IMPORT_SERVICE_IMAGE
 
 # The deploy that waits on Piri and Ingot leaves the service to deploy-import.sh.
