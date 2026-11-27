@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bring the Piris and Ingot to what the checkout says they should be, then hand
-# Bucket Intelligence to deploy-rag.sh on a node that runs it.
+# Bucket Intelligence to deploy-rag.sh and the import service to
+# deploy-import.sh on a node that runs them.
 #
 # Runs on the node, as root, from the reconcile timer or by hand. Nothing here
 # restarts a Piri without first waiting for its proving window, because a
@@ -74,8 +75,9 @@ for service in "${piris[@]}"; do piri_changed[$service]=0; done
 piris_changed=0
 ingot_changed=0
 
-# Every service but Bucket Intelligence's two, which deploy-rag.sh deploys once
-# these are deployed and recorded, so nothing about them can fail this deploy.
+# Every service but Bucket Intelligence's two and the import service, which
+# deploy-rag.sh and deploy-import.sh deploy once these are deployed and
+# recorded, so nothing about them can fail this deploy.
 core_services="$(apps_core_services)"
 for service in "${unmounted_piris[@]}"; do
   core_services="$(grep -vxF "$service" <<<"$core_services" || true)"
@@ -313,7 +315,8 @@ fi
 
 # Catch a service added to compose.yml and remove one deleted from it, without
 # recreating any of the services above: whether they restart was decided, and
-# gated, further up. Bucket Intelligence's two are left out; a container whose
+# gated, further up. Bucket Intelligence's two and the import service are left
+# out, since their own scripts deploy them below; a container whose
 # service is gone from compose.yml is still removed. --no-deps keeps a Piri
 # left out above from being started as a dependency.
 # shellcheck disable=SC2086 # one service name per word
@@ -343,10 +346,12 @@ if [ "${#unmounted_piris[@]}" -eq 0 ] && [ "${#failed_piris[@]}" -eq 0 ]; then
 fi
 request_openbao_snapshot
 
-# Last, and outside this deploy's success: deploy-rag.sh logs its own warning
-# and leaves a marker that makes the next reconcile pass retry it alone. It
-# exits at once on a node without the engine.
+# Last, and outside this deploy's success: deploy-rag.sh and deploy-import.sh
+# each log their own warning and leave a marker that makes the next reconcile
+# pass retry them alone. Each exits at once on a node without its service, and
+# deploy-import.sh also while the import service's settings are placeholders.
 "$SCRIPT_DIR/deploy-rag.sh" || true
+"$SCRIPT_DIR/deploy-import.sh" || true
 
 [ "${#unmounted_piris[@]}" -eq 0 ] ||
   die "deployed every app but ${unmounted_piris[*]}, whose volume is not mounted.

@@ -624,6 +624,25 @@ config_hash_record() {
   printf '%s\n' "$2" >"$FILONE_STATE_DIR/$1.sha256"
 }
 
+# Run a command that reports "changed" by exit status, such as write_secret_file
+# or render_template, and forget the hash recorded under <name> the moment it
+# reports a change. Rendering compares by content, so a run that writes a new
+# file and then dies before its service is recreated would read that file as
+# unchanged on the next pass and keep the old container. With the hash gone,
+# config_changed keeps the service marked changed until a run records it
+# healthy. Returns the command's status, and stops the run when the hash
+# cannot be removed, since a changed render would then read as unchanged.
+#
+# Usage: forget_hash_on_change <name> <command> [args...]
+forget_hash_on_change() {
+  local name="$1"
+  shift
+  "$@" || return
+  rm -f "$FILONE_STATE_DIR/$name.sha256" ||
+    die "could not forget the recorded hash $FILONE_STATE_DIR/$name.sha256"
+  return 0
+}
+
 # A moving tag resolving to a new digest is invisible to compose, which compares
 # the tag string, so the running image id is compared against the pulled one. A
 # service with no container yet counts as different: it has to be created.
@@ -691,16 +710,147 @@ piri_services() {
   printf '%s\n' "$services"
 }
 
-# The apps project's services other than Bucket Intelligence's two, one per
-# line. deploy-rag.sh deploys and waits for those on its own, so a deploy that
-# waits on these is never failed by them. Read without interpolation, as
-# piri_services does.
+# The apps project's services other than Bucket Intelligence's two and the
+# import service, one per line. deploy-rag.sh and deploy-import.sh deploy and
+# wait for those on their own, so a deploy that waits on these is never failed
+# by them. Read without interpolation, as piri_services does.
 apps_core_services() {
   local services
   services="$(docker compose --project-directory "$FILONE_NODE_DIR/apps" -p filone-apps \
     config --no-interpolate --services)" ||
     die "could not read the services in nodes/$FILONE_NODE/apps/compose.yml"
-  grep -vxE 'rag-embed|rag-engine' <<<"$services" || true
+  grep -vxE 'rag-embed|rag-engine|import-service' <<<"$services" || true
+}
+
+# --- The import service ----------------------------------------------------
+
+# The image the node's apps versions.env pins for the import service, or
+# nothing. Read from the file, which filone_init does not load.
+import_service_image() {
+  sed -n 's/^IMPORT_SERVICE_IMAGE=//p' "$FILONE_NODE_DIR/apps/versions.env" | tail -n 1
+}
+
+# The import service's settings still empty or PLACEHOLDER, one name per line,
+# or nothing once every one is set: its image pin and the node.env values
+# apps/compose.yml interpolates into it. deploy-import.sh leaves the service
+# stopped while this prints anything. IMPORT_SERVICE_S3_PREFIX may be empty.
+import_service_placeholders() {
+  local name
+  case "$(import_service_image)" in "" | PLACEHOLDER) echo IMPORT_SERVICE_IMAGE ;; esac
+  for name in IMPORT_SERVICE_PORT IMPORT_SERVICE_ALLOWED_CLIENTS IMPORT_SERVICE_LEASE_HOLDER \
+    IMPORT_SERVICE_S3_BUCKET IMPORT_SERVICE_RECOVERY_PUBLIC_KEY; do
+    case "${!name:-}" in "" | PLACEHOLDER) echo "$name" ;; esac
+  done
+}
+
+# Remove the import service's container, if there is one. deploy-import.sh
+# calls it when a setting is a placeholder again, so a service deployed with
+# earlier settings does not keep running and publishing its port. By container
+# name, as container_exists is, since compose_apps needs an apps.env that may
+# not be rendered.
+import_service_remove() { # import_service_remove <container>
+  local status=0
+  container_exists "$1" || status=$?
+  case "$status" in
+    0) ;;
+    1) return 0 ;;
+    *) die "could not ask Docker whether $1 exists" ;;
+  esac
+  echo "  removing $1, left from the earlier settings"
+  docker rm -f "$1" >/dev/null || die "could not remove $1"
+}
+
+# The address deploy-import.sh gives the service on the filone network: the
+# last usable one of the network's subnet, which Docker's allocator, counting
+# up from the bottom, reaches last. Fails on anything but an IPv4 network with
+# room for it.
+import_service_address() { # import_service_address <subnet>
+  python3 -c '
+import ipaddress, sys
+try:
+    network = ipaddress.ip_network(sys.argv[1])
+except ValueError:
+    sys.exit("not a network: %s" % sys.argv[1])
+if network.version != 4 or network.num_addresses < 4:
+    sys.exit("not an IPv4 network with room for a container: %s" % network)
+print(network.broadcast_address - 1)
+' "$1"
+}
+
+# The line of libpq's password file that gives the ledger password for any
+# host, port, database and user, with backslash and colon escaped as the
+# format asks.
+import_pgpass_line() { # import_pgpass_line <password>
+  local password="${1//\\/\\\\}"
+  printf '*:*:*:*:%s\n' "${password//:/\\:}"
+}
+
+# Write the import service's site secret file into the tmpfs, with the same
+# 0400 and the same changed/unchanged answer as write_secret_file: 0 when the
+# file changed, 1 when it already held the same text. The file holds what
+# OpenBao holds, the secret as base64 of exactly 32 bytes, followed by a
+# newline. The service strips the surrounding whitespace, decodes the rest as
+# strict base64 and refuses any other length, so a value it would refuse stops
+# the run here, with a message naming <label> and never the value, and the
+# check is the service's own: Python's strict decoder on the stripped bytes. A
+# hex secret is refused too, since its 64 characters are base64 of 48 bytes.
+#
+# The value goes to the checker on stdin, as piri_wallet_hex's key does, so it
+# is never on a command line.
+import_site_secret_file() { # import_site_secret_file <label> <destination> <base64>
+  local label="$1" destination="$2" status=0 tmp
+  tmp="$(mktemp "$FILONE_SECRETS_DIR/.write.XXXXXX")" || die "mktemp failed in $FILONE_SECRETS_DIR"
+  printf '%s' "$3" | python3 -c '
+import base64, binascii, sys
+
+text = sys.stdin.buffer.read().strip()
+try:
+    secret = base64.b64decode(text, validate=True)
+except (binascii.Error, ValueError):
+    sys.exit(3)
+if len(secret) != 32:
+    sys.exit(4)
+sys.stdout.buffer.write(text + b"\n")
+' >"$tmp" 2>/dev/null || status=$?
+  case "$status" in
+    0) ;;
+    3)
+      rm -f "$tmp"
+      die "OpenBao's $label is not base64. Store the site secret as base64 of exactly 32 bytes." ;;
+    4)
+      rm -f "$tmp"
+      die "OpenBao's $label does not decode to exactly 32 bytes, which the import service
+       refuses. Store the site secret as base64 of exactly 32 bytes; a hex secret decodes
+       to 48." ;;
+    *)
+      rm -f "$tmp"
+      die "could not decode OpenBao's $label" ;;
+  esac
+  chmod 0400 "$tmp" || die "could not chmod $tmp"
+
+  if [ -f "$destination" ] && cmp -s "$tmp" "$destination"; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  mv "$tmp" "$destination" || die "could not write $destination"
+  return 0
+}
+
+# Whether a recovery public key is one the import service can decode: hex, two
+# digits a byte, as Python's bytes.fromhex reads it. An odd number of digits
+# stops the service at start. The key's length is the service's to check.
+import_recovery_key_is_hex() { # import_recovery_key_is_hex <key>
+  [[ "$1" =~ ^([0-9a-fA-F]{2})+$ ]]
+}
+
+# Whether a ledger DSN carries a password, as a password keyword or parameter
+# or as user:password@ in a URI. libpq would use it ahead of the password file.
+ledger_dsn_has_password() { # ledger_dsn_has_password <dsn>
+  case "$(tr '[:upper:]' '[:lower:]' <<<"$1")" in
+    *password* | *://*:*@*) return 0 ;;
+  esac
+  return 1
 }
 
 # Create an app's Postgres database unless it exists: `ingot` for Ingot, and
@@ -808,8 +958,16 @@ piri_containers() {
 # takes an --env-file that does not exist until provision-apps.sh has run and
 # compose refuses to start without it. A node that has never deployed apps still
 # has to be able to deploy the platform.
+#
+# Returns 0 when the container exists, 1 when Docker says there is no such
+# container, and 2 when Docker did not answer, so a caller that has to act on a
+# container can tell a missing one from a daemon it could not reach. Typed, so
+# an image or network of the same name does not count.
 container_exists() {
-  docker inspect "$1" >/dev/null 2>&1
+  local err
+  err="$(docker inspect --type container "$1" 2>&1 >/dev/null)" && return 0
+  case "$err" in *"No such container"*) return 1 ;; esac
+  return 2
 }
 
 container_running() {
