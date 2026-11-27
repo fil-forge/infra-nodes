@@ -1201,13 +1201,19 @@ cd /root/fil-one/infra-nodes
 
 The host owns the Lotus, Caddy and Alloy running there. FilOne leaves them alone.
 
-**Deploy a new image.** Nothing to do. Piri and Ingot dispatch their new digest here when they
-publish a `:main` image, `bump-deployed-image.yml` opens the pull request that rewrites
-`nodes/dev/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and `compose` pass.
-Within five minutes of the merge the node pulls, then restarts the Piris one at a time, each after
-waiting for its own safe proving window and health-gated before the next goes down, and then Ingot.
-A Piri taken out of `compose.yml` is stopped before any of that, also behind its own gate, and then
-removed.
+**Deploy a new image.** Nothing to do on staging. Piri and Ingot dispatch their new digest here when
+they publish a `:main` image, `bump-deployed-image.yml` opens the pull request "Bump piri on staging
+to sha256:…" on `bot/bump-piri-image-staging` that rewrites
+`nodes/staging/eu-central-3/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and
+`compose` pass. `refresh-bump-prs.yml` rebuilds any other open bump on the new `main`, so two
+services publishing at once both land. Within five minutes of the merge the node pulls, then
+restarts the Piris one at a time, each after waiting for its own safe proving window and
+health-gated before the next goes down, and then Ingot. A Piri taken out of `compose.yml` is
+stopped before any of that, also behind its own gate, and then removed.
+
+The dev node takes no bumps. It runs the pins it had when bumps moved to staging and stays up, still
+tested by Test nodes, until it is torn down; see the
+[RFC](https://github.com/fil-one/RFC/blob/main/rfcs/2026-11-continuous-deployment-to-staging.md).
 
 Two ways in by hand. Run the same workflow with a digest you read off the registry:
 
@@ -1224,24 +1230,8 @@ scripts/ci/set-node-pin.sh piri "$(crane digest ghcr.io/fil-forge/piri:main)"
 
 `set-node-pin.sh` is the only thing that knows how a pin is written, so both routes and the workflow
 produce the same line. It prints `changed=true` or `changed=false` and fails on an unknown service, a
-malformed digest or a pin somebody moved to another tag. It pins dev unless `--node` names another
-node, as in `--node staging/eu-central-3`.
-
-**Promote to staging.** Merge the open "Promote dev's images to staging" pull request.
-After every push to `main`, Test nodes waits for dev to reach the commit and pass its smoke and
-end-to-end tests, then calls `promote-staging.yml`, which rebuilds the pull request on that commit.
-A staging failure does not hold staging's promotion back; a dev failure leaves the pull request as
-it was, and the `main` ruleset keeps it from merging until a later push passes. Running
-`promote-staging.yml` by hand rebuilds it on current `main` without waiting for dev. The pull
-request sets each of staging's pins to what dev pins, lists what each service brings over staging's current pin, and closes itself once the two
-match. It never enables auto-merge, and disables one enabled for an earlier head, since a new head
-is a new set of images. Staging then deploys as dev does, on its next reconcile pass and after the
-proving window.
-
-To hold one service back, push to `bot/promote-staging` yourself: while its pull request is open,
-the workflow neither rebuilds nor closes a branch whose head the bot did not both author and
-commit, so an amended bot commit counts as a push. Or promote by hand in a branch of your own,
-with `set-node-pin.sh --node staging/eu-central-3`.
+malformed digest or a pin somebody moved to another tag. It pins `staging/eu-central-3` unless
+`--node` names another node, as in `--node prod/us-east-2`.
 
 **Promote to prod.** Each prod node has a pull request of its own, such as "Promote staging's
 images to prod/us-east-2" on `bot/promote-prod-us-east-2`, so each region is upgraded when you
@@ -1257,12 +1247,14 @@ request says so. That is also the way to bring a prod pull request that is behin
 date; "Update branch" works too, but it makes a person the committer, so the bot then leaves the
 branch alone.
 
-Holding a service back and auto-merge work as for staging: push to the node's branch yourself,
-and the bot leaves it alone while its pull request is open. A prod pin by hand is
+The pull request never enables auto-merge, and disables one enabled for an earlier head, since a
+new head is a new set of images. To hold one service back, push to the node's branch yourself:
+while its pull request is open, the workflow neither rebuilds nor closes a branch whose head the bot
+did not both author and commit, so an amended bot commit counts as a push. A prod pin by hand is
 `set-node-pin.sh --node prod/us-east-2` in a branch of your own.
 
-Both promotions run `scripts/ci/promote.sh`, which takes `staging` or a prod node and prints the
-commit it would push with `--dry-run`:
+The workflow runs `scripts/ci/promote.sh`, which takes a prod node and prints the commit it would
+push with `--dry-run`:
 
 ```sh
 APP_SLUG=fil-forge-bot scripts/ci/promote.sh prod/us-east-2 --dry-run

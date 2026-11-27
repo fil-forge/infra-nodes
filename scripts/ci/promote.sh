@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Open, refresh or close the pull request that promotes one stage's images to a
-# node of the next.
+# Open, refresh or close the pull request that promotes staging's images to one
+# prod node.
 #
-# Dev's pins move on their own: every image a service publishes gets a bump pull
-# request that the bot merges. Staging's and prod's move only when a person
-# merges a promotion, and promotion goes one hop at a time:
-#   staging        takes dev's pins,      on bot/promote-staging
+# Staging's pins move on their own: every image a service publishes gets a bump
+# pull request that the bot merges. Prod's move only when a person merges a
+# promotion:
 #   prod/<region>  takes staging's pins,  on bot/promote-prod-<region>
 # Staging's pins are those of staging/eu-central-3, its one node. Each prod node
 # has a pull request of its own, so one region can be upgraded without the
-# others. Each target keeps one pull request that sets every one of its pins to
-# what the source pins at BASE, and lists what each service brings over what the
-# target runs. It never enables auto-merge: merging it is the promotion.
+# others. Each keeps one pull request that sets every one of its pins to what
+# staging pins at BASE, and lists what each service brings over what the node
+# runs. It never enables auto-merge: merging it is the promotion.
 #
 # Everything it does is derived from BASE:
 #   - the target already pins what the source pins: close the pull request
@@ -22,7 +21,7 @@
 # is open.
 #
 # Usage:
-#   APP_SLUG=fil-forge-bot scripts/ci/promote.sh <staging|prod/<region>> [--dry-run]
+#   APP_SLUG=fil-forge-bot scripts/ci/promote.sh prod/<region> [--dry-run]
 #
 # --dry-run builds the commit, prints it, and pushes, opens and closes nothing.
 # Every run builds the commit in a temporary worktree and leaves the caller's
@@ -32,33 +31,26 @@
 #   APP_SLUG       the GitHub App that opens the pull request and whose identity
 #                  its commit carries
 #   BASE           the commit to build on, origin/main by default; CI passes
-#                  the commit the source just passed Test nodes on
-#   TEST_RUN_URL   the Test nodes run in which the source passed; empty for a
+#                  the commit staging just passed Test nodes on
+#   TEST_RUN_URL   the Test nodes run in which staging passed; empty for a
 #                  manual run, and the pull request says so
 # gh reads its own credentials, GH_TOKEN included.
 #
 # Prerequisites:
 #   - a git work tree with origin fetchable and pushable, and full history
-#     (each pin's source commit is read off the dev bump that first carried it)
+#     (each pin's source commit is read off the bump that first carried it)
 #   - gh authenticated, for the compare and packages APIs and the pull request
 #   - jq, to read the compare API's pages as one
 #   - writes the local git identity (user.name, user.email) of the work tree
 set -euo pipefail
 
 usage() {
-  echo "usage: APP_SLUG=<app> scripts/ci/promote.sh <staging|prod/<region>> [--dry-run]" >&2
+  echo "usage: APP_SLUG=<app> scripts/ci/promote.sh prod/<region> [--dry-run]" >&2
   exit 2
 }
 
 case "${1-}" in
-  -h|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  staging)
-    TARGET=staging
-    NODE=staging/eu-central-3
-    SOURCE=dev
-    SOURCE_FILE=nodes/dev/apps/versions.env
-    BRANCH=bot/promote-staging
-    ;;
+  -h|--help) sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   prod/*)
     [[ "$1" =~ ^prod/[a-z0-9-]+$ ]] || { echo "ERROR: malformed prod node '$1'" >&2; exit 2; }
     TARGET=$1
@@ -84,7 +76,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 TARGET_FILE=nodes/$NODE/apps/versions.env
-DEV_FILE=nodes/dev/apps/versions.env
+# The files a bump lands in, oldest first: dev's before the cutover to staging,
+# staging's after it.
+BUMP_FILES=(nodes/dev/apps/versions.env nodes/staging/eu-central-3/apps/versions.env)
 SUBJECT="Promote $SOURCE's images to $TARGET"
 # This repository, which Actions names; for links in the message.
 SELF=${GITHUB_REPOSITORY:-fil-forge/infra-nodes}
@@ -106,10 +100,14 @@ pin_at() {
   git show "$1:$2" | sed -nE "s|^${key}=[^@]+@(sha256:[0-9a-f]{64})[[:blank:]]*\$|\1|p"
 }
 
-# The bump at BASE that first put a digest in dev's file, empty if none did.
-# Every digest a node runs reached dev first, through a bump pull request.
+# The bump at BASE that first put a digest in dev's or staging's file, empty if
+# none did. Every digest a node runs arrived through a bump pull request: in
+# dev's file before the cutover to staging, in staging's after it. The earliest
+# commit wins, so a digest bumped into dev resolves to its bump and not to the
+# promotion that later carried it to staging. A path that is gone at BASE still
+# has its history read.
 bump_of() {
-  git log --reverse --format=%H -S "$1" "$base" -- "$DEV_FILE" | head -n 1
+  git log --reverse --format=%H -S "$1" "$base" -- "${BUMP_FILES[@]}" | head -n 1
 }
 
 # The commit a digest was built from, empty if unknown. The bump that carried it
@@ -146,8 +144,8 @@ load_versions() {
 }
 
 # A digest, shortened, linked to its version's page on ghcr.io, as found in the
-# VERSIONS load_versions last set. Failing that, to the pull request that bumped
-# dev to it, which names its source commit and publish run; plain if no bump at
+# VERSIONS load_versions last set. Failing that, to the bump pull request that
+# carried it, which names its source commit and publish run; plain if no bump at
 # BASE carried it either.
 digest_link() {
   local digest=$1 short="\`sha256:${1:7:7}\`" page bump pr

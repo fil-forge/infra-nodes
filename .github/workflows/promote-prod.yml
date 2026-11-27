@@ -27,7 +27,7 @@ jobs:
   select:
     name: Select prod nodes
     # A promotion pull request targets main, and only main's history carries
-    # the dev bumps its change list is read from.
+    # the bumps its change list is read from.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -88,8 +88,8 @@ jobs:
 
       # The commit staging was tested on, not main's tip: main may have moved
       # past it to pins staging has not passed with yet. Full history, because
-      # each pin's source commit is read off the dev bump that first carried
-      # its digest.
+      # each pin's source commit is read off the bump that first carried its
+      # digest.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

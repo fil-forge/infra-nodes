@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Say whether one node passed Test nodes in a run, so a promotion only proposes
-# pins its source node has passed with: promote-staging.yml checks dev, and
-# promote-prod.yml checks staging/eu-central-3.
+# pins its source node has passed with: promote-prod.yml checks
+# staging/eu-central-3.
 #
 # Usage:
 #   scripts/ci/node-passed.sh <run id> <node>
