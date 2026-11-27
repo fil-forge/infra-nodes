@@ -904,6 +904,12 @@ mounts_read_only() {
     grep -qF 'read_only: true'
 }
 check "mounts the secrets directory read-only" mounts_read_only
+check "points libpq at the RDS roots it mounts" \
+  grep -qxF '      PGSSLROOTCERT: /etc/import-service/rds-us-east-2-bundle.pem' "$IMPORT_COMPOSE"
+check "mounts the RDS roots read-only" \
+  grep -qxF '      - ./config/import-service/rds-us-east-2-bundle.pem:/etc/import-service/rds-us-east-2-bundle.pem:ro' "$IMPORT_COMPOSE"
+check "commits the RDS roots it mounts" \
+  grep -q 'Amazon RDS us-east-2' <(openssl crl2pkcs7 -nocrl -certfile "$NODES/prod/us-east-2/apps/config/import-service/rds-us-east-2-bundle.pem" | openssl pkcs7 -print_certs -noout)
 
 current="deploy-apps.sh"
 # shellcheck disable=SC2016 # the literal line deploy-apps.sh holds
