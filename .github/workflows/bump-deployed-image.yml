@@ -1,5 +1,5 @@
-# Queues a new image for the dev node by pinning the digest a service just
-# published. Services dispatch here from their own publish workflow; the commit
+# Queues a new image for the staging node, staging/eu-central-3, by pinning the
+# digest a service just published. Services dispatch here from their own publish workflow; the commit
 # this opens is what reaches the node, because the reconcile timer resets the
 # node to `origin/main` every five minutes.
 name: Bump deployed image
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   bump:
-    name: Bump ${{ github.event.client_payload.service || inputs.service }} on dev
+    name: Bump ${{ github.event.client_payload.service || inputs.service }} on staging
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           # The repository each service publishes from, mirroring the ghcr.io
-          # references in nodes/dev/apps/versions.env.
+          # references in nodes/staging/eu-central-3/apps/versions.env.
           case "$SERVICE" in
             piri)  publisher=fil-forge/piri ;;
             ingot) publisher=fil-forge/ingot ;;
@@ -101,7 +101,7 @@ jobs:
             echo "commit=$COMMIT"
             echo "source_pr_url=$SOURCE_PR_URL"
             echo "run_url=$RUN_URL"
-            echo "branch=bot/bump-$SERVICE-image-dev"
+            echo "branch=bot/bump-$SERVICE-image-staging"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout
@@ -125,7 +125,7 @@ jobs:
           DIGEST: ${{ steps.req.outputs.digest }}
         run: |
           set -euo pipefail
-          scripts/ci/set-node-pin.sh "$SERVICE" "$DIGEST" >> "$GITHUB_OUTPUT"
+          scripts/ci/set-node-pin.sh --node staging/eu-central-3 "$SERVICE" "$DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Compose the message
         if: steps.edit.outputs.changed == 'true'
@@ -138,12 +138,12 @@ jobs:
           SOURCE_PR_URL: ${{ steps.req.outputs.source_pr_url }}
           RUN_URL: ${{ steps.req.outputs.run_url }}
           ACTOR: ${{ github.actor }}
-          PINS_FILE: nodes/dev/apps/versions.env
-          PINS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/nodes/dev/apps/versions.env
+          PINS_FILE: nodes/staging/eu-central-3/apps/versions.env
+          PINS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/nodes/staging/eu-central-3/apps/versions.env
         run: |
           set -euo pipefail
           short=${DIGEST#sha256:}
-          echo "subject=Bump $SERVICE on dev to sha256:${short:0:7}" >> "$GITHUB_OUTPUT"
+          echo "subject=Bump $SERVICE on staging to sha256:${short:0:7}" >> "$GITHUB_OUTPUT"
 
           {
             if [ -n "$SOURCE_PR_URL" ]; then
