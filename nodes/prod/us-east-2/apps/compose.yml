@@ -191,6 +191,11 @@ services:
       IST1_IMPORT_CLIENT_CA: /run/import/client-ca.pem
       IST1_IMPORT_ALLOWED_CLIENTS: ${IMPORT_SERVICE_ALLOWED_CLIENTS}
       PGPASSFILE: /run/import/pgpass
+      # The ledger's DSN asks for verify-full, and libpq checks the database's
+      # certificate against the RDS roots for this region, which no system
+      # store carries. AWS publishes them at
+      # https://truststore.pki.rds.amazonaws.com/us-east-2/us-east-2-bundle.pem
+      PGSSLROOTCERT: /etc/import-service/rds-us-east-2-bundle.pem
       IST1_PACK_LEASE_HOLDER: ${IMPORT_SERVICE_LEASE_HOLDER}
       IST1_PACK_S3_BUCKET: ${IMPORT_SERVICE_S3_BUCKET}
       # Ingot over the filone network, as rag-engine reaches it on staging:
@@ -210,6 +215,7 @@ services:
       - path: /run/fil-one/secrets/import-service.env
         required: false
     volumes:
+      - ./config/import-service/rds-us-east-2-bundle.pem:/etc/import-service/rds-us-east-2-bundle.pem:ro
       # Its certificate, key and client CA, the ledger's password file, the
       # object store's secret key and the site secret, rendered by
       # deploy-import.sh into the secrets tmpfs and owned by the service's user.
