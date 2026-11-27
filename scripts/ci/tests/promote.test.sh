@@ -32,6 +32,7 @@ PIRI_NEW=$(digest 2)
 INGOT=$(digest 9)
 COMMIT_OLD=$(printf 'a%.0s' {1..40})
 COMMIT_NEW=$(printf 'b%.0s' {1..40})
+COMMIT_STAGING=$(printf 'c%.0s' {1..40})
 
 failures=0
 current=""
@@ -91,9 +92,10 @@ pins() {
   printf 'PIRI_IMAGE=ghcr.io/fil-forge/piri:main@%s\n\nINGOT_IMAGE=ghcr.io/fil-forge/ingot:main@%s\n' "$2" "$INGOT" >"$1"
 }
 
-# A repository whose history holds two dev bumps of piri, each naming the
-# commit it was built from. Staging has taken the second; dev too. Both prod
-# nodes still pin the first.
+# A repository whose history holds two dev bumps of piri from before staging
+# took bumps directly, each naming the commit it was built from. Staging has
+# taken the second through a promotion; dev too. Both prod nodes still pin the
+# first.
 setup() {
   current="$1"
   CASE="$WORK/case-$((++case_count))"
@@ -165,28 +167,6 @@ changed_files() { git --git-dir="$CASE/origin.git" diff --name-only "$1^" "$1"; 
 
 echo "promote.sh"
 
-setup "staging keeps its branch"
-pins nodes/dev/apps/versions.env "$(digest 3)"
-commit "Bump piri on dev (#13)"
-git push --quiet origin main
-promote staging --dry-run
-check "would push bot/promote-staging" grep -qF "would push bot/promote-staging" "$CASE/err"
-
-setup "staging keeps its title"
-pins nodes/dev/apps/versions.env "$(digest 3)"
-commit "Bump piri on dev (#13)"
-git push --quiet origin main
-promote staging --dry-run
-check "the commit is titled Promote dev's images to staging" grep -qxF "Promote dev's images to staging" "$CASE/out"
-
-setup "a staging pull request links the dev test"
-pins nodes/dev/apps/versions.env "$(digest 3)"
-commit "Bump piri on dev (#13)"
-git push --quiet origin main
-TEST_RUN_URL=https://github.com/fil-forge/infra-nodes/actions/runs/76 promote staging
-check "the body names the Test nodes run" \
-  grep -qF "dev passed Test nodes on that commit in https://github.com/fil-forge/infra-nodes/actions/runs/76." "$STUB_STATE/body"
-
 setup "a prod node gets a branch of its own"
 promote prod/us-east-2
 check "origin has bot/promote-prod-us-east-2" has_branch bot/promote-prod-us-east-2
@@ -211,6 +191,14 @@ setup "a prod pull request lists what the service brings"
 promote prod/us-east-2
 check "the body lists fil-forge/piri#5" grep -qF -- "- fil-forge/piri#5 " "$STUB_STATE/body"
 
+setup "a digest bumped straight into staging gets a change list"
+pins nodes/staging/eu-central-3/apps/versions.env "$(digest 4)"
+commit "Bump piri on staging to sha256:0000000 (#13)" "- Commit: https://github.com/fil-forge/piri/commit/$COMMIT_STAGING"
+git push --quiet origin main
+promote prod/us-east-2
+check "the body compares prod's dev-bumped commit with staging's bumped one" \
+  grep -qF "[\`${COMMIT_OLD:0:7}..${COMMIT_STAGING:0:7}\`](https://github.com/fil-forge/piri/compare/$COMMIT_OLD...$COMMIT_STAGING)" "$STUB_STATE/body"
+
 setup "a prod pull request links the staging test"
 TEST_RUN_URL=https://github.com/fil-forge/infra-nodes/actions/runs/77 promote prod/us-east-2
 check "the body names the Test nodes run" \
@@ -219,7 +207,7 @@ check "the body names the Test nodes run" \
 setup "a prod promotion builds on BASE"
 tested=$(git rev-parse HEAD)
 pins nodes/staging/eu-central-3/apps/versions.env "$(digest 3)"
-commit "Promote dev's images to staging (#14)"
+commit "Bump piri on staging to sha256:0000000 (#14)"
 git push --quiet origin main
 BASE=$tested promote prod/us-east-2
 check "the branch's parent is BASE" \
@@ -261,7 +249,7 @@ echo true >"$STUB_STATE/armed"
 promote prod/us-east-2
 check "gh pr merge --disable-auto is called" calls_contain "pr merge --disable-auto"
 
-rejected_targets="prod staging/eu-central-3 prod/nowhere prod/../dev dev"
+rejected_targets="prod staging staging/eu-central-3 prod/nowhere prod/../dev dev"
 for target in $rejected_targets; do
   setup "target $target"
   promote "$target" --dry-run

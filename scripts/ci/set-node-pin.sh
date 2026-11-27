@@ -10,7 +10,7 @@
 #
 # Example:
 #   scripts/ci/set-node-pin.sh piri "$(crane digest ghcr.io/fil-forge/piri:main)"
-#   scripts/ci/set-node-pin.sh --node staging/eu-central-3 piri sha256:...
+#   scripts/ci/set-node-pin.sh --node prod/us-east-2 piri sha256:...
 #
 # Prints `changed=true` on stdout when the file was rewritten and
 # `changed=false` when the service was already pinned there, and exits 0 either
@@ -19,9 +19,9 @@
 # malformed digest, a pin the pattern did not fit, or an edit that touched more
 # than the one line.
 #
-# The node is a directory under nodes/, dev unless --node names another. The
-# bump workflow pins dev; promote.sh pins staging/eu-central-3 and each prod
-# node.
+# The node is a directory under nodes/, staging/eu-central-3 unless --node
+# names another. The bump and refresh workflows pin staging/eu-central-3;
+# promote.sh pins each prod node.
 #
 # Prerequisites:
 #   - a git work tree, because the one-line assertion reads `git diff`
@@ -29,9 +29,9 @@
 set -euo pipefail
 
 USAGE="usage: scripts/ci/set-node-pin.sh [--node <node>] <service> <sha256:...>"
-NODE=dev
+NODE=staging/eu-central-3
 case "${1-}" in
-  -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   --node)    NODE="${2-}"; shift 2 2>/dev/null || { echo "$USAGE" >&2; exit 2; } ;;
 esac
 case "${1-}" in

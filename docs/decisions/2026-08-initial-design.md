@@ -1,5 +1,10 @@
 # Initial design of the FilOne Appliance dev node
 
+> **Update 2026-11-27:** Image bumps now pin the staging node, `nodes/staging/eu-central-3`,
+> rather than dev, which keeps the pins it had until it is torn down. Staging is the lowest stage
+> that takes new images, and each prod node takes staging's through a promotion a person merges; see
+> the [RFC](https://github.com/fil-one/RFC/blob/main/rfcs/2026-11-continuous-deployment-to-staging.md).
+
 A FilOne Appliance is the regional half of the Forge network: one Piri storage node and one Ingot S3
 gateway, plus the dependencies they need to run unattended. This document records the choices behind
 the first one: a dev node in `us-east-2`, paired with infra-central's dev stage.
