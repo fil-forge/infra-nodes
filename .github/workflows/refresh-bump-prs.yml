@@ -22,7 +22,7 @@ on:
       # move the branch until main moves or the service publishes again. The
       # run a bump push starts here rebuilds it right away. Rebuild pushes
       # start a run too; it finds every branch current and stops.
-      - bot/bump-*-image-dev
+      - bot/bump-*-image-staging
   # A service's first bump pushes its branch before it opens the pull request,
   # so the run that push starts can list pull requests before this one exists
   # and find nothing to rebuild. Opening it starts a run of its own, which the

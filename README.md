@@ -110,8 +110,15 @@ new commits touch the platform project, the apps project or neither, and runs on
 An image bump starts in the service repository rather than here. When piri or ingot publishes a new
 `:main` image, its publish workflow dispatches the digest to
 [`bump-deployed-image.yml`](.github/workflows/bump-deployed-image.yml), which rewrites the one line
-in `nodes/dev/apps/versions.env` and opens a pull request with auto-merge armed. The required checks
-still gate it. Merging queues the image; the node deploys it on its next pass.
+in `nodes/staging/eu-central-3/apps/versions.env` and opens a pull request with auto-merge armed.
+The required checks still gate it. Merging queues the image; the staging node deploys it on its next
+pass.
+
+A prod node takes staging's pins only when a person merges its promotion pull request, which
+[`promote-prod.yml`](.github/workflows/promote-prod.yml) rebuilds on each commit staging passes
+Test nodes on. Each prod node has its own, so regions upgrade one at a time. The dev node no longer
+receives bumps: it runs the pins it had at the cutover until it is torn down
+([RFC](https://github.com/fil-one/RFC/blob/main/rfcs/2026-11-continuous-deployment-to-staging.md)).
 
 An apps deploy waits for `piri status upgrade-check` to report a safe window before restarting each
 Piri, so an image bump never costs a proof. The gate runs in dev too — a mechanism that only runs in
