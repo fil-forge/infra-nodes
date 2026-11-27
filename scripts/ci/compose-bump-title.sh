@@ -23,7 +23,7 @@
 #
 # Usage:
 #   gh api "repos/$SOURCE_REPO/commits/$COMMIT" --jq .commit.message \
-#     | bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO]
+#     | compose-bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO]
 #
 # STAGE is the words after the service, such as "on staging". The commit
 # message is read from stdin, which may be empty. Needs bash and jq.
@@ -36,19 +36,19 @@ case "${1-}" in
 esac
 
 if [ $# -lt 3 ] || [ $# -gt 4 ]; then
-  echo "usage: bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO] < message" >&2
+  echo "usage: compose-bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO] < message" >&2
   exit 2
 fi
 service=$1 stage=$2 digest=$3 source_repo=${4-}
 
 [[ "$service" =~ ^[a-z][a-z0-9_]*$ ]] \
-  || { echo "bump-title.sh: malformed service '$service'" >&2; exit 2; }
+  || { echo "compose-bump-title.sh: malformed service '$service'" >&2; exit 2; }
 [ -n "$stage" ] \
-  || { echo "bump-title.sh: empty stage wording" >&2; exit 2; }
+  || { echo "compose-bump-title.sh: empty stage wording" >&2; exit 2; }
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
-  || { echo "bump-title.sh: malformed digest '$digest'" >&2; exit 2; }
+  || { echo "compose-bump-title.sh: malformed digest '$digest'" >&2; exit 2; }
 [[ -z "$source_repo" || "$source_repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
-  || { echo "bump-title.sh: malformed source repository '$source_repo'" >&2; exit 2; }
+  || { echo "compose-bump-title.sh: malformed source repository '$source_repo'" >&2; exit 2; }
 
 # jq rather than sed: it counts characters rather than bytes, so a cut never
 # splits one, and its regular expressions have the lookbehind that tells a
