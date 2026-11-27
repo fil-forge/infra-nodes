@@ -1206,10 +1206,11 @@ they publish a `:main` image, `bump-deployed-image.yml` opens the pull request "
 <subject of the Piri commit>" on `bot/bump-piri-image-staging` that rewrites
 `nodes/staging/eu-central-3/apps/versions.env`, and auto-merge lands it once `tofu`, `shell` and
 `compose` pass. Every `#N` in that subject is written as `fil-forge/piri#N`, so it cannot link to
-or close an issue here. A manual run, or a commit the workflow cannot read, gives the title "Bump
-piri on staging to sha256:…" instead; `scripts/ci/compose-bump-title.sh` builds the title.
-`refresh-bump-prs.yml` rebuilds any other open bump on the new `main`, so two services publishing
-at once both land. Within five minutes of the merge the node pulls, then
+or close an issue here, and an `@` that would mention someone is dropped. A manual run, or a commit
+the workflow cannot read, gives the title "Bump piri on staging to sha256:…" instead;
+`scripts/ci/bump-deployed-image/compose-bump-title.sh` builds the title. `refresh-bump-prs.yml`
+rebuilds any other open bump on the new `main`, so two services publishing at once both land.
+Within five minutes of the merge the node pulls, then
 restarts the Piris one at a time, each after waiting for its own safe proving window and
 health-gated before the next goes down, and then Ingot. A Piri taken out of `compose.yml` is
 stopped before any of that, also behind its own gate, and then removed.

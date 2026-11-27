@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Tests for scripts/ci/compose-bump-title.sh, run from any machine:
+# Tests for scripts/ci/bump-deployed-image/compose-bump-title.sh, run from any
+# machine:
 #
-#   scripts/ci/tests/compose-bump-title.test.sh
+#   scripts/ci/bump-deployed-image/tests/compose-bump-title.test.sh
 #
-# Each case pipes a commit message into the script and compares the one line
-# it prints. Plain bash and jq, written for the bash 3.2 macOS ships as well as
-# for a current one.
+# A stub gh first on PATH answers the commit lookup from a file, or fails when
+# told to, so no case reaches GitHub. Each case compares the one line the
+# script prints. Plain bash and jq, written for the bash 3.2 macOS ships as
+# well as for a current one.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -15,8 +17,21 @@ trap 'rm -rf "$WORK"' EXIT
 
 STAGE="on staging"
 REPO=fil-forge/piri
+COMMIT=$(printf 'c%.0s' {1..40})
 DIGEST=sha256:6c17e7e0000000000000000000000000000000000000000000000000000000ff
 FALLBACK="Bump piri on staging to sha256:6c17e7e"
+
+# The stub answers only the one lookup the script should make, so a wrong path
+# fails the lookup and shows up as the digest title.
+mkdir "$WORK/bin"
+cat >"$WORK/bin/gh" <<STUB
+#!/usr/bin/env bash
+[ "\$*" = "api repos/$REPO/commits/$COMMIT --jq .commit.message" ] || exit 1
+[ -z "\${STUB_FAIL-}" ] || { echo "HTTP 404" >&2; exit 1; }
+cat "$WORK/message"
+STUB
+chmod +x "$WORK/bin/gh"
+export PATH="$WORK/bin:$PATH"
 
 failures=0
 
@@ -28,10 +43,11 @@ flunk() {
   failures=$((failures + 1))
 }
 
-# expect <description> <expected title> <message> [<source repo>]
+# expect <description> <expected title> <commit message> [<source repo> <commit>]
 expect() {
-  local description=$1 expected=$2 message=$3 repo=${4-$REPO} actual
-  actual=$(cd "$WORK" && printf '%s' "$message" | "$SCRIPT" piri "$STAGE" "$DIGEST" "$repo")
+  local description=$1 expected=$2 actual
+  printf '%s\n' "$3" >"$WORK/message"
+  actual=$(cd "$WORK" && "$SCRIPT" piri "$STAGE" "$DIGEST" "${4-$REPO}" "${5-$COMMIT}" 2>/dev/null)
   if [ "$actual" = "$expected" ]; then
     pass "$description"
   else
@@ -96,8 +112,21 @@ expect "an empty message falls back to the digest" \
 expect "a blank first line falls back to the digest" \
   "$FALLBACK" "$(printf '  \t \nBody text')"
 
-expect "no source repository falls back to the digest" \
-  "$FALLBACK" "Fix tenant lock race (#212)" ""
+expect "a mention of a person or team loses its @" \
+  "Bump piri on staging: Thanks alice and fil-forge/storage, mail a@b.io" \
+  "Thanks @alice and @fil-forge/storage, mail a@b.io"
+
+expect "no commit falls back to the digest" \
+  "$FALLBACK" "Fix tenant lock race (#212)" "" ""
+
+STUB_FAIL=1 expect "a failed lookup falls back to the digest" \
+  "$FALLBACK" "Fix tenant lock race (#212)"
+
+if STUB_FAIL=1 "$SCRIPT" piri "$STAGE" "$DIGEST" "$REPO" "$COMMIT" 2>&1 >/dev/null | grep -q '^::warning::could not read fil-forge/piri@ccccccc'; then
+  pass "a failed lookup prints a workflow warning"
+else
+  flunk "a failed lookup prints a workflow warning" "::warning::could not read fil-forge/piri@ccccccc..." "no such line on stderr"
+fi
 
 if [ -e "$WORK/pwned" ]; then
   flunk "the subject is never run" "no file $WORK/pwned" "it exists"
@@ -105,7 +134,7 @@ else
   pass "the subject is never run"
 fi
 
-if "$SCRIPT" piri "$STAGE" sha256:6c17e7e "$REPO" </dev/null >/dev/null 2>&1; then
+if "$SCRIPT" piri "$STAGE" sha256:6c17e7e "$REPO" "$COMMIT" >/dev/null 2>&1; then
   flunk "a malformed digest is refused" "a non-zero exit" "exit 0"
 else
   pass "a malformed digest is refused"

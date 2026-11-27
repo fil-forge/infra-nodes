@@ -145,19 +145,11 @@ jobs:
         run: |
           set -euo pipefail
           # The title carries the service commit's subject, so main's history
-          # says what changed. scripts/ci/compose-bump-title.sh cleans the
-          # subject, which is untrusted, and falls back to naming the digest
-          # when there is no commit or the lookup fails. A failed lookup never
-          # fails the bump.
-          source_message=""
-          if [ -n "$COMMIT" ]; then
-            source_message=$(gh api "repos/$SOURCE_REPO/commits/$COMMIT" --jq .commit.message) || {
-              echo "::warning::could not read $SOURCE_REPO@${COMMIT:0:7}; the title names the digest instead"
-              source_message=""
-            }
-          fi
-          subject=$(printf '%s' "$source_message" \
-            | scripts/ci/compose-bump-title.sh "$SERVICE" "on staging" "$DIGEST" "${COMMIT:+$SOURCE_REPO}")
+          # says what changed. The script looks the subject up, cleans it,
+          # since it is untrusted, and falls back to naming the digest when
+          # there is no commit or the lookup fails; it never fails the bump.
+          subject=$(scripts/ci/bump-deployed-image/compose-bump-title.sh \
+            "$SERVICE" "on staging" "$DIGEST" "$SOURCE_REPO" "$COMMIT")
           echo "subject=$subject" >> "$GITHUB_OUTPUT"
 
           {

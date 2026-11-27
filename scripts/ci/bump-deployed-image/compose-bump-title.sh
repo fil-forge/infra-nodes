@@ -13,33 +13,35 @@
 # other bare one.
 #
 # The subject is untrusted free text. Only its first line is used, control and
-# format characters become spaces, and backticks become quotes because Slack
-# alerts quote the title in a code span. A title longer than MAX_LENGTH
-# characters is cut at a word boundary, so a reference is never shortened into
-# a different one. With no source repository, or nothing left of the subject,
-# the title names the digest instead:
+# format characters become spaces, backticks become quotes because Slack
+# alerts quote the title in a code span, and an @ that would mention a person
+# or team is dropped. A title longer than MAX_LENGTH characters is cut at a
+# word boundary, so a reference is never shortened into a different one. With
+# no commit, a commit whose message cannot be read, or nothing left of the
+# subject, the title names the digest instead:
 #
 #   Bump piri on staging to sha256:6c17e7e
 #
 # Usage:
-#   gh api "repos/$SOURCE_REPO/commits/$COMMIT" --jq .commit.message \
-#     | compose-bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO]
+#   compose-bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO COMMIT]
 #
-# STAGE is the words after the service, such as "on staging". The commit
-# message is read from stdin, which may be empty. Needs bash and jq.
+# STAGE is the words after the service, such as "on staging". SOURCE_REPO and
+# COMMIT may be empty. A failed lookup prints a workflow warning on stderr and
+# never fails the script. Needs bash, jq and gh; every publisher repository is
+# public, so any GH_TOKEN reads it.
 set -euo pipefail
 
 MAX_LENGTH=120
 
 case "${1-}" in
-  -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
-if [ $# -lt 3 ] || [ $# -gt 4 ]; then
-  echo "usage: compose-bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO] < message" >&2
+if [ $# -ne 3 ] && [ $# -ne 5 ]; then
+  echo "usage: compose-bump-title.sh SERVICE STAGE DIGEST [SOURCE_REPO COMMIT]" >&2
   exit 2
 fi
-service=$1 stage=$2 digest=$3 source_repo=${4-}
+service=$1 stage=$2 digest=$3 source_repo=${4-} commit=${5-}
 
 [[ "$service" =~ ^[a-z][a-z0-9_]*$ ]] \
   || { echo "compose-bump-title.sh: malformed service '$service'" >&2; exit 2; }
@@ -49,11 +51,23 @@ service=$1 stage=$2 digest=$3 source_repo=${4-}
   || { echo "compose-bump-title.sh: malformed digest '$digest'" >&2; exit 2; }
 [[ -z "$source_repo" || "$source_repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
   || { echo "compose-bump-title.sh: malformed source repository '$source_repo'" >&2; exit 2; }
+[[ -z "$commit" || "$commit" =~ ^[0-9a-f]{40}$ ]] \
+  || { echo "compose-bump-title.sh: malformed commit '$commit'" >&2; exit 2; }
+[[ -z "$commit" || -n "$source_repo" ]] \
+  || { echo "compose-bump-title.sh: commit given without a source repository" >&2; exit 2; }
+
+message=""
+if [ -n "$commit" ]; then
+  message=$(gh api "repos/$source_repo/commits/$commit" --jq .commit.message) || {
+    echo "::warning::could not read $source_repo@${commit:0:7}; the title names the digest instead" >&2
+    message=""
+  }
+fi
 
 # jq rather than sed: it counts characters rather than bytes, so a cut never
 # splits one, and its regular expressions have the lookbehind that tells a
 # bare #N from one already qualified.
-jq --raw-input --raw-output --slurp \
+printf '%s' "$message" | jq --raw-input --raw-output --slurp \
   --arg service "$service" \
   --arg stage "$stage" \
   --arg digest "$digest" \
@@ -66,7 +80,8 @@ jq --raw-input --raw-output --slurp \
     | gsub("\\s+"; " ")
     | sub("^ "; "")
     | sub(" $"; "")
-    | gsub("`"; $quote);
+    | gsub("`"; $quote)
+    | gsub("(?<![\\w.@])@(?=[A-Za-z0-9])"; "");
 
   def qualify:
     gsub("(?<![\\w/])(?:#|GH-)(?<n>[0-9]+)\\b"; "\($repo)#\(.n)");
