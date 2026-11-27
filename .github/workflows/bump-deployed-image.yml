@@ -36,7 +36,8 @@ jobs:
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ vars.FORGE_BOT_APP_ID }}
+          # GitHub accepts the numeric App ID wherever it asks for the client ID.
+          client-id: ${{ vars.FORGE_BOT_APP_ID }}
           private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
 
       # client_payload is untrusted input: every field reaches the shell through
