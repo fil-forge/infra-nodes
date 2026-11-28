@@ -34,8 +34,8 @@
 name: Test nodes
 
 # A push gets an empty run-name, so GitHub falls back to its default title for
-# a push: the commit message's first line, such as "Bump piri on staging to
-# sha256:d241abe (#310)". head_commit.message holds the whole message, body
+# a push: the commit message's first line, such as "Bump piri on staging:
+# Read blobs from a path (fil-forge/piri#5) (#310)". head_commit.message holds the whole message, body
 # included, and GitHub cuts a run-name only at about 500 characters, not at
 # the first newline. Expressions have no function that splits or slices a
 # string, and a step cannot set run-name because GitHub evaluates it before

@@ -193,9 +193,11 @@ check "the body lists fil-forge/piri#5" grep -qF -- "- fil-forge/piri#5 " "$STUB
 
 setup "a digest bumped straight into staging gets a change list"
 pins nodes/staging/eu-central-3/apps/versions.env "$(digest 4)"
-commit "Bump piri on staging to sha256:0000000 (#13)" "- Commit: https://github.com/fil-forge/piri/commit/$COMMIT_STAGING"
+commit "Bump piri on staging: Read blobs from a path (fil-forge/piri#5) (#13)" "- Commit: https://github.com/fil-forge/piri/commit/$COMMIT_STAGING"
 git push --quiet origin main
 promote prod/us-east-2
+check "the staged digest links the bump pull request, not the service one" \
+  grep -qF "](https://github.com/fil-forge/infra-nodes/pull/13)" "$STUB_STATE/body"
 check "the body compares prod's dev-bumped commit with staging's bumped one" \
   grep -qF "[\`${COMMIT_OLD:0:7}..${COMMIT_STAGING:0:7}\`](https://github.com/fil-forge/piri/compare/$COMMIT_OLD...$COMMIT_STAGING)" "$STUB_STATE/body"
 
